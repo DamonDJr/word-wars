@@ -55,6 +55,30 @@ Linux binary and checking the word count, instead of assuming.
 The Windows build is not code-signed, so SmartScreen will warn about an unknown
 publisher.
 
+## Up to four boards
+
+`F` on the title starts a free-for-all against three CPUs; Versus seats up to
+four humans in one room. Yours is drawn full size on the left, rivals shrink into
+a row on the right — same board, scaled by the node transform, so every effect
+and label keeps working on them.
+
+**You choose who you are hitting.** `TAB` cycles your aim (shift-TAB goes back),
+`1`/`2`/`3` pick a board outright, and clicking one aims at it. The board you are
+pointed at gets a pulsing ring and an arrow, and the centre column names it. Bots
+wander their own aim every few seconds, so a four-way does not turn into three
+guns pointed at you.
+
+Running out of lives knocks you out rather than ending the match — the rest play
+on, and the last board standing wins. Aim retargets itself automatically when
+whoever you were hitting drops out.
+
+A duel still looks exactly like it did: two full-size boards facing each other,
+no aim marker, because with one rival there is nothing to choose between.
+
+Over the network, each peer renders itself as board 0 and sorts everyone else
+into the rival slots by peer id, so all four clients agree on who is board 1
+without anyone being told. Attacks are addressed to a peer rather than a slot.
+
 ## How a turn resolves
 
 Type a valid word and hit fire. In order:

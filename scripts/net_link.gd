@@ -28,6 +28,9 @@ const CONFIG_PATH := "user://player.cfg"
 const NORAY_HOST := "tomfol.io"
 const NORAY_PORT := 8890
 
+## Four boards at once means the host takes three challengers.
+const MAX_PEERS := 3
+
 var backend: int = Backend.ROOM
 var room_code := ""          # our own code, shown when hosting
 var active := false
@@ -38,9 +41,36 @@ var connected := false
 var status := ""
 
 var my_name := "PLAYER"
-var peer_name := ""
 var my_ready := false
-var peer_ready := false
+## peer id -> {"name": String, "ready": bool}. Everyone in the room but you.
+var roster: Dictionary = {}
+
+## Kept so the one-on-one code paths still read naturally.
+var peer_name: String:
+	get:
+		for id in roster:
+			return String(roster[id]["name"])
+		return ""
+var peer_ready: bool:
+	get:
+		for id in roster:
+			return bool(roster[id]["ready"])
+		return false
+
+
+func peer_ids() -> Array:
+	var ids := roster.keys()
+	ids.sort()
+	return ids
+
+
+func everyone_ready() -> bool:
+	if roster.is_empty() or not my_ready:
+		return false
+	for id in roster:
+		if not roster[id]["ready"]:
+			return false
+	return true
 
 ## ENet keeps retrying a dead address for a long time before it gives up, which
 ## leaves someone who mistyped an address staring at "connecting" forever.
@@ -88,7 +118,7 @@ func host(which: int) -> void:
 		_host_by_code()
 	else:
 		var enet := ENetMultiplayerPeer.new()
-		if enet.create_server(PORT, 1) != OK:
+		if enet.create_server(PORT, MAX_PEERS) != OK:
 			status = "could not open port %d — already hosting?" % PORT
 			room_changed.emit()
 			return
@@ -152,7 +182,7 @@ func _host_by_code() -> void:
 
 	# Host on the very port noray just punched open, or the hole is useless.
 	var enet := ENetMultiplayerPeer.new()
-	if enet.create_server(Noray.local_port, 1) != OK:
+	if enet.create_server(Noray.local_port, MAX_PEERS) != OK:
 		status = "could not host on port %d" % Noray.local_port
 		leave()
 		room_changed.emit()
@@ -232,16 +262,15 @@ func leave() -> void:
 	active = false
 	is_host = false
 	connected = false
+	roster.clear()
 	room_code = ""
 	_host_code = ""
 	_relay_tried = false
-	peer_name = ""
 	my_ready = false
-	peer_ready = false
 
 
 func both_ready() -> bool:
-	return connected and my_ready and peer_ready
+	return everyone_ready()
 
 
 func set_ready(value: bool) -> void:
@@ -249,15 +278,16 @@ func set_ready(value: bool) -> void:
 	if connected:
 		net_ready.rpc(value)
 	room_changed.emit()
-	if is_host and both_ready():
-		net_begin.rpc()
+	if is_host and everyone_ready():
+		net_begin.rpc(peer_ids())
 		match_begin.emit()
 
 
 func _on_peer_connected(id: int) -> void:
 	connected = true
 	_tighten_timeout(id)
-	status = "connected"
+	roster[id] = {"name": "…", "ready": false}
+	status = "%d in the room" % (roster.size() + 1)
 	net_hello.rpc(my_name)
 	peer_joined.emit()
 	room_changed.emit()
@@ -282,8 +312,16 @@ func _on_host_vanished() -> void:
 	_drop("the host closed the game")
 
 
-func _on_peer_disconnected(_id: int) -> void:
-	_drop("your rival disconnected")
+func _on_peer_disconnected(id: int) -> void:
+	var who: String = String(roster[id]["name"]) if roster.has(id) else "a rival"
+	roster.erase(id)
+	# In a crowd, one person leaving is not the end of the match.
+	if roster.is_empty():
+		_drop("%s disconnected" % who)
+	else:
+		status = "%s left" % who
+		peer_left.emit("%s left" % who)
+		room_changed.emit()
 
 
 func _drop(why: String) -> void:
@@ -299,6 +337,11 @@ func _tighten_timeout(id: int) -> void:
 	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
 	if enet == null:
 		return
+	# A client is only actually connected to the host, yet it still gets told
+	# about every other client. Asking ENet for a peer it has no link to is an
+	# error, so only tighten the ones we really hold.
+	if not is_host and id != 1:
+		return
 	var pp := enet.get_peer(id)
 	if pp != null:
 		pp.set_timeout(1500, 2000, 6000)
@@ -308,40 +351,49 @@ func _tighten_timeout(id: int) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func net_hello(who: String) -> void:
-	peer_name = who.strip_edges().substr(0, 14)
-	if peer_name == "":
-		peer_name = "RIVAL"
-	# Answer so whoever connected second still learns the other name.
+	_note_name(multiplayer.get_remote_sender_id(), who)
+	# Answer so whoever connected later still learns the earlier names.
 	net_hello_back.rpc(my_name)
 	room_changed.emit()
 
 
 @rpc("any_peer", "call_remote", "reliable")
 func net_hello_back(who: String) -> void:
-	peer_name = who.strip_edges().substr(0, 14)
-	if peer_name == "":
-		peer_name = "RIVAL"
+	_note_name(multiplayer.get_remote_sender_id(), who)
 	room_changed.emit()
+
+
+func _note_name(id: int, who: String) -> void:
+	var clean := who.strip_edges().substr(0, 14)
+	if clean == "":
+		clean = "RIVAL"
+	if not roster.has(id):
+		roster[id] = {"name": clean, "ready": false}
+	else:
+		roster[id]["name"] = clean
 
 
 @rpc("any_peer", "call_remote", "reliable")
 func net_ready(value: bool) -> void:
-	peer_ready = value
+	var id := multiplayer.get_remote_sender_id()
+	if roster.has(id):
+		roster[id]["ready"] = value
 	room_changed.emit()
-	if is_host and both_ready():
-		net_begin.rpc()
+	if is_host and everyone_ready():
+		net_begin.rpc(peer_ids())
 		match_begin.emit()
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_begin() -> void:
+func net_begin(_ids: Array) -> void:
 	match_begin.emit()
 
 
 @rpc("any_peer", "call_remote", "reliable")
 func net_rematch() -> void:
 	my_ready = false
-	peer_ready = false
+	for id in roster:
+		roster[id]["ready"] = false
 	rematch_agreed.emit()
 
 
@@ -355,14 +407,14 @@ func request_rematch() -> void:
 
 # ------------------------------------------------------------------ match packets
 
-func send_attack(word: String, tier: int) -> void:
-	if connected:
-		net_attack.rpc(word, tier)
+func send_attack(to_peer: int, word: String, tier: int) -> void:
+	if connected and roster.has(to_peer):
+		net_attack.rpc_id(to_peer, word, tier)
 
 
-func send_salvo(word: String, count: int) -> void:
-	if connected:
-		net_salvo.rpc(word, count)
+func send_salvo(to_peer: int, word: String, count: int) -> void:
+	if connected and roster.has(to_peer):
+		net_salvo.rpc_id(to_peer, word, count)
 
 
 func send_pressure(source: String) -> void:
@@ -403,6 +455,7 @@ func net_lost() -> void:
 ## Cosmetic mirror. Unreliable — a lost frame is a lost frame, not a lost block.
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func net_state(payload: Dictionary) -> void:
+	payload["from"] = multiplayer.get_remote_sender_id()
 	state_received.emit(payload)
 
 

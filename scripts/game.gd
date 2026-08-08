@@ -12,8 +12,15 @@ extends Node2D
 ## it only earns you more time for the next link. Stamp length is independent of
 ## block size, so a 4x3 can perfectly well say A.
 
+## Up to four boards at once: yours full size on the left, the rest shrunk into a
+## row on the right. Their boards are scaled by the node transform rather than by
+## a second set of drawing code, so everything on them keeps working.
+const SLOTS := 4
 const BOARD_MARGIN_X := 120.0
 const BOARD_TOP := 130.0
+const RIVAL_SCALE := 0.55
+const RIVAL_TOP := 196.0
+const RIVAL_X := [0.0, 662.0, 854.0, 1046.0]
 const CHIP_W := 82.0
 const CHIP_H := 34.0
 const CHIP_GAP := 6.0
@@ -73,6 +80,10 @@ const CHAIN_PER_CHAR := 0.2
 
 const PLAYER_ACCENT := Color("#7bdff2")
 const AI_ACCENT := Color("#ff8fa3")
+## One colour per board, so "who just hit me" is answerable at a glance.
+const SLOT_ACCENTS := [
+	Color("#7bdff2"), Color("#ff8fa3"), Color("#ffd166"), Color("#c77dff"),
+]
 const BG_TOP := Color("#0b1020")
 const BG_BOTTOM := Color("#141a36")
 
@@ -96,8 +107,23 @@ class Pending extends RefCounted:
 
 class SideState extends RefCounted:
 	var board: WWBoard
+	var slot := 0
 	var label := ""
 	var accent := Color.WHITE
+	## Who runs this board: you, a bot on this machine, or somebody's network peer.
+	var is_local := false
+	var bot: AiOpponent = null
+	var peer_id := 0
+	var alive := true
+	## Whose board this side is currently dropping blocks on.
+	var target := 0
+	## Slots beyond the roster size are not in the match at all.
+	var in_match := false
+	## What this player has typed so far, for the watch-them-work display.
+	var typing := ""
+
+	func active_slot() -> bool:
+		return in_match
 	var pending: Array = []
 	var used: Dictionary = {}
 	var words_played := 0
@@ -107,6 +133,7 @@ class SideState extends RefCounted:
 	var chain_timer := 0.0
 	var chain_window := 1.0
 	var best_chain := 0
+	var bot_switch := 0.0
 	var lives := LIVES
 	var respite := 0.0
 	var life_flash := 0.0
@@ -123,10 +150,15 @@ class SideState extends RefCounted:
 
 
 var phase: int = Phase.TITLE
-var player := SideState.new()
-var ai_side := SideState.new()
-var ai := AiOpponent.new()
+## Every board in the match. `sides[0]` is always yours; the rest are rivals,
+## living or knocked out. `player` and `ai_side` are kept as names for slot 0 and
+## the first rival so the one-on-one code paths still read naturally.
+var sides: Array[SideState] = []
+var player: SideState
+var ai_side: SideState
 var difficulty := "Duelist"
+## How many boards this match was set up with.
+var slots_in_play := 2
 
 var typed := ""
 var message := ""
@@ -171,32 +203,81 @@ func _ready() -> void:
 	_ui_sb = StyleBoxFlat.new()
 	_seed_decor()
 
-	var size := get_viewport_rect().size
-	var bw := WWBoard.COLS * WWBoard.CELL
+	for i in SLOTS:
+		var s := SideState.new()
+		s.slot = i
+		s.accent = SLOT_ACCENTS[i]
+		s.board = WWBoard.new()
+		s.board.block_landed.connect(_on_block_landed)
+		add_child(s.board)
+		s.board.set_accent(s.accent)
+		sides.append(s)
 
+	player = sides[0]
 	player.label = "YOU"
-	player.accent = PLAYER_ACCENT
-	player.board = WWBoard.new()
-	player.board.position = Vector2(BOARD_MARGIN_X, BOARD_TOP)
-	add_child(player.board)
-	player.board.set_accent(PLAYER_ACCENT)
-
-	ai_side.label = "CPU"
-	ai_side.accent = AI_ACCENT
-	ai_side.board = WWBoard.new()
-	ai_side.board.position = Vector2(size.x - BOARD_MARGIN_X - bw, BOARD_TOP)
-	add_child(ai_side.board)
-	ai_side.board.set_accent(AI_ACCENT)
-
-	player.board.block_landed.connect(_on_block_landed)
-	ai_side.board.block_landed.connect(_on_block_landed)
+	player.is_local = true
+	ai_side = sides[1]
+	_layout_boards()
 
 	_overlay = Node2D.new()
 	add_child(_overlay)
 	_overlay.draw.connect(_draw_overlay)
 
 	_net_setup()
-	ai.configure(difficulty)
+
+
+## Yours is drawn at full size on the left; rivals are the same board scaled down
+## by the node transform, which keeps every effect and label working on them.
+func _layout_boards() -> void:
+	var size := get_viewport_rect().size
+	var bw := WWBoard.COLS * WWBoard.CELL
+	var duel := slots_in_play <= 2
+
+	for s: SideState in sides:
+		if s.slot == 0:
+			s.board.position = Vector2(BOARD_MARGIN_X, BOARD_TOP)
+			s.board.scale = Vector2.ONE
+		elif duel:
+			# One rival gets the whole right-hand side, as it always did.
+			s.board.position = Vector2(size.x - BOARD_MARGIN_X - bw, BOARD_TOP)
+			s.board.scale = Vector2.ONE
+		else:
+			s.board.position = Vector2(RIVAL_X[s.slot], RIVAL_TOP)
+			s.board.scale = Vector2(RIVAL_SCALE, RIVAL_SCALE)
+
+
+## The free space between your board and the rivals. The centre column has to
+## live here, or it draws straight through somebody's playfield.
+func _center_band() -> Vector2:
+	var size := get_viewport_rect().size
+	var left := BOARD_MARGIN_X + WWBoard.COLS * WWBoard.CELL + 16.0
+	var right := size.x - BOARD_MARGIN_X - WWBoard.COLS * WWBoard.CELL - 16.0
+	if slots_in_play > 2:
+		right = RIVAL_X[1] - 16.0
+	return Vector2(left, right)
+
+
+func _board_rect(s: SideState) -> Rect2:
+	var sz := s.board.board_size() * s.board.scale
+	return Rect2(s.board.position, sz)
+
+
+## Everyone still standing, yourself included.
+func _living() -> Array:
+	var out: Array = []
+	for s: SideState in sides:
+		if s.active_slot() and s.alive:
+			out.append(s)
+	return out
+
+
+## Rivals you could aim at right now.
+func _living_rivals() -> Array:
+	var out: Array = []
+	for s: SideState in _living():
+		if s != player:
+			out.append(s)
+	return out
 
 
 ## Only the heavy stuff moves the whole screen — a 1x1 tapping down should not
@@ -214,10 +295,27 @@ func _bloom(color: Color, amount: float) -> void:
 	flash_color = color
 
 
-func start_match(diff: String) -> void:
+## `bots` is how many CPU rivals to line up. Versus passes 0 and fills the extra
+## slots with peers instead.
+func start_match(diff: String, bots: int = 1) -> void:
 	difficulty = diff
-	ai.configure(diff)
-	for s: SideState in [player, ai_side]:
+	slots_in_play = clampi(1 + bots, 2, SLOTS)
+
+	for s: SideState in sides:
+		s.in_match = s.slot < slots_in_play
+		s.alive = s.in_match
+		if s.slot == 0:
+			s.label = "YOU"
+		elif s.in_match and not net_active():
+			s.label = "CPU %d" % s.slot if slots_in_play > 2 else "CPU"
+			s.bot = AiOpponent.new()
+			s.bot.configure(diff)
+			s.peer_id = 0
+		if s.bot != null and not s.in_match:
+			s.bot = null
+
+	_layout_boards()
+	for s: SideState in sides:
 		s.board.reset()
 		s.pending.clear()
 		s.used.clear()
@@ -234,6 +332,8 @@ func start_match(diff: String) -> void:
 		s.salvo_flash = 0.0
 		s.in_danger = false
 		s.flash = 0.0
+		s.target = 0
+	_aim_everyone()
 	typed = ""
 	message = ""
 	message_life = 0.0
@@ -252,6 +352,73 @@ func start_match(diff: String) -> void:
 	_last_count_beep = -1
 	phase = Phase.COUNTDOWN
 	_log("%s — get ready" % diff, Color("#c8d3f5"))
+
+
+## What a given board is mid-way through typing: your own line, a bot's progress,
+## or whatever a peer last told us.
+func _typing_of(s: SideState) -> String:
+	if s.is_local:
+		return typed
+	if s.bot != null:
+		return s.bot.visible_text()
+	return s.typing
+
+
+# --------------------------------------------------------------------- aiming
+
+## Give everyone somebody to hit. You keep whatever you had if it is still
+## standing; bots pick fresh so a free-for-all does not gang up by accident.
+func _aim_everyone() -> void:
+	for s: SideState in _living():
+		if not _is_valid_target(s, sides[s.target]):
+			_aim(s, _pick_target_for(s))
+
+
+func _is_valid_target(shooter: SideState, mark: SideState) -> bool:
+	return mark != null and mark != shooter and mark.in_match and mark.alive
+
+
+func _pick_target_for(shooter: SideState) -> SideState:
+	var options: Array = []
+	for s: SideState in _living():
+		if s != shooter:
+			options.append(s)
+	if options.is_empty():
+		return shooter
+	return options[randi() % options.size()]
+
+
+func _aim(shooter: SideState, mark: SideState) -> void:
+	shooter.target = mark.slot
+
+
+## Step your aim to the next living rival. What Tab does.
+func _cycle_target(step: int) -> void:
+	var rivals := _living_rivals()
+	if rivals.is_empty():
+		return
+	var at := 0
+	for i in rivals.size():
+		if rivals[i].slot == player.target:
+			at = i
+			break
+	var pick: SideState = rivals[(at + step + rivals.size()) % rivals.size()]
+	if pick.slot != player.target:
+		_aim(player, pick)
+		Sfx.play("count", 1.25)
+		_say("targeting %s" % pick.label, pick.accent)
+
+
+func _target_slot(slot: int) -> void:
+	if slot < 0 or slot >= sides.size():
+		return
+	var mark: SideState = sides[slot]
+	if not _is_valid_target(player, mark):
+		return
+	if mark.slot != player.target:
+		_aim(player, mark)
+		Sfx.play("count", 1.25)
+		_say("targeting %s" % mark.label, mark.accent)
 
 
 # ----------------------------------------------------------------------- input
@@ -304,6 +471,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_2: _activate("diff:Duelist")
 			KEY_3: _activate("diff:Wordsmith")
 			KEY_V: _activate("versus")
+			KEY_F: _activate("ffa")
 			KEY_R: _activate("rematch")
 			KEY_H:
 				show_rules = not show_rules
@@ -329,8 +497,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			typed = ""
 			Sfx.play("back", 0.8)
-		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE, KEY_TAB:
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			_submit_player()
+		KEY_TAB:
+			_cycle_target(-1 if k.shift_pressed else 1)
+		KEY_1: _target_slot(1)
+		KEY_2: _target_slot(2)
+		KEY_3: _target_slot(3)
 		_:
 			# Modifiers and arrows report unicode 0; chr(0) builds a NUL string.
 			if k.unicode <= 0:
@@ -358,7 +531,7 @@ func _submit_player() -> void:
 	if not WordBank.is_valid(w):
 		_reject(w, "\"%s\" is not a word" % w, Color("#ff6b6b"), 1.0)
 		return
-	_play_word(player, ai_side, w)
+	_play_word(player, w)
 
 
 ## A word you fired that did not qualify costs you the run. That is the whole
@@ -378,7 +551,11 @@ func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 
 # ------------------------------------------------------------------ core rules
 
-func _play_word(attacker: SideState, defender: SideState, word: String) -> void:
+func _play_word(attacker: SideState, word: String) -> void:
+	var defender: SideState = sides[attacker.target]
+	if not _is_valid_target(attacker, defender):
+		defender = _pick_target_for(attacker)
+		_aim(attacker, defender)
 	attacker.used[word] = true
 	attacker.words_played += 1
 
@@ -426,7 +603,7 @@ func _play_word(attacker: SideState, defender: SideState, word: String) -> void:
 	if out_tier >= 0:
 		if net_active():
 			# The defender mints the stamp; only they know their own board.
-			Link.send_attack(word, out_tier)
+			Link.send_attack(defender.peer_id, word, out_tier)
 			defender.flash = 1.0
 		else:
 			var p := Pending.new()
@@ -471,7 +648,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	var power := SALVO_BLOCKS + combo
 
 	if net_active():
-		Link.send_salvo(word, power)
+		Link.send_salvo(defender.peer_id, word, power)
 		defender.flash = 1.0
 	else:
 		for i in power:
@@ -602,11 +779,10 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
-	player.board.highlight_word = typed
-	player.board.highlight_limit = _reach(typed) if typed.length() >= MIN_WORD_LEN else 0
-	var ai_typing := net_typing if net_active() else ai.visible_text()
-	ai_side.board.highlight_word = ai_typing
-	ai_side.board.highlight_limit = _reach(ai_typing) if ai_typing.length() >= MIN_WORD_LEN else 0
+	for s: SideState in sides:
+		var w := _typing_of(s)
+		s.board.highlight_word = w
+		s.board.highlight_limit = _reach(w) if w.length() >= MIN_WORD_LEN else 0
 
 	message_life = maxf(0.0, message_life - delta)
 
@@ -630,8 +806,8 @@ func _process(delta: float) -> void:
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.TITLE and phase != Phase.LOBBY
-	player.board.visible = showing_boards
-	ai_side.board.visible = showing_boards
+	for s: SideState in sides:
+		s.board.visible = showing_boards and s.in_match
 	if phase != Phase.PLAY:
 		_step_decor(delta)
 
@@ -648,7 +824,9 @@ func _process(delta: float) -> void:
 
 	if phase == Phase.PLAY:
 		match_time += delta
-		for s: SideState in [player, ai_side]:
+		for s: SideState in sides:
+			if not s.in_match or not s.alive:
+				continue
 			if s.chain_timer > 0.0:
 				s.chain_timer -= delta
 				if s.chain_timer <= 0.0:
@@ -660,12 +838,16 @@ func _process(delta: float) -> void:
 		_tick_pending(player, delta)
 		_tick_pressure(delta)
 		if net_active():
-			# The rival's queue and lives are mirrored, not simulated — they run
-			# on their machine, where their board actually lives.
+			# Rivals' boards are mirrored, not simulated — they run on their own
+			# machines, where those boards actually live.
 			_push_state(delta)
 		else:
-			_tick_pending(ai_side, delta)
-			_tick_ai(delta)
+			for s: SideState in sides:
+				if s != player and s.in_match and s.alive:
+					_tick_pending(s, delta)
+			_tick_bots(delta)
+		# Somebody may have just been knocked out.
+		_aim_everyone()
 
 	queue_redraw()
 	_overlay.queue_redraw()
@@ -730,19 +912,29 @@ func _seed_pressure(source: String) -> void:
 	_log("pressure rising — both boards seeded", Color("#8892b0"))
 
 
-func _tick_ai(delta: float) -> void:
-	var targets := ai_side.board.prefixes()
-	for p: Pending in ai_side.pending:
-		targets.append(p.prefix)
-	var word := ai.update(delta, targets, ai_side.used)
-	if ai.fumbled:
-		ai.fumbled = false
-		if ai_side.chain >= 2:
-			_log("CPU: fumbled — chain x%d broken" % ai_side.chain, Color("#8892b0"))
-		ai_side.chain = 0
-		ai_side.chain_timer = 0.0
-	if word != "":
-		_play_word(ai_side, player, word)
+## Every bot runs its own search against its own board and its own victim.
+func _tick_bots(delta: float) -> void:
+	for s: SideState in sides:
+		if s.bot == null or not s.in_match or not s.alive:
+			continue
+		s.bot_switch -= delta
+		if s.bot_switch <= 0.0:
+			# Bots wander their aim, so a four-way is not three guns on one board.
+			s.bot_switch = randf_range(6.0, 13.0)
+			_aim(s, _pick_target_for(s))
+
+		var targets := s.board.prefixes()
+		for p: Pending in s.pending:
+			targets.append(p.prefix)
+		var word := s.bot.update(delta, targets, s.used)
+		if s.bot.fumbled:
+			s.bot.fumbled = false
+			if s.chain >= 2:
+				_log("%s fumbled — chain x%d broken" % [s.label, s.chain], Color("#8892b0"))
+			s.chain = 0
+			s.chain_timer = 0.0
+		if word != "":
+			_play_word(s, word)
 
 
 ## Hitting the ceiling wipes the board and costs a life. The wipe is the whole
@@ -762,7 +954,18 @@ func _lose_life(side: SideState) -> void:
 	shake = maxf(shake, 0.7)
 
 	if side.lives <= 0:
-		_end_match(side)
+		side.alive = false
+		side.pending.clear()
+		_log("%s is out" % side.label, Color("#ff6b6b"))
+		if side == player and net_active():
+			Link.send_topped_out()
+		_aim_everyone()
+		var standing := _living()
+		if standing.size() <= 1:
+			_end_match(side)
+		elif side == player:
+			# You are out, but the match is not: keep watching.
+			_say("you are out — %d still standing" % standing.size(), Color("#ff6b6b"))
 		return
 
 	var mine := side == player
@@ -777,15 +980,15 @@ func _lose_life(side: SideState) -> void:
 
 func _end_match(loser: SideState) -> void:
 	phase = Phase.OVER
-	if net_active():
-		winner = ai_side.label if loser == player else "YOU"
-		if loser == player:
-			Link.send_topped_out()
+	var standing := _living()
+	if standing.size() == 1:
+		winner = "YOU" if standing[0] == player else standing[0].label
 	else:
-		winner = "CPU" if loser == player else "YOU"
+		winner = "YOU" if loser != player else (
+			ai_side.label if net_active() else "CPU")
 	loser.board.shake = 1.0
 	Sfx.play("win" if winner == "YOU" else "lose")
-	_log("%s is out of lives — %s wins" % [loser.label, winner], Color("#ffd166"))
+	_log("%s wins" % winner, Color("#ffd166"))
 
 
 func _say(text: String, color: Color) -> void:
@@ -817,15 +1020,14 @@ func _draw() -> void:
 		return
 
 	_draw_side_header(player, player.board.position)
-	_draw_side_header(ai_side, ai_side.board.position)
 	_draw_chain_meter(player)
-	_draw_chain_meter(ai_side)
-	_draw_pending(player, true)
-	_draw_pending(ai_side, false)
+	_draw_pending(player, false)
+	for s: SideState in sides:
+		if s.slot > 0 and s.in_match:
+			_draw_rival_panel(s)
 	if phase != Phase.COUNTDOWN:
 		_draw_center_hud(size)
 	_draw_player_input(size)
-	_draw_ai_input(size)
 
 
 func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
@@ -920,7 +1122,7 @@ func _draw_pending(side: SideState, on_right: bool) -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var x: float = (side.board.position.x + bw + 16.0) if on_right else (side.board.position.x - 16.0 - CHIP_W)
 	var y := BOARD_TOP
-	var aiming: String = typed if side == player else (net_typing if net_active() else ai.visible_text())
+	var aiming: String = _typing_of(side)
 	# Chips only light up while the word still has reach left after the board.
 	var budget := 0
 	if aiming.length() >= MIN_WORD_LEN:
@@ -963,7 +1165,8 @@ func _draw_shape_pip(center: Vector2, tier: int) -> void:
 
 
 func _draw_center_hud(size: Vector2) -> void:
-	var cx := size.x * 0.5
+	var band := _center_band()
+	var cx := (band.x + band.y) * 0.5
 
 	_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 6.0),
 		"%d:%02d" % [int(match_time) / 60, int(match_time) % 60], 30, Color("#e6ecff"))
@@ -973,13 +1176,25 @@ func _draw_center_hud(size: Vector2) -> void:
 	_text_centered(_font, Vector2(cx, BOARD_TOP + 62.0),
 		"pressure in %ds" % next_seed, 12, Color("#7c88ad"))
 
-	# Kept narrow enough to clear the inbound-garbage chips on either side.
-	var log_width := size.x - 2.0 * (BOARD_MARGIN_X + WWBoard.COLS * WWBoard.CELL + 16.0 + CHIP_W) - 16.0
-	var y := BOARD_TOP + 110.0
+	if slots_in_play > 2 and player.alive:
+		var mark: SideState = sides[player.target]
+		_text_centered(_font, Vector2(cx, BOARD_TOP + 84.0), "AIMING AT", 10, Color("#5d6a92"))
+		_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 102.0), mark.label, 17, mark.accent)
+
+
+	# Kept inside the free band so it never draws over anybody's playfield.
+	var log_width := maxf(180.0, band.y - band.x - 24.0)
+	var y := BOARD_TOP + (110.0 if slots_in_play <= 2 else 132.0)
+	var room := 7 if slots_in_play <= 2 else 5
+	var shown := 0
 	for e: Dictionary in events:
+		if shown >= room:
+			break
+		shown += 1
 		var alpha: float = 0.25 + 0.75 * float(e["life"])
-		_text_fit(_font, Vector2(cx, y), e["text"], 13, log_width, Color(e["color"], alpha), 9)
-		y += 22.0
+		_text_fit(_font, Vector2(cx, y), e["text"], 13 if slots_in_play <= 2 else 12,
+			log_width, Color(e["color"], alpha), 9)
+		y += 22.0 if slots_in_play <= 2 else 19.0
 
 
 func _draw_player_input(size: Vector2) -> void:
@@ -1028,25 +1243,66 @@ func _draw_player_input(size: Vector2) -> void:
 			"keep firing without pausing — the chain makes blocks bigger", 12, Color("#4d5878"))
 
 
-func _draw_ai_input(size: Vector2) -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
-	var cx := ai_side.board.position.x + bw * 0.5
-	var base_y := BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 46.0
+## A rival, in the space of a postcard: name, lives, what they are typing, how
+## much is falling on them, and whether you are pointed at them.
+func _draw_rival_panel(s: SideState) -> void:
+	var r := _board_rect(s)
+	var cx := r.get_center().x
+	# With one rival there is nothing to choose between, so the aim marker is
+	# just noise; it earns its place only in a free-for-all.
+	var aimed := slots_in_play > 2 and player.target == s.slot and player.alive
+	var out := not s.alive
 
-	var shown := (net_typing if net_active() else ai.visible_text()).to_upper()
-	if shown == "":
-		_text_centered(_font, Vector2(cx, base_y), "…", 34, Color("#3d4666"))
-		return
-	_text_fit(_font_bold, Vector2(cx, base_y), shown, 34, bw + 46.0, Color(AI_ACCENT, 0.9))
+	# The aim marker has to be unmistakable — it decides where your words land.
+	if aimed:
+		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 220.0)
+		draw_rect(r.grow(9.0), Color(s.accent, 0.35 + 0.4 * pulse), false, 3.0)
+		var tip := Vector2(cx, r.position.y - 30.0)
+		draw_colored_polygon(PackedVector2Array([
+			tip + Vector2(0, 12), tip + Vector2(-9, -4), tip + Vector2(9, -4)]),
+			Color(s.accent, 0.6 + 0.4 * pulse))
 
-	# The CPU's bar shows how far through the word it is. A human rival has no
-	# such tell, so their letters simply appear as they type them.
-	if net_active():
+	var name_col: Color = s.accent if not out else Color("#4d5878")
+	var title := "%d · %s" % [s.slot, s.label] if slots_in_play > 2 else s.label
+	_text_centered(_font_bold, Vector2(cx, r.position.y - 54.0), title,
+		26 if slots_in_play <= 2 else 16, name_col)
+	if slots_in_play <= 2:
+		_text_centered(_font, Vector2(cx, r.position.y - 30.0),
+			"%d words · %d cleared" % [s.words_played, s.blocks_cleared], 13,
+			Color("#7c88ad"))
+
+	# Lives as pips.
+	var pip := 9.0
+	var gap := 5.0
+	var span := LIVES * pip + (LIVES - 1) * gap
+	for i in LIVES:
+		var pip_y := r.position.y - (76.0 if slots_in_play <= 2 else 38.0)
+		var pr := Rect2(cx - span * 0.5 + i * (pip + gap), pip_y, pip, pip)
+		draw_rect(pr, s.accent if i < s.lives and not out else Color("#2a3355"), true)
+
+	if out:
+		_text_centered(_font_bold, r.get_center(), "OUT", 26, Color("#ff6b6b"))
 		return
-	var bar_w := 150.0
-	var p := ai.progress()
-	draw_rect(Rect2(cx - bar_w * 0.5, base_y + 27.0, bar_w, 4.0), Color("#232b4a"), true)
-	draw_rect(Rect2(cx - bar_w * 0.5, base_y + 27.0, bar_w * p, 4.0), AI_ACCENT, true)
+
+	# What they are mid-way through typing.
+	var shown := _typing_of(s).to_upper()
+	_text_fit(_font_bold, Vector2(cx, r.end.y + 18.0),
+		shown if shown != "" else "…", 18, r.size.x + 30.0,
+		Color(s.accent, 0.9) if shown != "" else Color("#3d4666"))
+
+	# Their chain, and how much is queued on them.
+	var seg := (r.size.x - 5 * 3.0) / 6.0
+	var earned: int = _chain_tier(s.chain) if s.chain > 0 else -1
+	for i in TIERS.size():
+		draw_rect(Rect2(r.position.x + i * (seg + 3.0), r.end.y + 30.0, seg, 4.0),
+			WWBoard.TIER_COLORS[i] if i <= earned else Color("#1a2140"), true)
+	if not s.pending.is_empty():
+		_text_centered(_font, Vector2(cx, r.end.y + 46.0),
+			"%d incoming" % s.pending.size(), 11, Color("#ffd166"))
+
+	if s.respite > 0.0:
+		_text_centered(_font_bold, r.get_center(),
+			"%d LEFT" % s.lives, 20, Color("#ff6b6b"))
 
 
 # ------------------------------------------------------------------- overlays
@@ -1244,31 +1500,40 @@ func _draw_lobby_setup(cx: float) -> void:
 			Color("#7c88ad"))
 
 
-## Once connected: who is in the room and who has readied up.
+## Once connected: everyone in the room and who has readied up.
 func _draw_room(cx: float) -> void:
-	var names := [Link.my_name, Link.peer_name if Link.peer_name != "" else "…"]
-	var readies := [Link.my_ready, Link.peer_ready]
-	var tints := [PLAYER_ACCENT, AI_ACCENT]
+	var ids := Link.peer_ids()
+	var count := 1 + ids.size()
+	var w := 250.0 if count > 2 else 320.0
+	var gap := 16.0
+	var span := count * w + (count - 1) * gap
 
-	for i in 2:
-		var r := Rect2(cx - 330.0 + i * 340.0, 232.0, 320.0, 128.0)
-		var set_up: bool = readies[i]
-		_panel(r, Color("#141b33"), Color(tints[i], 0.7 if set_up else 0.25), 12.0,
+	for i in count:
+		var mine := i == 0
+		var who: String = Link.my_name if mine else String(Link.roster[ids[i - 1]]["name"])
+		var set_up: bool = Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"])
+		var tint: Color = SLOT_ACCENTS[i % SLOT_ACCENTS.size()]
+		var r := Rect2(cx - span * 0.5 + i * (w + gap), 232.0, w, 128.0)
+		_panel(r, Color("#141b33"), Color(tint, 0.7 if set_up else 0.25), 12.0,
 			3.0 if set_up else 2.0)
 		_otext(_font, Vector2(r.get_center().x, r.position.y + 26.0),
-			"YOU" if i == 0 else "CHALLENGER", 11, Color("#7c88ad"))
-		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 60.0),
-			String(names[i]).to_upper(), 28, Color("#e6ecff"))
+			"YOU" if mine else "CHALLENGER", 11, Color("#7c88ad"))
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 60.0),
+			who.to_upper(), 26, w - 26.0, Color("#e6ecff"))
 		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 98.0),
 			"READY" if set_up else "not ready", 15,
-			tints[i] if set_up else Color("#5d6a92"))
+			tint if set_up else Color("#5d6a92"))
 
-	var waiting_on := ""
-	if Link.my_ready and not Link.peer_ready:
-		waiting_on = "waiting for %s" % String(names[1]).to_upper()
-	elif not Link.my_ready:
-		waiting_on = "ready up when you are"
-	_otext(_font, Vector2(cx, 392.0), waiting_on, 14, Color("#8d99bd"))
+	var note := "ready up when you are"
+	if Link.my_ready:
+		var waiting: Array = []
+		for id in ids:
+			if not Link.roster[id]["ready"]:
+				waiting.append(String(Link.roster[id]["name"]).to_upper())
+		note = "waiting for %s" % ", ".join(waiting) if not waiting.is_empty() else "starting"
+	_otext(_font, Vector2(cx, 392.0), note, 14, Color("#8d99bd"))
+	_otext(_font, Vector2(cx, 414.0),
+		"up to four boards — the host starts when everyone is ready", 12, Color("#5d6a92"))
 
 
 ## Both lobby fields go through here: names take anything printable, addresses
@@ -1297,8 +1562,6 @@ func _lobby_edit(ch: String, backspace: bool) -> void:
 	Sfx.play("back" if backspace else "key", randf_range(0.92, 1.10))
 
 
-## Codes arrive as one long run of characters. Grouping them is the difference
-## between reading it out and losing your place halfway through.
 func _chunk_code(code: String) -> String:
 	# Never change the case: codes are case-sensitive, and a player reading an
 	# upper-cased one off the screen would type something that does not exist.
@@ -1417,11 +1680,35 @@ func _net_setup() -> void:
 
 
 func _on_net_match_begin() -> void:
-	ai_side.label = Link.peer_name if Link.peer_name != "" else "RIVAL"
-	start_match("Versus")
+	var ids := Link.peer_ids()
+	# Pass the peer count as the roster size; start_match makes no bots while a
+	# network match is live, so this only sizes the layout.
+	start_match("Versus", ids.size())
+	# Map peers onto the rival slots in a fixed order, so both ends agree on who
+	# is board 1 even though each of us is our own board 0.
+	for i in ids.size():
+		if i + 1 >= SLOTS:
+			break
+		var s: SideState = sides[i + 1]
+		s.in_match = true
+		s.alive = true
+		s.peer_id = ids[i]
+		s.bot = null
+		s.label = String(Link.roster[ids[i]]["name"])
+	_layout_boards()
+	_aim_everyone()
 
 
 func _on_net_peer_left(why: String) -> void:
+	if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
+		# Whoever is gone is simply out; the rest play on.
+		for s: SideState in sides:
+			if s.in_match and s.peer_id != 0 and not Link.roster.has(s.peer_id):
+				s.alive = false
+		_aim_everyone()
+		if _living().size() > 1:
+			_log(why, Color("#ff6b6b"))
+			return
 	if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
 		_log(why, Color("#ff6b6b"))
 		winner = "YOU"
@@ -1461,6 +1748,14 @@ func _on_net_salvo(word: String, count: int) -> void:
 
 
 func _on_net_state(payload: Dictionary) -> void:
+	var from := int(payload.get("from", 0))
+	var ai_side: SideState = null
+	for s: SideState in sides:
+		if s.peer_id == from and s.in_match:
+			ai_side = s
+			break
+	if ai_side == null:
+		return
 	ai_side.board.mirror_blocks(payload.get("b", []))
 
 	ai_side.pending.clear()
@@ -1472,7 +1767,7 @@ func _on_net_state(payload: Dictionary) -> void:
 		p.timer = float(spec[2])
 		ai_side.pending.append(p)
 
-	net_typing = String(payload.get("t", ""))
+	ai_side.typing = String(payload.get("t", ""))
 	ai_side.chain = int(payload.get("c", 0))
 	ai_side.chain_timer = float(payload.get("ct", 0.0))
 	ai_side.chain_window = maxf(0.001, float(payload.get("cw", 1.0)))
@@ -1482,6 +1777,7 @@ func _on_net_state(payload: Dictionary) -> void:
 	ai_side.lives = int(payload.get("lv", LIVES))
 	ai_side.respite = float(payload.get("rs", 0.0))
 	ai_side.life_flash = float(payload.get("lf", 0.0))
+	ai_side.alive = bool(payload.get("al", true))
 
 
 func _push_state(delta: float) -> void:
@@ -1502,7 +1798,7 @@ func _push_state(delta: float) -> void:
 		"c": player.chain, "ct": player.chain_timer, "cw": player.chain_window,
 		"w": player.words_played, "cl": player.blocks_cleared,
 		"sf": player.salvo_flash, "lv": player.lives, "rs": player.respite,
-		"lf": player.life_flash,
+		"lf": player.life_flash, "al": player.alive,
 	})
 
 
@@ -1528,7 +1824,11 @@ func _menu_buttons() -> Array:
 				"action": "diff:" + names[i],
 			})
 		out.append({
-			"rect": Rect2(cx - 234.0, 570.0, 468.0, 48.0), "key": "V",
+			"rect": Rect2(cx - 234.0, 566.0, 230.0, 46.0), "key": "F",
+			"label": "Free-for-all", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#ffd166"), "action": "ffa"})
+		out.append({
+			"rect": Rect2(cx + 4.0, 566.0, 230.0, 46.0), "key": "V",
 			"label": "Versus a friend", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#c77dff"), "action": "versus"})
 	elif phase == Phase.LOBBY:
@@ -1706,6 +2006,16 @@ func _draw_decor() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if phase == Phase.PLAY:
+		# In play the mouse only does one thing: pick who you are hitting.
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+				var at := get_viewport().get_mouse_position()
+				for s: SideState in sides:
+					if s.slot > 0 and s.in_match and s.alive \
+							and _board_rect(s).grow(16.0).has_point(at):
+						_target_slot(s.slot)
+						break
 		return
 	if event is InputEventMouseMotion:
 		var was := _hover_action
@@ -1737,7 +2047,10 @@ func _action_at(p: Vector2) -> String:
 func _activate(action: String) -> void:
 	if action.begins_with("diff:"):
 		Link.leave()
-		start_match(action.substr(5))
+		start_match(action.substr(5), 1)
+	elif action == "ffa":
+		Link.leave()
+		start_match(difficulty, 3)
 	elif action == "rematch":
 		# Still connected? Both players go back to the room and ready up again.
 		if Link.connected:
@@ -1745,7 +2058,7 @@ func _activate(action: String) -> void:
 		elif net_active() or difficulty == "Versus":
 			_activate("versus")
 		else:
-			start_match(difficulty)
+			start_match(difficulty, slots_in_play - 1)
 	elif action == "versus":
 		Link.leave()
 		Link.status = ""
