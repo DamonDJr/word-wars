@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#0b1020"/>
+  <rect x="16" y="18" width="44" height="44" rx="9" fill="#48bfe3"/>
+  <rect x="68" y="18" width="44" height="44" rx="9" fill="#f9c74f"/>
+  <rect x="16" y="70" width="96" height="40" rx="9" fill="#f94144"/>
+  <text x="38" y="52" font-family="monospace" font-size="30" font-weight="bold" fill="#0b1020" text-anchor="middle">W</text>
+  <text x="90" y="52" font-family="monospace" font-size="30" font-weight="bold" fill="#0b1020" text-anchor="middle">W</text>
+  <text x="64" y="100" font-family="monospace" font-size="26" font-weight="bold" fill="#0b1020" text-anchor="middle">STR</text>
+</svg>

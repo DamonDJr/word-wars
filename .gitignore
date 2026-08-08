@@ -1,0 +1,15 @@
+# Local tooling config, not part of the project
+.claude/
+
+# Godot 4+ ignores
+.godot/
+/android/
+*.translation
+
+# Build output — regenerate with tools/build.sh
+build/
+
+# export_presets.cfg is deliberately NOT ignored. Godot's default template
+# excludes it because it can hold signing keys and passwords; ours holds
+# neither, and it carries the include_filter that puts the word lists in the
+# build. Without it committed, a fresh clone exports a game with no dictionary.
