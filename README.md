@@ -31,7 +31,7 @@ godot --path "$(pwd)"
 Pick a difficulty by clicking a card or pressing `1` / `2` / `3`, or `V` for
 versus. Every match opens with a shared 3-2-1 before anyone can type. Type letters,
 fire with `Space` or `Enter`. `Backspace` deletes, `Ctrl+Backspace` or `Esc`
-clears the line. `H` on the title screen shows the full rules. `F1` mutes — it is
+clears the line. `H` on the title screen shows the full rules, `R` rematches after a game. `F1` mutes — it is
 not a letter key, because every letter is spoken for.
 
 ## Building for other people
@@ -68,7 +68,17 @@ Type a valid word and hit fire. In order:
 4. **Attack.** The whole hit goes out, stamped with the closing letters of the
    word you just played. Nothing is held back to defend with.
 
-Fill your board to the ceiling and you lose.
+### Lives
+
+Filling your board to the ceiling does **not** end the match. It costs one of
+three lives, blows the whole board apart and hands it back empty, with a couple
+of seconds of respite before anything lands again.
+
+What does not reset is the ambient pressure clock, which keeps climbing across
+lives — so the board you get back for your third life is played under conditions
+the first never saw. Run out of lives and you lose.
+
+Lives show as pips above each board; the last one pulses.
 
 ### Letters are the only defence
 

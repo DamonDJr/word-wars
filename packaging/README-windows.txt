@@ -1,0 +1,55 @@
+Word Wars — Windows (x86_64)
+============================
+
+Run it
+------
+    Double-click WordWars.exe
+
+    SmartScreen may warn that the publisher is unknown — the build is not
+    code-signed. Click "More info", then "Run anyway".
+
+
+Playing a friend
+----------------
+Press V on the title screen.
+
+  One of you clicks HOST and gets a room code. Click the code to copy it,
+  then send it over — Discord, text, whatever.
+
+  The other pastes it into the code field with CTRL+V and clicks JOIN.
+
+Both of you then click READY UP. The match starts when both are ready.
+
+No port forwarding and no IP addresses. Connections are brokered by a public
+relay server, so you can be on completely different networks.
+
+If a join hangs, check the code is exactly right — codes are case-sensitive.
+
+
+How to play
+-----------
+Type a real word and fire it. The LAST letters of your word get stamped onto
+a block dropped on your rival. To destroy a block, type a word that STARTS
+with the letters stamped on it.
+
+Keep firing without pausing and each hit lands bigger. Pause, or fire
+something that is not a word, and the run resets.
+
+Filling your board does NOT end the match — it costs one of three lives and
+wipes the board clean. The pressure keeps climbing though, so your third life
+is played under conditions the first never saw. Run out and you lose.
+
+Garbage is only ever removed by answering its letters — attacking does not
+defend you. One word clears one block per two letters, so four blocks
+stamped AL need ALIGNMENT, not ALL.
+
+
+Controls
+--------
+  type letters          build a word
+  SPACE / ENTER         fire it
+  BACKSPACE             delete a letter
+  CTRL+BACKSPACE / ESC  clear the line
+  H   (title screen)    full rules
+  R   (after a match)   rematch
+  F1                    mute

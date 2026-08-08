@@ -59,6 +59,13 @@ const CHAIN_TIER_AT := [1, 2, 3, 5, 7, 9]
 const SALVO_AT := 10
 const SALVO_BLOCKS := 10
 
+## Topping out costs a life and wipes your board rather than ending the match.
+## Ambient pressure keeps climbing across lives, so the board you get back is
+## never as forgiving as the one you started with.
+const LIVES := 3
+## Nothing lands for a moment after a wipe, so you get to type before it rains.
+const RESPITE := 2.5
+
 ## A word earns time proportional to its own length, so long words are not
 ## punished for taking longer to type — but they buy no extra block size.
 const CHAIN_BASE := 1.8
@@ -100,6 +107,9 @@ class SideState extends RefCounted:
 	var chain_timer := 0.0
 	var chain_window := 1.0
 	var best_chain := 0
+	var lives := LIVES
+	var respite := 0.0
+	var life_flash := 0.0
 	var salvos := 0
 	var salvo_flash := 0.0
 	var in_danger := false
@@ -217,6 +227,9 @@ func start_match(diff: String) -> void:
 		s.chain = 0
 		s.chain_timer = 0.0
 		s.best_chain = 0
+		s.lives = LIVES
+		s.respite = 0.0
+		s.life_flash = 0.0
 		s.salvos = 0
 		s.salvo_flash = 0.0
 		s.in_danger = false
@@ -291,8 +304,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_2: _activate("diff:Duelist")
 			KEY_3: _activate("diff:Wordsmith")
 			KEY_V: _activate("versus")
-			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
-				_activate("rematch")
+			KEY_R: _activate("rematch")
 			KEY_H:
 				show_rules = not show_rules
 				Sfx.play("back", 1.2)
@@ -613,6 +625,8 @@ func _process(delta: float) -> void:
 	ai_side.flash = maxf(0.0, ai_side.flash - delta * 2.0)
 	player.salvo_flash = maxf(0.0, player.salvo_flash - delta * 2.2)
 	ai_side.salvo_flash = maxf(0.0, ai_side.salvo_flash - delta * 2.2)
+	player.life_flash = maxf(0.0, player.life_flash - delta * 0.9)
+	ai_side.life_flash = maxf(0.0, ai_side.life_flash - delta * 0.9)
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.TITLE and phase != Phase.LOBBY
@@ -646,8 +660,8 @@ func _process(delta: float) -> void:
 		_tick_pending(player, delta)
 		_tick_pressure(delta)
 		if net_active():
-			# The rival's queue is mirrored, not simulated — it drains on their
-			# machine, where their board actually lives.
+			# The rival's queue and lives are mirrored, not simulated — they run
+			# on their machine, where their board actually lives.
 			_push_state(delta)
 		else:
 			_tick_pending(ai_side, delta)
@@ -666,6 +680,9 @@ func _tick_danger(side: SideState) -> void:
 
 
 func _tick_pending(side: SideState, delta: float) -> void:
+	if side.respite > 0.0:
+		side.respite -= delta
+		return
 	for i in range(side.pending.size() - 1, -1, -1):
 		var p: Pending = side.pending[i]
 		p.timer -= delta
@@ -678,7 +695,7 @@ func _tick_pending(side: SideState, delta: float) -> void:
 			Sfx.play("land", 1.15 - 0.09 * p.tier,
 				(-1.0 if side == player else -7.0) + p.tier * 0.6)
 			if not fit:
-				_end_match(side)
+				_lose_life(side)
 				return
 
 
@@ -728,6 +745,36 @@ func _tick_ai(delta: float) -> void:
 		_play_word(ai_side, player, word)
 
 
+## Hitting the ceiling wipes the board and costs a life. The wipe is the whole
+## point: you get a clean board back, but the pressure clock never rewinds, so
+## the third life is played under conditions the first never saw.
+func _lose_life(side: SideState) -> void:
+	side.lives -= 1
+	side.chain = 0
+	side.chain_timer = 0.0
+	side.pending.clear()
+	side.respite = RESPITE
+	side.life_flash = 1.0
+	side.in_danger = false
+
+	# Take the whole board apart rather than blinking it out of existence.
+	side.board.detonate()
+	shake = maxf(shake, 0.7)
+
+	if side.lives <= 0:
+		_end_match(side)
+		return
+
+	var mine := side == player
+	Sfx.play("lose" if mine else "land", 1.0 if mine else 0.7, 0.0 if mine else -6.0)
+	if mine:
+		_bloom(Color("#ff6b6b"), 0.35)
+		_say("BOARD LOST — %d %s left" % [side.lives, "life" if side.lives == 1 else "lives"],
+			Color("#ff6b6b"))
+	_log("%s topped out — %d %s left" % [
+		side.label, side.lives, "life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
+
+
 func _end_match(loser: SideState) -> void:
 	phase = Phase.OVER
 	if net_active():
@@ -738,7 +785,7 @@ func _end_match(loser: SideState) -> void:
 		winner = "CPU" if loser == player else "YOU"
 	loser.board.shake = 1.0
 	Sfx.play("win" if winner == "YOU" else "lose")
-	_log("%s topped out — %s wins" % [loser.label, winner], Color("#ffd166"))
+	_log("%s is out of lives — %s wins" % [loser.label, winner], Color("#ffd166"))
 
 
 func _say(text: String, color: Color) -> void:
@@ -788,6 +835,34 @@ func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
 
 	var sub := "%d words · %d cleared" % [side.words_played, side.blocks_cleared]
 	_text_centered(_font, Vector2(center_x, BOARD_TOP - 20.0), sub, 13, Color("#7c88ad"))
+
+	# Lives, as pips beside the board name. The last one pulses, because being on
+	# your last life is the single most important thing on the screen.
+	var pip := 13.0
+	var gap := 7.0
+	var span := LIVES * pip + (LIVES - 1) * gap
+	for i in LIVES:
+		var r := Rect2(center_x - span * 0.5 + i * (pip + gap), BOARD_TOP - 76.0, pip, pip)
+		if i < side.lives:
+			var tint := side.accent
+			if side.lives == 1:
+				tint = Color("#ff6b6b") * Color(1, 1, 1,
+					0.65 + 0.35 * sin(Time.get_ticks_msec() / 150.0))
+			draw_rect(r, tint, true)
+		else:
+			draw_rect(r, Color("#2a3355"), true)
+			draw_rect(r, Color("#ff6b6b") * Color(1, 1, 1, 0.35), false, 1.0)
+
+	# The board is being put back together; say so rather than leaving it blank.
+	if side.respite > 0.0:
+		_text_centered(_font_bold, side.board.position + side.board.board_size() * 0.5,
+			"%d %s LEFT" % [side.lives, "LIFE" if side.lives == 1 else "LIVES"], 30,
+			Color("#ff6b6b") * Color(1, 1, 1, clampf(side.respite, 0.0, 1.0)))
+
+	if side.life_flash > 0.0:
+		var lr := Rect2(board_pos - Vector2(13, 13),
+			Vector2(bw + 26, WWBoard.ROWS * WWBoard.CELL + 26))
+		draw_rect(lr, Color("#ff6b6b") * Color(1, 1, 1, side.life_flash * 0.8), false, 4.0)
 
 	if side.flash > 0.0:
 		var r := Rect2(board_pos - Vector2(13, 13), Vector2(bw + 26, WWBoard.ROWS * WWBoard.CELL + 26))
@@ -1257,7 +1332,7 @@ func _lobby_backend_rect(i: int) -> Rect2:
 
 
 func _draw_rules_panel(size: Vector2) -> void:
-	var r := Rect2(size.x * 0.5 - 430.0, 194.0, 860.0, 178.0)
+	var r := Rect2(size.x * 0.5 - 430.0, 188.0, 860.0, 196.0)
 	_panel(r, Color("#111730"), Color(PLAYER_ACCENT, 0.22), 12.0)
 	var lines := [
 		"Type a word, fire with SPACE or ENTER. Its LAST letters brand a block on your rival.",
@@ -1266,9 +1341,10 @@ func _draw_rules_panel(size: Vector2) -> void:
 		"never lands. One word reaches one block per two letters: four AL blocks need ALIGNMENT.",
 		"Block size comes only from your chain: 1, 2, 3, 5, 7, 9 words for each step up.",
 		"A tenth word cashes the run in as a SALVO of single blocks and resets you to nothing.",
-		"Pause or fire a non-word and the run is gone. Top out and you lose.",
+		"Pause or fire a non-word and the run is gone.",
+		"Topping out costs one of THREE LIVES and wipes your board — it does not end the match.",
 	]
-	var y := 216.0
+	var y := 210.0
 	for l: String in lines:
 		_otext(_font, Vector2(size.x * 0.5, y), l, 14, Color("#aab4d4"))
 		y += 26.0
@@ -1309,7 +1385,7 @@ func _draw_gameover(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 640), "ENTER — rematch      1 / 2 / 3 — change difficulty      ESC — title",
+	_otext(_font, Vector2(cx, 640), "R — rematch      1 / 2 / 3 — change difficulty      V — versus      ESC — title",
 		13, Color("#4d5878"))
 
 
@@ -1403,6 +1479,9 @@ func _on_net_state(payload: Dictionary) -> void:
 	ai_side.words_played = int(payload.get("w", 0))
 	ai_side.blocks_cleared = int(payload.get("cl", 0))
 	ai_side.salvo_flash = float(payload.get("sf", 0.0))
+	ai_side.lives = int(payload.get("lv", LIVES))
+	ai_side.respite = float(payload.get("rs", 0.0))
+	ai_side.life_flash = float(payload.get("lf", 0.0))
 
 
 func _push_state(delta: float) -> void:
@@ -1422,7 +1501,8 @@ func _push_state(delta: float) -> void:
 		"b": block_specs, "p": pend_specs, "t": typed,
 		"c": player.chain, "ct": player.chain_timer, "cw": player.chain_window,
 		"w": player.words_played, "cl": player.blocks_cleared,
-		"sf": player.salvo_flash,
+		"sf": player.salvo_flash, "lv": player.lives, "rs": player.respite,
+		"lf": player.life_flash,
 	})
 
 
@@ -1479,7 +1559,7 @@ func _menu_buttons() -> Array:
 	elif phase == Phase.OVER:
 		var w := 264.0
 		out.append({
-			"rect": Rect2(cx - w - 10.0, 410.0, w, 96.0), "key": "ENTER",
+			"rect": Rect2(cx - w - 10.0, 410.0, w, 96.0), "key": "R",
 			"label": "Rematch", "sub": difficulty, "note": "", "rating": 0,
 			"accent": PLAYER_ACCENT, "action": "rematch"})
 		out.append({

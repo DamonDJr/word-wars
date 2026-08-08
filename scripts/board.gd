@@ -282,6 +282,22 @@ func prefixes() -> Array:
 	return out
 
 
+## Blow the whole board apart. Used when a player tops out and loses a life —
+## losing everything should look like losing everything, not like a screen wipe.
+func detonate() -> void:
+	for b: Blk in blocks:
+		_shatter(b)
+	blocks.clear()
+	shake = maxf(shake, 1.4)
+
+	# A ring from the middle to tie the individual bursts into one event.
+	var mid := board_size() * 0.5
+	var ring := _spawn(RING, mid, 0.7)
+	ring.size = Vector2(maxf(board_size().x, board_size().y) * 0.7, 0)
+	ring.color = Color("#ff6b6b")
+	_add_bit(ring)
+
+
 ## Replace this board's contents from a peer's serialized state. Existing blocks
 ## are reused where they match, so the mirror keeps its falling motion instead of
 ## teleporting, and anything that vanished shatters — a rival's clear should read
