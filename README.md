@@ -15,7 +15,10 @@ keep firing without breaking your chain and the hits climb, up to a 4x3 that
 wants nine clean words in a row. Miss once — a pause, or a word that does not
 qualify — and you start again from nothing.
 
-Godot 4.7, GDScript, no external addons.
+Godot 4.7, GDScript. Vendors two small MIT addons for networking.
+
+**[Download a build](https://github.com/DamonDJr/word-wars/releases/latest)** —
+Windows and Linux, one self-contained executable each.
 
 ## Running it
 
