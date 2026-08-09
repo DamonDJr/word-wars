@@ -12,8 +12,8 @@ signal peer_left(reason: String)
 signal room_changed
 signal match_begin
 signal rematch_agreed
-signal attack_received(word: String, tier: int)
-signal salvo_received(word: String, count: int)
+signal attack_received(word: String, tier: int, victim: int)
+signal salvo_received(word: String, count: int, victim: int)
 signal pressure_received(source: String)
 signal opponent_topped_out
 signal state_received(payload: Dictionary)
@@ -30,6 +30,10 @@ const NORAY_PORT := 8890
 
 ## Four boards at once means the host takes three challengers.
 const MAX_PEERS := 3
+## Boards are identified by "entity id": a real peer id for a person, a negative
+## number for a bot. Bots live on the host, which simulates them and speaks for
+## them, so every board still has exactly one machine in charge of it.
+const SEATS := 4
 
 var backend: int = Backend.ROOM
 var room_code := ""          # our own code, shown when hosting
@@ -44,6 +48,10 @@ var my_name := "PLAYER"
 var my_ready := false
 ## peer id -> {"name": String, "ready": bool}. Everyone in the room but you.
 var roster: Dictionary = {}
+## How many CPUs the host is adding to fill the room out.
+var bot_count := 0
+## Agreed seating for the current match: [{"id": int, "name": String}, ...].
+var seating: Array = []
 
 ## Kept so the one-on-one code paths still read naturally.
 var peer_name: String:
@@ -263,10 +271,42 @@ func leave() -> void:
 	is_host = false
 	connected = false
 	roster.clear()
+	seating.clear()
+	bot_count = 0
 	room_code = ""
 	_host_code = ""
 	_relay_tried = false
 	my_ready = false
+
+
+## Free chairs the host can drop a CPU into.
+func free_seats() -> int:
+	return maxi(0, SEATS - 1 - roster.size())
+
+
+func set_bots(n: int) -> void:
+	if not is_host:
+		return
+	bot_count = clampi(n, 0, free_seats())
+	net_bots.rpc(bot_count)
+	room_changed.emit()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func net_bots(n: int) -> void:
+	bot_count = n
+	room_changed.emit()
+
+
+## The host lays out who sits where, once, and tells everyone. Clients cannot
+## work this out for themselves any more: bots have no peer id to sort by.
+func _build_seating() -> Array:
+	var out: Array = [{"id": multiplayer.get_unique_id(), "name": my_name}]
+	for id in peer_ids():
+		out.append({"id": id, "name": String(roster[id]["name"])})
+	for i in bot_count:
+		out.append({"id": -(i + 1), "name": "CPU %d" % (i + 1)})
+	return out
 
 
 func both_ready() -> bool:
@@ -279,7 +319,8 @@ func set_ready(value: bool) -> void:
 		net_ready.rpc(value)
 	room_changed.emit()
 	if is_host and everyone_ready():
-		net_begin.rpc(peer_ids())
+		seating = _build_seating()
+		net_begin.rpc(seating)
 		match_begin.emit()
 
 
@@ -380,12 +421,14 @@ func net_ready(value: bool) -> void:
 		roster[id]["ready"] = value
 	room_changed.emit()
 	if is_host and everyone_ready():
-		net_begin.rpc(peer_ids())
+		seating = _build_seating()
+		net_begin.rpc(seating)
 		match_begin.emit()
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_begin(_ids: Array) -> void:
+func net_begin(plan: Array) -> void:
+	seating = plan
 	match_begin.emit()
 
 
@@ -407,14 +450,24 @@ func request_rematch() -> void:
 
 # ------------------------------------------------------------------ match packets
 
-func send_attack(to_peer: int, word: String, tier: int) -> void:
-	if connected and roster.has(to_peer):
-		net_attack.rpc_id(to_peer, word, tier)
+## `victim` is an entity id. A person receives it directly; a bot's mail goes to
+## the host, which owns it.
+func send_attack(victim: int, word: String, tier: int) -> void:
+	if not connected:
+		return
+	if victim > 0:
+		net_attack.rpc_id(victim, word, tier, 0)
+	else:
+		net_attack.rpc_id(1, word, tier, victim)
 
 
-func send_salvo(to_peer: int, word: String, count: int) -> void:
-	if connected and roster.has(to_peer):
-		net_salvo.rpc_id(to_peer, word, count)
+func send_salvo(victim: int, word: String, count: int) -> void:
+	if not connected:
+		return
+	if victim > 0:
+		net_salvo.rpc_id(victim, word, count, 0)
+	else:
+		net_salvo.rpc_id(1, word, count, victim)
 
 
 func send_pressure(source: String) -> void:
@@ -433,13 +486,13 @@ func send_state(payload: Dictionary) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_attack(word: String, tier: int) -> void:
-	attack_received.emit(word, tier)
+func net_attack(word: String, tier: int, victim: int) -> void:
+	attack_received.emit(word, tier, victim)
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_salvo(word: String, count: int) -> void:
-	salvo_received.emit(word, count)
+func net_salvo(word: String, count: int, victim: int) -> void:
+	salvo_received.emit(word, count, victim)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -455,7 +508,9 @@ func net_lost() -> void:
 ## Cosmetic mirror. Unreliable — a lost frame is a lost frame, not a lost block.
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func net_state(payload: Dictionary) -> void:
-	payload["from"] = multiplayer.get_remote_sender_id()
+	# "own" lets the host speak for its bots; otherwise it is just the sender.
+	if not payload.has("own"):
+		payload["own"] = multiplayer.get_remote_sender_id()
 	state_received.emit(payload)
 
 

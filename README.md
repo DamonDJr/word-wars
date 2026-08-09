@@ -75,9 +75,20 @@ whoever you were hitting drops out.
 A duel still looks exactly like it did: two full-size boards facing each other,
 no aim marker, because with one rival there is nothing to choose between.
 
-Over the network, each peer renders itself as board 0 and sorts everyone else
-into the rival slots by peer id, so all four clients agree on who is board 1
-without anyone being told. Attacks are addressed to a peer rather than a slot.
+**A versus room can be topped up with CPUs.** If only two people show up, the
+host adds bots with `+` until the table is full, and everyone plays the same
+free-for-all. Bots show in the room as COMPUTER seats, already ready.
+
+Every board needs exactly one machine in charge of it, so the **host owns the
+bots**: it runs their word search, simulates their boards and broadcasts their
+state like any other player. Boards are identified by an *entity id* — a real
+peer id for a person, a negative number for a bot — and attacks are addressed to
+that, so a human hitting a bot posts to the host, which delivers it. Anything
+aimed at a board the sending machine already owns skips the network entirely.
+
+The host also lays out the seating once and tells everyone, because clients can
+no longer work it out for themselves: bots have no peer id to sort by. Each
+client then places itself at board 0 and keeps the host's order for the rest.
 
 ## How a turn resolves
 

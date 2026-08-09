@@ -354,6 +354,11 @@ func start_match(diff: String, bots: int = 1) -> void:
 	_log("%s — get ready" % diff, Color("#c8d3f5"))
 
 
+## Boards this machine is responsible for: your own, and any bots you run.
+func _owned_here(s: SideState) -> bool:
+	return s.is_local or s.bot != null
+
+
 ## What a given board is mid-way through typing: your own line, a bot's progress,
 ## or whatever a peer last told us.
 func _typing_of(s: SideState) -> String:
@@ -441,6 +446,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_activate("ready" if Link.connected else "join")
 			KEY_ESCAPE:
 				_activate("leave" if Link.connected else "title")
+			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD: _activate("addbot")
+			KEY_MINUS, KEY_KP_SUBTRACT: _activate("dropbot")
 			KEY_TAB:
 				lobby_field = 1 - lobby_field
 				Sfx.play("key", 1.2)
@@ -601,7 +608,7 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var out_tier := clampi(_chain_tier(attacker.chain) + combo, 0, TIERS.size() - 1)
 
 	if out_tier >= 0:
-		if net_active():
+		if net_active() and not _owned_here(defender):
 			# The defender mints the stamp; only they know their own board.
 			Link.send_attack(defender.peer_id, word, out_tier)
 			defender.flash = 1.0
@@ -647,7 +654,7 @@ func _voice_attack(attacker: SideState, cleared: int, intercepted: int, out_tier
 func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: int) -> void:
 	var power := SALVO_BLOCKS + combo
 
-	if net_active():
+	if net_active() and not _owned_here(defender):
 		Link.send_salvo(defender.peer_id, word, power)
 		defender.flash = 1.0
 	else:
@@ -838,8 +845,12 @@ func _process(delta: float) -> void:
 		_tick_pending(player, delta)
 		_tick_pressure(delta)
 		if net_active():
-			# Rivals' boards are mirrored, not simulated — they run on their own
-			# machines, where those boards actually live.
+			# Other people's boards are mirrored, not simulated. Bots are the
+			# exception: the host runs them like any local opponent.
+			for s: SideState in sides:
+				if s.bot != null and s.in_match and s.alive:
+					_tick_pending(s, delta)
+			_tick_bots(delta)
 			_push_state(delta)
 		else:
 			for s: SideState in sides:
@@ -1503,21 +1514,24 @@ func _draw_lobby_setup(cx: float) -> void:
 ## Once connected: everyone in the room and who has readied up.
 func _draw_room(cx: float) -> void:
 	var ids := Link.peer_ids()
-	var count := 1 + ids.size()
+	var count := 1 + ids.size() + Link.bot_count
 	var w := 250.0 if count > 2 else 320.0
 	var gap := 16.0
 	var span := count * w + (count - 1) * gap
 
 	for i in count:
 		var mine := i == 0
-		var who: String = Link.my_name if mine else String(Link.roster[ids[i - 1]]["name"])
-		var set_up: bool = Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"])
+		var is_bot := i > ids.size()
+		var who: String = Link.my_name if mine else (
+			"CPU %d" % (i - ids.size()) if is_bot else String(Link.roster[ids[i - 1]]["name"]))
+		var set_up: bool = true if is_bot else (
+			Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"]))
 		var tint: Color = SLOT_ACCENTS[i % SLOT_ACCENTS.size()]
 		var r := Rect2(cx - span * 0.5 + i * (w + gap), 232.0, w, 128.0)
 		_panel(r, Color("#141b33"), Color(tint, 0.7 if set_up else 0.25), 12.0,
 			3.0 if set_up else 2.0)
 		_otext(_font, Vector2(r.get_center().x, r.position.y + 26.0),
-			"YOU" if mine else "CHALLENGER", 11, Color("#7c88ad"))
+			"YOU" if mine else ("COMPUTER" if is_bot else "CHALLENGER"), 11, Color("#7c88ad"))
 		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 60.0),
 			who.to_upper(), 26, w - 26.0, Color("#e6ecff"))
 		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 98.0),
@@ -1680,21 +1694,30 @@ func _net_setup() -> void:
 
 
 func _on_net_match_begin() -> void:
-	var ids := Link.peer_ids()
-	# Pass the peer count as the roster size; start_match makes no bots while a
-	# network match is live, so this only sizes the layout.
-	start_match("Versus", ids.size())
-	# Map peers onto the rival slots in a fixed order, so both ends agree on who
-	# is board 1 even though each of us is our own board 0.
-	for i in ids.size():
+	var plan: Array = Link.seating
+	var me := multiplayer.get_unique_id()
+	# You are always your own board 0; the rest keep the host's order.
+	var others: Array = []
+	for seat: Dictionary in plan:
+		if int(seat["id"]) != me:
+			others.append(seat)
+
+	start_match("Versus", others.size())
+	for i in others.size():
 		if i + 1 >= SLOTS:
 			break
 		var s: SideState = sides[i + 1]
+		var seat: Dictionary = others[i]
 		s.in_match = true
 		s.alive = true
-		s.peer_id = ids[i]
-		s.bot = null
-		s.label = String(Link.roster[ids[i]]["name"])
+		s.peer_id = int(seat["id"])
+		s.label = String(seat["name"])
+		# Only the host actually runs the bots; everyone else just watches them.
+		if s.peer_id < 0 and Link.is_host:
+			s.bot = AiOpponent.new()
+			s.bot.configure(difficulty)
+		else:
+			s.bot = null
 	_layout_boards()
 	_aim_everyone()
 
@@ -1725,36 +1748,49 @@ func _on_net_rematch() -> void:
 	_hover_action = ""
 
 
-func _on_net_attack(word: String, tier: int) -> void:
+func _on_net_attack(word: String, tier: int, victim: int) -> void:
+	var side := _side_for_entity(victim)
+	if side == null:
+		return
 	var p := Pending.new()
 	p.tier = clampi(tier, 0, TIERS.size() - 1)
-	p.prefix = _mint_stamp(word, STAMP_WANT, player)
+	p.prefix = _mint_stamp(word, STAMP_WANT, side)
 	p.cells = _cells(p.tier)
 	p.timer = DROP_DELAY
-	player.pending.append(p)
-	player.flash = 1.0
+	side.pending.append(p)
+	side.flash = 1.0
 
 
-func _on_net_salvo(word: String, count: int) -> void:
+func _on_net_salvo(word: String, count: int, victim: int) -> void:
+	var side := _side_for_entity(victim)
+	if side == null:
+		return
 	for i in mini(count, 40):
 		var p := Pending.new()
 		p.tier = 0
-		p.prefix = _mint_stamp(word, STAMP_WANT, player)
+		p.prefix = _mint_stamp(word, STAMP_WANT, side)
 		p.cells = 1
 		p.timer = DROP_DELAY + i * 0.10
-		player.pending.append(p)
-	player.flash = 1.0
-	Sfx.play("salvo", 1.0, -6.0)
+		side.pending.append(p)
+	side.flash = 1.0
+	if side == player:
+		Sfx.play("salvo", 1.0, -6.0)
+
+
+## Whose board a packet is about. Zero means "mine"; a negative id is one of the
+## bots this machine is running.
+func _side_for_entity(id: int) -> SideState:
+	if id == 0:
+		return player
+	for s: SideState in sides:
+		if s.in_match and s.peer_id == id:
+			return s
+	return null
 
 
 func _on_net_state(payload: Dictionary) -> void:
-	var from := int(payload.get("from", 0))
-	var ai_side: SideState = null
-	for s: SideState in sides:
-		if s.peer_id == from and s.in_match:
-			ai_side = s
-			break
-	if ai_side == null:
+	var ai_side := _side_for_entity(int(payload.get("own", 0)))
+	if ai_side == null or ai_side == player:
 		return
 	ai_side.board.mirror_blocks(payload.get("b", []))
 
@@ -1786,20 +1822,28 @@ func _push_state(delta: float) -> void:
 		return
 	_net_state_timer = 1.0 / NET_STATE_HZ
 
+	Link.send_state(_state_of(player, multiplayer.get_unique_id()))
+	# The host also speaks for every bot at the table.
+	for s: SideState in sides:
+		if s.bot != null and s.in_match:
+			Link.send_state(_state_of(s, s.peer_id))
+
+
+func _state_of(who: SideState, own: int) -> Dictionary:
 	var block_specs: Array = []
-	for b in player.board.blocks:
+	for b in who.board.blocks:
 		block_specs.append([b.gx, b.gy, b.w, b.h, b.tier, b.prefix])
 	var pend_specs: Array = []
-	for p: Pending in player.pending:
+	for p: Pending in who.pending:
 		pend_specs.append([p.tier, p.prefix, p.timer])
 
-	Link.send_state({
-		"b": block_specs, "p": pend_specs, "t": typed,
-		"c": player.chain, "ct": player.chain_timer, "cw": player.chain_window,
-		"w": player.words_played, "cl": player.blocks_cleared,
-		"sf": player.salvo_flash, "lv": player.lives, "rs": player.respite,
-		"lf": player.life_flash, "al": player.alive,
-	})
+	return {
+		"own": own, "b": block_specs, "p": pend_specs, "t": _typing_of(who),
+		"c": who.chain, "ct": who.chain_timer, "cw": who.chain_window,
+		"w": who.words_played, "cl": who.blocks_cleared,
+		"sf": who.salvo_flash, "lv": who.lives, "rs": who.respite,
+		"lf": who.life_flash, "al": who.alive,
+	}
 
 
 # ----------------------------------------------------------------- menu pieces
@@ -1833,6 +1877,16 @@ func _menu_buttons() -> Array:
 			"accent": Color("#c77dff"), "action": "versus"})
 	elif phase == Phase.LOBBY:
 		if Link.connected:
+			if Link.is_host and Link.free_seats() > 0:
+				out.append({
+					"rect": Rect2(cx + 186.0, 436.0, 150.0, 74.0), "key": "+",
+					"label": "Add CPU", "sub": "", "note": "", "rating": 0,
+					"accent": Color("#ffd166"), "action": "addbot"})
+			if Link.is_host and Link.bot_count > 0:
+				out.append({
+					"rect": Rect2(cx - 336.0, 436.0, 150.0, 74.0), "key": "-",
+					"label": "Drop CPU", "sub": "", "note": "", "rating": 0,
+					"accent": Color("#8d99bd"), "action": "dropbot"})
 			out.append({
 				"rect": Rect2(cx - 170.0, 436.0, 340.0, 74.0), "key": "ENTER",
 				"label": "Not ready" if Link.my_ready else "Ready up",
@@ -2071,6 +2125,12 @@ func _activate(action: String) -> void:
 	elif action == "join":
 		Link.join(lobby_backend, join_ip)
 		Sfx.play("count")
+	elif action == "addbot":
+		Link.set_bots(Link.bot_count + 1)
+		Sfx.play("count", 1.2)
+	elif action == "dropbot":
+		Link.set_bots(Link.bot_count - 1)
+		Sfx.play("back")
 	elif action == "ready":
 		Link.set_ready(not Link.my_ready)
 		Sfx.play("count", 1.2 if Link.my_ready else 0.9)
