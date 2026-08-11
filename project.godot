@@ -22,6 +22,7 @@ WordBank="*res://scripts/word_bank.gd"
 Sfx="*res://scripts/audio.gd"
 Noray="*res://addons/netfox.noray/noray.gd"
 PacketHandshake="*res://addons/netfox.noray/packet-handshake.gd"
+Music="*res://scripts/music.gd"
 Link="*res://scripts/net_link.gd"
 
 [netfox]

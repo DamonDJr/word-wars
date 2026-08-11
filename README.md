@@ -403,6 +403,45 @@ Reaching chain nine swaps the status line for a pulsing `NEXT HIT IS A SALVO`,
 and firing it whites out the chain meter before it empties. A payoff that big
 should not arrive unannounced.
 
+## Music
+
+Six tracks in `music/`, driven by `scripts/music.gd` from whatever is happening:
+
+| Track | When |
+|:--|:--|
+| `menuBGM` | title screen and lobby |
+| `mainTheme` | a match in progress |
+| `critcalTheme` | your stack reaches row 6 — over half full |
+| `cluchMoment` | row 3 — one bad drop from topping out |
+| `deathSound` | your last life goes |
+| `victoryTheme` | you win the match |
+
+It is meant to sit **under** the game, not compete with it. The keystrokes and
+block impacts are the feedback you actually play on, so the bed runs at
+`MUSIC_DB` (-17) with a per-track `TRIM`, because the files are not mastered to
+matching loudness and a sting arriving hot is exactly the jolt worth avoiding.
+Two players crossfade over three seconds so a change reads as the mood shifting
+rather than a cut; the stings come in quicker at `STING_FADE`.
+
+Escalation is instant — the music should arrive *with* the danger. Calming back
+down has to wait out `MUSIC_HOLD` (4s), because a board that dips below the line
+for half a second has not really recovered, and swapping straight back just
+sounds indecisive.
+
+Being knocked out of a match that is still running plays the death sting and then
+hands back to the main theme, since you are still watching.
+
+`F1` silences music and effects together. To check the bank loads, loops and
+crossfades:
+
+```bash
+godot --headless --script res://tools/musiccheck.gd
+```
+
+Two files carry typos from when they were added — `cluchMoment.mp3` and
+`critcalTheme.mp3`. The lookup table in `music.gd` maps clean keys onto the real
+filenames, so renaming them later is a one-line edit.
+
 ## Audio
 
 There are no sound files in this project. Every effect is synthesised in

@@ -29,6 +29,13 @@ if ! "$OUT/linux/WordWars.x86_64" --headless --quit-after 120 2>&1 | grep -q "Wo
 	exit 1
 fi
 
+# Music is imported, so unlike the word lists it ships automatically — but a
+# missing or renamed file only shows up as a warning at runtime, so check.
+if "$OUT/linux/WordWars.x86_64" --headless --quit-after 120 2>&1 | grep -q "Music: missing track"; then
+	echo "FAILED: a music track did not make it into the build." >&2
+	exit 1
+fi
+
 cp packaging/README-linux.txt "$OUT/linux/README.txt"
 cp packaging/README-windows.txt "$OUT/windows/README.txt"
 

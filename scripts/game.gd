@@ -69,6 +69,13 @@ const SALVO_BLOCKS := 10
 ## Topping out costs a life and wipes your board rather than ending the match.
 ## Ambient pressure keeps climbing across lives, so the board you get back is
 ## never as forgiving as the one you started with.
+## How full your board has to be before the soundtrack escalates, measured in
+## empty rows above the stack. `_MUSIC_HOLD` stops it flapping between tracks
+## every time a block lands and clears.
+const MUSIC_CRITICAL_ROWS := 6
+const MUSIC_CLUTCH_ROWS := 3
+const MUSIC_HOLD := 4.0
+
 const LIVES := 3
 ## Nothing lands for a moment after a wipe, so you get to type before it rains.
 const RESPITE := 2.5
@@ -181,6 +188,8 @@ var lobby_field := 1        # 0 = name, 1 = address
 var lobby_backend := 0      # Link.Backend
 var countdown := 0.0
 var _last_count_beep := -1
+var _music_key := ""
+var _music_hold := 0.0
 
 var _font: Font
 var _font_bold: Font
@@ -435,6 +444,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	# Not a letter key — every one of those is needed for typing.
 	if k.keycode == KEY_F1:
+		Music.toggle_mute()
 		_say("sound off" if Sfx.toggle_mute() else "sound on", Color("#8892b0"))
 		Sfx.play("back", 1.4)
 		return
@@ -860,8 +870,52 @@ func _process(delta: float) -> void:
 		# Somebody may have just been knocked out.
 		_aim_everyone()
 
+	_tick_music(delta)
 	queue_redraw()
 	_overlay.queue_redraw()
+
+
+## Picks the bed from what is actually happening. Escalation is instant so the
+## music arrives with the danger; calming back down has to wait out `MUSIC_HOLD`,
+## because a board that dips below the line for half a second has not really
+## recovered and swapping back would just sound indecisive.
+func _tick_music(delta: float) -> void:
+	_music_hold = maxf(0.0, _music_hold - delta)
+
+	var want := "menu"
+	match phase:
+		Phase.TITLE, Phase.LOBBY:
+			want = "menu"
+		Phase.COUNTDOWN:
+			want = "main"
+		Phase.OVER:
+			want = "victory" if winner == "YOU" else "death"
+		Phase.PLAY:
+			want = "main"
+			if player.alive and player.respite <= 0.0:
+				var headroom := player.board.stack_top()
+				if headroom < MUSIC_CLUTCH_ROWS:
+					want = "clutch"
+				elif headroom < MUSIC_CRITICAL_ROWS:
+					want = "critical"
+
+	if want == _music_key:
+		return
+	# Rising tension takes hold at once; relaxing has to earn it.
+	var rank := {"main": 0, "critical": 1, "clutch": 2}
+	if rank.has(want) and rank.has(_music_key) \
+			and rank[want] < rank[_music_key] and _music_hold > 0.0:
+		return
+
+	_music_key = want
+	_music_hold = MUSIC_HOLD
+	match want:
+		"death":
+			Music.play("death", false)
+		"victory":
+			Music.play("victory", false)
+		_:
+			Music.play(want)
 
 
 ## Sound the alarm once on the way into the red, not every frame you sit there.
@@ -977,6 +1031,9 @@ func _lose_life(side: SideState) -> void:
 		elif side == player:
 			# You are out, but the match is not: keep watching.
 			_say("you are out — %d still standing" % standing.size(), Color("#ff6b6b"))
+			Music.play("death", false, "main")
+			_music_key = "main"
+			_music_hold = MUSIC_HOLD
 		return
 
 	var mine := side == player
