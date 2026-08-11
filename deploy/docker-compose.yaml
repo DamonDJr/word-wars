@@ -1,0 +1,26 @@
+# noray — the orchestration server behind Word Wars' room codes.
+#
+#   cd deploy && docker compose up -d
+#
+# This is upstream's own compose file with our environment split into a separate
+# file. noray is MIT, from https://github.com/foxssake/noray.
+#
+# Host networking is not a shortcut here. noray reserves a two-thousand-port UDP
+# range for relaying, and publishing that many ports individually is slow enough
+# that the container looks hung while Docker works through them. On the host
+# network there is nothing to publish. The `ports` block below is therefore
+# ignored — it is kept as documentation of what has to be reachable, because
+# that is exactly what you have to open in the VPS firewall by hand.
+services:
+  noray:
+    image: ghcr.io/foxssake/noray:main
+    container_name: noray-server
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - noray.env
+    ports:
+      - "8890:8890"                   # TCP — clients connect here
+      - "8891:8891"                   # HTTP — Prometheus metrics, keep private
+      - "8809:8809/udp"               # UDP — remote registration
+      - "49152-51200:49152-51200/udp" # UDP — relay pool

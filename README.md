@@ -379,7 +379,37 @@ back to relaying through itself when their networks refuse to cooperate. The
 result is an ordinary `ENetMultiplayerPeer`, so nothing downstream changed.
 
 `NORAY_HOST` in `net_link.gd` points at foxssake's public server, which is fine
-for testing. [Run your own][norayserver] before shipping.
+for testing. [Run your own][norayserver] before shipping — see
+[`deploy/`](deploy/README.md), which has a compose file and the checklist.
+
+#### How long a code is, and why
+
+The code's shape comes from the server, not the game. The public one hands out
+nanoid's default — 21 characters of mixed case, `eYQ43-0zsuCDyirJScs1M` — which
+is about 126 bits of entropy for something two people read to each other over a
+call, and is the reason the lobby has to warn that codes are case-sensitive. A
+server you own can be told `NORAY_OID_LENGTH=6` and a single-case alphabet, and
+the same room becomes `K7Q M4X`.
+
+`CODE_ALPHABET` in `net_link.gd` is the client half of that, and **must** match
+the server's `NORAY_OID_CHARSET`. Empty means "the server's codes are
+case-sensitive, so pass them through exactly as typed" — the only safe default,
+because only the server knows whether it issued `k` or `K`. Fill it in and the
+lobby starts upper-casing what the player types, stripping the hyphens and
+spaces people add when reading a code aloud, grouping the code in threes rather
+than fives, and setting it large enough to read off a screen. Setting it against
+a mixed-case server would break every join, confidently.
+
+Six characters of a 32-letter alphabet carries the same entropy as the five
+upstream suggest on their 64-letter one, and codes only exist while their host is
+connected — noray drops them from its registry the moment the socket closes — so
+the space only has to cover rooms open at once, not rooms ever opened.
+
+Hosting is **CTRL+H**, not `H`. A bare letter cannot be a shortcut while a text
+field owns the keyboard: `H` is an ordinary character in a room code, and about
+half of the public server's codes contain one, so the old binding quietly made
+those codes impossible to type by hand. It went unnoticed because the
+instructions tell people to paste.
 
 **Epic was the wrong tool here.** EOS lobbies are not reachable from a game
 client without the SDK — the Lobby Interface needs a handle from the Platform

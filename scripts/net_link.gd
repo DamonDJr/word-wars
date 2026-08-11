@@ -28,6 +28,19 @@ const CONFIG_PATH := "user://player.cfg"
 const NORAY_HOST := "tomfol.io"
 const NORAY_PORT := 8890
 
+## Mirrors the orchestration server's NORAY_OID_CHARSET, and must not disagree
+## with it. Leave it empty while NORAY_HOST points at a server handing out the
+## nanoid default — 21 characters of mixed case, where only the server knows
+## which of `k` and `K` it issued, so the only safe thing a client can do is pass
+## a code through exactly as typed.
+##
+## Set it to the single-case alphabet you configured and the lobby starts
+## tidying up what the player types: upper-casing it, and dropping the hyphens
+## and spaces people add when reading a code out. That is sound only because
+## upper-casing a single-case alphabet cannot lose information. See
+## `deploy/README.md` for the server side and the rest of the checklist.
+const CODE_ALPHABET := ""
+
 ## Four boards at once means the host takes three challengers.
 const MAX_PEERS := 3
 ## Boards are identified by "entity id": a real peer id for a person, a negative
@@ -158,6 +171,25 @@ func join(which: int, address: String) -> void:
 
 # ------------------------------------------------------------------ room codes
 
+## True when the server behind `NORAY_HOST` issues codes a person can read out.
+## The lobby asks this rather than measuring a code's length, because the answer
+## has to be the same before any code exists.
+func short_codes() -> bool:
+	return CODE_ALPHABET != ""
+
+
+## Accepts a code however it arrives. Whitespace always goes — one chunked for
+## reading, or pasted with a stray newline, is still the same code. Hyphens and
+## case are only touched when the alphabet says touching them is safe: `-` is a
+## real character in nanoid's default alphabet, so stripping it there would turn
+## a valid code into one that does not exist.
+func clean_code(raw: String) -> String:
+	var out := raw.strip_edges().replace(" ", "").replace("\t", "").replace("\n", "")
+	if not short_codes():
+		return out
+	return out.replace("-", "").to_upper()
+
+
 ## Reach the orchestration server and claim a code plus a punched-open UDP port.
 ## Both roles need this before anything else can happen.
 func _reach_noray() -> bool:
@@ -207,14 +239,14 @@ func _host_by_code() -> void:
 func _join_by_code(code: String) -> void:
 	if not await _reach_noray():
 		return
-	# Accept a code however it arrives — chunked off the screen, or pasted with
-	# stray whitespace around it.
-	_host_code = code.strip_edges().replace(" ", "")
+	_host_code = clean_code(code)
 	_relay_tried = false
 	active = true
 	is_host = false
 	_join_countdown = ROOM_JOIN_TIMEOUT
-	status = "knocking on %s" % _host_code.to_upper()
+	# Show the code as it is actually being sent. Prettying it up here would mean
+	# the one thing on screen during a failed join is not what went out.
+	status = "knocking on %s" % _host_code
 	room_changed.emit()
 	Noray.connect_nat(_host_code)
 

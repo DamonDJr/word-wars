@@ -520,20 +520,29 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				Sfx.play("key", 1.2)
 			KEY_V when k.ctrl_pressed:
 				if not Link.connected and lobby_field == 1:
-					join_ip = DisplayServer.clipboard_get().strip_edges().substr(0, 48)
+					var pasted := DisplayServer.clipboard_get().strip_edges().substr(0, 48)
+					# A code copied out of a chat window arrives chunked for
+					# reading. Addresses are pasted exactly as they came.
+					if lobby_backend == Link.Backend.ROOM:
+						pasted = Link.clean_code(pasted)
+					join_ip = pasted
 					Sfx.play("count", 1.2)
 			KEY_C when k.ctrl_pressed:
 				if Link.room_code != "":
 					DisplayServer.clipboard_set(Link.room_code)
 					Link.status = "code copied to your clipboard"
 					Sfx.play("count", 1.3)
+			# Hosting is CTRL+H, not H. A bare letter cannot be a shortcut while
+			# a text field has the keyboard: H is a perfectly ordinary character
+			# in a room code, and swallowing it would make any code containing
+			# one impossible to type by hand — which is most of them.
+			KEY_H when k.ctrl_pressed:
+				if not Link.connected:
+					_activate("host")
 			KEY_BACKSPACE:
 				_lobby_edit("", true)
 			_:
 				if Link.connected:
-					return
-				if k.keycode == KEY_H and lobby_field != 0:
-					_activate("host")
 					return
 				if k.unicode > 0:
 					_lobby_edit(String.chr(k.unicode), false)
@@ -1699,17 +1708,26 @@ func _draw_lobby_setup(cx: float) -> void:
 
 		var body: String = Link.my_name if is_name else join_ip
 		var tint := Color("#e6ecff")
+		var body_size := 22
 		if not is_name and hosting_code:
-			# Show the code to read out, not the field you type into.
+			# Show the code to read out, not the field you type into. A short one
+			# has room to be set large, which is most of the point of shortening
+			# it — this is the thing somebody is squinting at over a call.
 			body = _chunk_code(Link.room_code)
 			tint = Color("#ffd166")
 			focused = false
+			if Link.short_codes():
+				body_size = 34
 		_text_fit_overlay(_font_bold, r.get_center(), body + (caret if focused else ""),
-			22, r.size.x - 24.0, tint)
+			body_size, r.size.x - 24.0, tint)
 
 	var hint := "click a field to type in it · TAB switches · CTRL+V pastes"
 	if Link.is_host and Link.room_code != "":
 		hint = "click the code to copy it · they paste with CTRL+V"
+	elif lobby_backend == Link.Backend.ROOM and not Link.short_codes():
+		# Worth the line while codes are 21 mixed-case characters: getting the
+		# case wrong is the most likely reason a join goes nowhere.
+		hint = "codes are case-sensitive · CTRL+V pastes · TAB switches field"
 	_otext(_font, Vector2(cx, 330.0), hint, 12, Color("#5d6a92"))
 
 	# Backend picker. Room codes go through the lobby server; direct dials an address.
@@ -1786,18 +1804,30 @@ func _lobby_edit(ch: String, backspace: bool) -> void:
 		elif ch.length() == 1 and join_ip.length() < 40 and (
 				ch.is_valid_int() or ch == "." or ch == ":" or ch == "-"
 				or (ch.to_lower() >= "a" and ch.to_lower() <= "z")):
-			join_ip += ch
+			# On a single-case alphabet the field can show what will actually be
+			# sent, instead of letting somebody type a code in a case that is
+			# about to be corrected out from under them on submit. Addresses are
+			# left alone — hostnames are not ours to shout.
+			if lobby_backend == Link.Backend.ROOM and Link.short_codes():
+				join_ip += ch.to_upper()
+			else:
+				join_ip += ch
 		else:
 			return
 	Sfx.play("back" if backspace else "key", randf_range(0.92, 1.10))
 
 
+## Groups a code for reading aloud. Short single-case codes split in threes,
+## which is how people say them; long mixed-case ones split in fives.
+##
+## Never change the case here. On the default alphabet codes are case-sensitive,
+## and a player reading an upper-cased one off the screen would type something
+## that does not exist. On a single-case alphabet there is nothing to change.
 func _chunk_code(code: String) -> String:
-	# Never change the case: codes are case-sensitive, and a player reading an
-	# upper-cased one off the screen would type something that does not exist.
+	var every := 3 if Link.short_codes() else 5
 	var out := ""
 	for i in code.length():
-		if i > 0 and i % 5 == 0:
+		if i > 0 and i % every == 0:
 			out += " "
 		out += code[i]
 	return out
@@ -2131,7 +2161,7 @@ func _menu_buttons() -> Array:
 				"accent": Color("#8d99bd"), "action": "leave"})
 		else:
 			out.append({
-				"rect": Rect2(cx - 330.0, 448.0, 320.0, 66.0), "key": "H",
+				"rect": Rect2(cx - 330.0, 448.0, 320.0, 66.0), "key": "CTRL+H",
 				"label": "Host", "sub": "", "note": "", "rating": 0,
 				"accent": PLAYER_ACCENT, "action": "host"})
 			out.append({
