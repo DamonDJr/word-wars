@@ -17,8 +17,9 @@ qualify — and you start again from nothing.
 
 Godot 4.7, GDScript. Vendors two small MIT addons for networking.
 
-**[Download a build](https://github.com/DamonDJr/word-wars/releases/latest)** —
-Windows and Linux, one self-contained executable each.
+**[Download the launcher](https://github.com/DamonDJr/word-wars/releases/latest)**
+— it fetches the game and keeps it current, so players download once and never
+again. The game is also there as a plain zip if you would rather not.
 
 ## Running it
 
@@ -54,6 +55,30 @@ Linux binary and checking the word count, instead of assuming.
 
 The Windows build is not code-signed, so SmartScreen will warn about an unknown
 publisher.
+
+## The launcher
+
+`launcher/` is a separate Godot project that checks the GitHub releases API,
+downloads the build for the current platform if it is newer than what is
+installed, unpacks it and runs it. Players keep the launcher; everything after
+that updates itself.
+
+It has to be a separate program. Nothing can overwrite a running executable on
+Windows, so the thing doing the updating must not be the thing being updated —
+which also means the launcher cannot update *itself*. It is deliberately dumb and
+stable for that reason: it knows a repo name, an asset naming convention and
+nothing else, so it should never need to change.
+
+- The game installs to the launcher's own `user://` folder, so there are no
+  permissions to fight and nothing to tidy up.
+- An update replaces the install rather than merging into it, so a file that
+  disappears upstream does not linger.
+- Zips carry no permission bits worth trusting, so the executable bit is set
+  explicitly after unpacking.
+- Losing the network is not a reason to stop somebody playing: if the API cannot
+  be reached and a version is already installed, it says so and launches that.
+
+`tools/build.sh` builds and zips it alongside the game.
 
 ## Up to four boards
 

@@ -1,0 +1,24 @@
+; Word Wars launcher — a tiny separate app whose only job is to keep the game
+; up to date. It has to be separate: a running executable cannot overwrite
+; itself on Windows, so the thing doing the updating must not be the game.
+
+config_version=5
+
+[application]
+
+config/name="Word Wars Launcher"
+config/description="Keeps Word Wars up to date and launches it."
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=560
+window/size/viewport_height=340
+window/size/resizable=false
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

@@ -42,5 +42,15 @@ cp packaging/README-windows.txt "$OUT/windows/README.txt"
 ( cd "$OUT" && zip -q -j WordWars-linux-x86_64.zip linux/WordWars.x86_64 linux/README.txt )
 ( cd "$OUT" && zip -q -j WordWars-windows-x86_64.zip windows/WordWars.exe windows/README.txt )
 
+# The launcher is a separate project on purpose: nothing can overwrite a running
+# executable on Windows, so the updater must not be the thing being updated.
+echo "==> Launcher"
+mkdir -p "$OUT/launcher"
+godot --headless --path launcher --export-release "Linux" "$PWD/$OUT/launcher/WordWarsLauncher.x86_64" >/dev/null
+godot --headless --path launcher --export-release "Windows Desktop" "$PWD/$OUT/launcher/WordWarsLauncher.exe" >/dev/null
+cp packaging/README-launcher.txt "$OUT/launcher/README.txt"
+( cd "$OUT" && zip -q -j WordWarsLauncher-linux-x86_64.zip launcher/WordWarsLauncher.x86_64 launcher/README.txt )
+( cd "$OUT" && zip -q -j WordWarsLauncher-windows-x86_64.zip launcher/WordWarsLauncher.exe launcher/README.txt )
+
 echo "==> Done"
 ls -lh "$OUT"/*.zip
