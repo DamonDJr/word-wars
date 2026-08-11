@@ -47,7 +47,8 @@ Controls
   type letters          build a word
   SPACE / ENTER         fire it
   BACKSPACE             delete a letter
-  CTRL+BACKSPACE / ESC  clear the line
+  CTRL+BACKSPACE       clear the line
+  ESC                   pause menu / leave match
   H   (title screen)    full rules
   R   (after a match)   rematch
   F1                    mute

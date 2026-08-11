@@ -187,6 +187,7 @@ var join_ip := "127.0.0.1"
 var lobby_field := 1        # 0 = name, 1 = address
 var lobby_backend := 0      # Link.Backend
 var countdown := 0.0
+var paused := false
 var _last_count_beep := -1
 var _music_key := ""
 var _music_hold := 0.0
@@ -358,6 +359,7 @@ func start_match(diff: String, bots: int = 1) -> void:
 	position = Vector2.ZERO
 	_overlay.position = Vector2.ZERO
 	countdown = COUNTDOWN_TIME
+	paused = false
 	_last_count_beep = -1
 	phase = Phase.COUNTDOWN
 	_log("%s — get ready" % diff, Color("#c8d3f5"))
@@ -376,6 +378,15 @@ func _typing_of(s: SideState) -> String:
 	if s.bot != null:
 		return s.bot.visible_text()
 	return s.typing
+
+
+## Opening the menu freezes a solo match outright. It cannot freeze a networked
+## one — everybody else is still playing — so there the match runs on underneath
+## and the menu says so rather than pretending otherwise.
+func _toggle_pause() -> void:
+	paused = not paused
+	_hover_action = ""
+	Sfx.play("back", 1.1 if paused else 0.9)
 
 
 # --------------------------------------------------------------------- aiming
@@ -506,24 +517,32 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	match k.keycode:
 		KEY_BACKSPACE:
+			if paused or not player.alive:
+				return
 			if k.ctrl_pressed:
 				typed = ""
 			else:
 				typed = typed.substr(0, maxi(0, typed.length() - 1))
 			Sfx.play("back", randf_range(0.94, 1.06))
 		KEY_ESCAPE:
-			typed = ""
-			Sfx.play("back", 0.8)
+			_toggle_pause()
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
-			_submit_player()
+			# Deliberately not a resume key: you arrive at this menu with your
+			# hands on SPACE, and unpausing by reflex is the same trap ENTER was.
+			if not paused:
+				_submit_player()
 		KEY_TAB:
-			_cycle_target(-1 if k.shift_pressed else 1)
+			if not paused and player.alive:
+				_cycle_target(-1 if k.shift_pressed else 1)
 		KEY_1: _target_slot(1)
 		KEY_2: _target_slot(2)
 		KEY_3: _target_slot(3)
+		KEY_Q:
+			if paused:
+				_activate("leave_match")
 		_:
 			# Modifiers and arrows report unicode 0; chr(0) builds a NUL string.
-			if k.unicode <= 0:
+			if k.unicode <= 0 or paused or not player.alive:
 				return
 			var low := String.chr(k.unicode).to_lower()
 			if low.length() == 1 and low >= "a" and low <= "z" and typed.length() < 20:
@@ -533,6 +552,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 
 func _submit_player() -> void:
+	if not player.alive or paused:
+		typed = ""
+		return
 	var w := typed
 	typed = ""
 	# Firing an empty line is a slip, not an attempt — no penalty for it.
@@ -838,6 +860,13 @@ func _process(delta: float) -> void:
 			phase = Phase.PLAY
 			Sfx.play("start")
 			_log("GO!", Color("#ffd166"))
+
+	if phase == Phase.PLAY and paused and not net_active():
+		# Solo: the world waits.
+		_tick_music(delta)
+		queue_redraw()
+		_overlay.queue_redraw()
+		return
 
 	if phase == Phase.PLAY:
 		match_time += delta
@@ -1381,6 +1410,13 @@ func _draw_overlay() -> void:
 		_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 			size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
 			Color(flash_color, flash * 0.5), true)
+	if phase == Phase.PLAY:
+		if paused:
+			_draw_pause(size)
+		elif not player.alive:
+			_draw_spectating(size)
+		return
+
 	if phase == Phase.TITLE:
 		_draw_title(size)
 	elif phase == Phase.LOBBY:
@@ -1491,6 +1527,43 @@ func _draw_how_cards(cx: float) -> void:
 					_mini_block(Vector2(mid - 76.0 + k * 76.0, base - sz.y * 0.5), sz, k * 2, "")
 				_otext(_font, Vector2(mid, caption), "a run hits harder, then detonates",
 					12, Color("#8d99bd"))
+
+
+## Out of the match but not out of the room. The screen greys so it is obvious
+## the words you type would go nowhere, and they no longer can.
+func _draw_spectating(size: Vector2) -> void:
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(BG_TOP, 0.5), true)
+	# Sit the notice low and centre, clear of the boards you are here to watch.
+	var cx := size.x * 0.5
+	var y := size.y - 108.0
+	_otext(_font_bold, Vector2(cx, y), "ELIMINATED", 44, Color("#ff6b6b"))
+	var left := _living().size()
+	_otext(_font, Vector2(cx, y + 34.0),
+		"%d still standing — watching until it is over" % left, 15, Color("#aab4d4"))
+	_otext(_font, Vector2(cx, y + 58.0), "ESC — menu", 12, Color("#5d6a92"))
+
+
+func _draw_pause(size: Vector2) -> void:
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(BG_TOP, 0.86), true)
+	var cx := size.x * 0.5
+	_otext(_font_bold, Vector2(cx, 230.0), "PAUSED", 64, Color("#e6ecff"))
+	# Be honest about what pausing does when other people are involved.
+	var note := "the match is frozen"
+	if net_active():
+		note = "the others are still playing — this only pauses your screen"
+	elif not player.alive:
+		note = "you are out; the match is still running"
+	_otext(_font, Vector2(cx, 286.0), note, 15,
+		Color("#ffd166") if net_active() else Color("#8d99bd"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+	_otext(_font, Vector2(cx, 492.0), "F1 — sound      CTRL+BACKSPACE clears your line",
+		12, Color("#4d5878"))
 
 
 func _draw_lobby(size: Vector2) -> void:
@@ -1911,6 +1984,18 @@ func _menu_buttons() -> Array:
 	var out: Array = []
 	var cx := get_viewport_rect().size.x * 0.5
 
+	if paused and phase == Phase.PLAY:
+		var w := 300.0
+		out.append({
+			"rect": Rect2(cx - w - 10.0, 372.0, w, 84.0), "key": "ESC",
+			"label": "Resume", "sub": "", "note": "", "rating": 0,
+			"accent": PLAYER_ACCENT, "action": "resume"})
+		out.append({
+			"rect": Rect2(cx + 10.0, 372.0, w, 84.0), "key": "Q",
+			"label": "Leave match", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#ff6b6b"), "action": "leave_match"})
+		return out
+
 	if phase == Phase.TITLE:
 		var names := ["Rookie", "Duelist", "Wordsmith"]
 		var notes := ["learning the ropes", "a fair fight", "brutal"]
@@ -2116,7 +2201,9 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
-	if phase == Phase.PLAY:
+	if phase == Phase.PLAY and not paused:
+		if not player.alive:
+			return
 		# In play the mouse only does one thing: pick who you are hitting.
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
@@ -2159,6 +2246,16 @@ func _activate(action: String) -> void:
 	if action.begins_with("diff:"):
 		Link.leave()
 		start_match(action.substr(5), 1)
+	elif action == "resume":
+		paused = false
+		_hover_action = ""
+		Sfx.play("back", 0.9)
+	elif action == "leave_match":
+		paused = false
+		Link.leave()
+		phase = Phase.TITLE
+		_hover_action = ""
+		Sfx.play("back")
 	elif action == "ffa":
 		Link.leave()
 		start_match(difficulty, 3)

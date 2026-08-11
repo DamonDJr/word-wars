@@ -69,7 +69,15 @@ wander their own aim every few seconds, so a four-way does not turn into three
 guns pointed at you.
 
 Running out of lives knocks you out rather than ending the match — the rest play
-on, and the last board standing wins. Aim retargets itself automatically when
+on, and the last board standing wins. While you are out the screen greys and your
+typing does nothing; you are watching, not playing.
+
+`ESC` opens a pause menu with Resume and Leave match. Solo, that genuinely
+freezes the match. It cannot freeze a networked one — everyone else is still
+playing — so there the match runs on underneath and the menu says as much rather
+than pretending otherwise. `SPACE` and `ENTER` deliberately do not resume, for
+the same reason they no longer rematch: your hands are already on them. Clearing
+your line moves to `CTRL+BACKSPACE`, which always did it anyway. Aim retargets itself automatically when
 whoever you were hitting drops out.
 
 A duel still looks exactly like it did: two full-size boards facing each other,
