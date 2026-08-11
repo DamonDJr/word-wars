@@ -17,22 +17,27 @@ godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/nul
 echo "==> Windows"
 godot --headless --export-release "Windows Desktop" "$OUT/windows/WordWars.exe" >/dev/null
 
+# Every asset check below reads the same boot, so boot once.
+echo "==> Verifying the assets shipped"
+chmod +x "$OUT/linux/WordWars.x86_64"
+BOOT=$("$OUT/linux/WordWars.x86_64" --headless --quit-after 120 2>&1 || true)
+
 # The word lists are plain .txt, not imported resources, so they only make it
 # into a build via the preset's include_filter. That is easy to break and gives
 # no error — the game just starts with an empty dictionary and rejects every
 # word. So prove the lists are in there rather than assuming.
-echo "==> Verifying the dictionary shipped"
-chmod +x "$OUT/linux/WordWars.x86_64"
-if ! "$OUT/linux/WordWars.x86_64" --headless --quit-after 120 2>&1 | grep -q "WordBank: 3"; then
+if ! grep -q "WordBank: 3" <<<"$BOOT"; then
 	echo "FAILED: the build starts with no dictionary." >&2
 	echo "        Check include_filter in export_presets.cfg." >&2
 	exit 1
 fi
 
-# Music is imported, so unlike the word lists it ships automatically — but a
-# missing or renamed file only shows up as a warning at runtime, so check.
-if "$OUT/linux/WordWars.x86_64" --headless --quit-after 120 2>&1 | grep -q "Music: missing track"; then
-	echo "FAILED: a music track did not make it into the build." >&2
+# Music, art and fonts are imported, so unlike the word lists they ship on their
+# own — but the game is written to carry on without them rather than crash,
+# which is exactly what makes a missing one easy to miss. Each says so on boot.
+if grep -qE "Music: missing track|splash art missing|title font missing" <<<"$BOOT"; then
+	echo "FAILED: an imported asset did not make it into the build:" >&2
+	grep -E "Music: missing track|splash art missing|title font missing" <<<"$BOOT" >&2
 	exit 1
 fi
 

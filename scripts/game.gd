@@ -98,7 +98,18 @@ const BG_BOTTOM := Color("#141a36")
 ## this far past the viewport on every side to keep the edges covered.
 const SHAKE_MARGIN := 56.0
 
-enum Phase { TITLE, LOBBY, COUNTDOWN, PLAY, OVER }
+enum Phase { SPLASH, TITLE, LOBBY, COUNTDOWN, PLAY, OVER }
+
+## The key art gets a moment of its own before the menu arrives, then dissolves
+## into it. Any key or click cuts it short — nobody should have to watch this
+## twice, least of all somebody who just wants a rematch.
+const SPLASH_HOLD := 1.7
+const SPLASH_FADE := 0.7
+## The art is 3:2 against a 16:9 screen, so it is framed rather than cropped —
+## it is a composed picture and trimming its edges costs more than two bars. This
+## is sampled from the art's own border so the join does not read as a letterbox,
+## and `boot_splash/bg_color` in project.godot is set to match.
+const SPLASH_MATTE := Color("#01061a")
 
 ## Both players stare at the same 3-2-1 before anyone can type, which matters far
 ## more over a network than it does alone: it is what makes the start fair.
@@ -156,7 +167,8 @@ class SideState extends RefCounted:
 		return n
 
 
-var phase: int = Phase.TITLE
+var phase: int = Phase.SPLASH
+var splash_time := 0.0
 ## Every board in the match. `sides[0]` is always yours; the rest are rivals,
 ## living or knocked out. `player` and `ai_side` are kept as names for slot 0 and
 ## the first rival so the one-on-one code paths still read naturally.
@@ -194,6 +206,8 @@ var _music_hold := 0.0
 
 var _font: Font
 var _font_bold: Font
+var _font_title: Font
+var _splash: Texture2D
 var _overlay: Node2D
 var _chip_sb: StyleBoxFlat
 var _ui_sb: StyleBoxFlat
@@ -207,6 +221,18 @@ func _ready() -> void:
 	fv.base_font = _font
 	fv.variation_embolden = 0.6
 	_font_bold = fv
+
+	# The wordmark gets its own face; everything else stays on the plain one,
+	# which is what keeps a display font from becoming a headache to read. Both
+	# fall back rather than crash, so a build that lost an asset still runs.
+	_font_title = _load_or_null("res://fonts/RubikGlitch-Regular.ttf") as Font
+	if _font_title == null:
+		push_warning("Game: title font missing — falling back to the plain face")
+		_font_title = _font_bold
+	_splash = _load_or_null("res://splashScreen.png") as Texture2D
+	if _splash == null:
+		push_warning("Game: splash art missing — going straight to the menu")
+		phase = Phase.TITLE
 
 	_chip_sb = StyleBoxFlat.new()
 	_chip_sb.set_corner_radius_all(6)
@@ -234,6 +260,14 @@ func _ready() -> void:
 	_overlay.draw.connect(_draw_overlay)
 
 	_net_setup()
+
+
+## Art and fonts are cosmetic, so a build that somehow shipped without one should
+## still play. `load()` on a missing path is a hard error, hence the check.
+func _load_or_null(path: String) -> Resource:
+	if not ResourceLoader.exists(path):
+		return null
+	return load(path)
 
 
 ## Yours is drawn at full size on the left; rivals are the same board scaled down
@@ -434,6 +468,12 @@ func _cycle_target(step: int) -> void:
 		_say("targeting %s" % pick.label, pick.accent)
 
 
+## Skips to the start of the dissolve rather than to the menu outright, so
+## cutting the splash short still hands over gracefully instead of snapping.
+func _skip_splash() -> void:
+	splash_time = maxf(splash_time, SPLASH_HOLD)
+
+
 func _target_slot(slot: int) -> void:
 	if slot < 0 or slot >= sides.size():
 		return
@@ -451,6 +491,12 @@ func _target_slot(slot: int) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	if k == null or not k.pressed or k.echo:
+		return
+
+	# Any key cuts the splash short — and does only that, so an impatient press
+	# cannot also land on whatever is sitting under it on the menu.
+	if phase == Phase.SPLASH:
+		_skip_splash()
 		return
 
 	# Not a letter key — every one of those is needed for typing.
@@ -843,8 +889,14 @@ func _process(delta: float) -> void:
 	player.life_flash = maxf(0.0, player.life_flash - delta * 0.9)
 	ai_side.life_flash = maxf(0.0, ai_side.life_flash - delta * 0.9)
 
+	if phase == Phase.SPLASH:
+		splash_time += delta
+		if splash_time >= SPLASH_HOLD + SPLASH_FADE:
+			phase = Phase.TITLE
+
 	# The playfields have nothing to say on the front-of-house screens.
-	var showing_boards := phase != Phase.TITLE and phase != Phase.LOBBY
+	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
+		and phase != Phase.LOBBY
 	for s: SideState in sides:
 		s.board.visible = showing_boards and s.in_match
 	if phase != Phase.PLAY:
@@ -913,7 +965,7 @@ func _tick_music(delta: float) -> void:
 
 	var want := "menu"
 	match phase:
-		Phase.TITLE, Phase.LOBBY:
+		Phase.SPLASH, Phase.TITLE, Phase.LOBBY:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -1113,7 +1165,7 @@ func _draw() -> void:
 			BG_TOP.lerp(BG_BOTTOM, t), true)
 	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), BG_BOTTOM, true)
 
-	if phase == Phase.TITLE or phase == Phase.LOBBY:
+	if phase == Phase.SPLASH or phase == Phase.TITLE or phase == Phase.LOBBY:
 		return
 
 	_draw_side_header(player, player.board.position)
@@ -1417,7 +1469,12 @@ func _draw_overlay() -> void:
 			_draw_spectating(size)
 		return
 
-	if phase == Phase.TITLE:
+	if phase == Phase.SPLASH:
+		# The menu assembles underneath while the art dissolves off the top of
+		# it, so the two never trade places against an empty screen.
+		_draw_title(size)
+		_draw_splash(size)
+	elif phase == Phase.TITLE:
 		_draw_title(size)
 	elif phase == Phase.LOBBY:
 		_draw_lobby(size)
@@ -1446,6 +1503,26 @@ func _draw_countdown(size: Vector2) -> void:
 		"versus %s" % (ai_side.label if net_active() else difficulty), 16, Color("#8d99bd"))
 
 
+## The key art, laid out the way the engine's boot splash lays it out — same fit,
+## same backdrop — so the hand-off from engine to scene has nothing to show. It
+## then dissolves off the menu that has been assembling underneath it.
+func _draw_splash(size: Vector2) -> void:
+	if _splash == null:
+		return
+	var a := 1.0
+	if splash_time > SPLASH_HOLD:
+		a = 1.0 - clampf((splash_time - SPLASH_HOLD) / SPLASH_FADE, 0.0, 1.0)
+		a = a * a * (3.0 - 2.0 * a)
+
+	var art := Vector2(_splash.get_width(), _splash.get_height())
+	var s: float = minf(size.x / art.x, size.y / art.y)
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(SPLASH_MATTE, a), true)
+	_overlay.draw_texture_rect(_splash, Rect2((size - art * s) * 0.5, art * s),
+		false, Color(1.0, 1.0, 1.0, a))
+
+
 func _draw_title(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
@@ -1453,10 +1530,19 @@ func _draw_title(size: Vector2) -> void:
 	_draw_decor()
 
 	# Wordmark, with the tail of WARS picked out — the whole game in one gag.
+	# This is the one place the display face is used; a glitch font is a logo,
+	# not something anyone should have to read a menu in. It sets wider than the
+	# plain one, so the size is fitted rather than fixed, and the rule beneath is
+	# measured off whatever size that came out as instead of being nailed down.
 	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 700.0)
-	_otext(_font_bold, Vector2(cx, 96), "WORD WARS", 82, Color("#e6ecff"))
-	var wm := _font_bold.get_string_size("WORD WARS", HORIZONTAL_ALIGNMENT_LEFT, -1, 82)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 138, wm.x, 3),
+	var title_size := 82
+	while title_size > 40 and _font_title.get_string_size(
+			"WORD WARS", HORIZONTAL_ALIGNMENT_LEFT, -1, title_size).x > size.x - 140.0:
+		title_size -= 2
+	_otext(_font_title, Vector2(cx, 96), "WORD WARS", title_size, Color("#e6ecff"))
+	var wm := _font_title.get_string_size("WORD WARS", HORIZONTAL_ALIGNMENT_LEFT,
+		-1, title_size)
+	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 96.0 + wm.y * 0.5 - 8.0, wm.x, 3),
 		Color(PLAYER_ACCENT, 0.25 + 0.35 * pulse), true)
 	_otext(_font, Vector2(cx, 162), "your endings become their beginnings", 17, Color("#8d99bd"))
 
@@ -1996,7 +2082,11 @@ func _menu_buttons() -> Array:
 			"accent": Color("#ff6b6b"), "action": "leave_match"})
 		return out
 
-	if phase == Phase.TITLE:
+	# SPLASH counts as TITLE here: the menu is being drawn underneath the art as
+	# it dissolves, and a screen that snapped its buttons in at the last frame
+	# would undo the point of cross-fading at all. Nothing can be clicked yet —
+	# input is still swallowed by the splash.
+	if phase == Phase.TITLE or phase == Phase.SPLASH:
 		var names := ["Rookie", "Duelist", "Wordsmith"]
 		var notes := ["learning the ropes", "a fair fight", "brutal"]
 		var tints := [Color("#64dfdf"), Color("#f9c74f"), Color("#f94144")]
@@ -2201,6 +2291,10 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
+	if phase == Phase.SPLASH:
+		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+			_skip_splash()
+		return
 	if phase == Phase.PLAY and not paused:
 		if not player.alive:
 			return

@@ -294,6 +294,8 @@ data/common.txt          ~36k frequency-ordered words — CPU vocabulary
 tools/build_wordlists.py regenerates both data files from source corpora
 tools/selftest.gd        headless check of stamp fairness and length spread
 tools/audiocheck.gd      dumps the sound bank to .wav and verifies playback
+splashScreen.png         key art; engine boot splash and the in-game splash
+fonts/                   Rubik Glitch, used for the wordmark and nothing else
 ```
 
 Boards are drawn with `_draw()` and `StyleBoxFlat` rather than a scene tree of
@@ -416,11 +418,37 @@ once.
 
 ## The menus
 
+### Starting up
+
+Launching the game shows the key art twice, and you are not meant to notice the
+seam. The engine paints `splashScreen.png` as `boot_splash` before a single
+script runs, which covers the second or so `WordBank` spends reading 350k words;
+the scene then draws the *same* image with the same fit against the same
+backdrop, holds it for `SPLASH_HOLD`, and dissolves it off the title screen that
+has been assembling underneath. Any key or click cuts the hold short — it drops
+straight to the start of the dissolve rather than snapping, and it does nothing
+else, so an impatient press cannot also land on a menu button behind the art.
+
+The art is 3:2 against a 16:9 screen, so it is framed rather than cropped: it is
+a composed picture, and trimming its edges costs more than two side bars. Those
+bars are `SPLASH_MATTE`, sampled from the artwork's own border rather than taken
+from the UI palette, which is why they do not read as letterboxing.
+`boot_splash/bg_color` is set to the same value.
+
+### The title screen
+
 The title screen shows three worked examples instead of a wall of instructions,
 each drawn with the same routines the playfield uses: `FRIENDSHIP` splitting into
 a branded `SHIP` block, that block coming apart under `SHIPMENTS`, and a live
 chain meter with escalating block sizes. The full rules are still one keypress
 away on `H`. Blocks drift down behind it all.
+
+The wordmark is the one thing set in Rubik Glitch; everything else stays on the
+plain face. A display font is a logo, not something anyone should have to read a
+menu in. Because it sets much wider than the default face, the wordmark's size is
+fitted to the window rather than fixed, and the rule beneath it is measured off
+whatever size that came out as — so swapping the font again cannot push the title
+off-screen or leave the underline stranded.
 
 Menus are mouse-driven: hover lifts a card and brightens its border, clicking
 starts the match. `_menu_buttons()` is the single source for both drawing and
@@ -534,8 +562,6 @@ of it in `AiOpponent.DIFFICULTIES`.
 
 ## Not done yet
 
-- No music, only effects. A generated ambient bed that tightens as your board
-  fills would fit the synthesis approach already in `audio.gd`.
 - **Given names still leak into the CPU's vocabulary** — it will occasionally
   play `JOEL` or `SARAH`. The build script drops names absent from a curated
   common-word list, which catches `ABAGAEL` but keeps the frequent ones, and
@@ -551,3 +577,13 @@ of it in `AiOpponent.DIFFICULTIES`.
   against a real hostile network.
 - The used-word rule is per side and per match, so nobody can spam one word.
   There is no scoring beyond the end-of-match summary.
+
+## Credits
+
+- **Rubik Glitch** by the Rubik Filtered Project Authors, used for the wordmark.
+  Licensed under the SIL Open Font License 1.1 — the full text travels with the
+  font in [`fonts/OFL.txt`](fonts/OFL.txt).
+- Networking rides on [netfox.noray](https://github.com/foxssake/netfox) (MIT)
+  for NAT punchthrough and relay.
+- Everything else — art, music, the synthesised sound bank, the word lists — is
+  the project's own.

@@ -54,3 +54,9 @@ Controls
   H   (title screen)    full rules
   R   (after a match)   rematch
   F1                    mute
+
+
+Credits
+-------
+The wordmark is set in Rubik Glitch by the Rubik Filtered Project Authors,
+licensed under the SIL Open Font License 1.1 — https://openfontlicense.org
