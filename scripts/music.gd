@@ -33,9 +33,10 @@ const TRIM := {
 	"death": 2.0,
 	"victory": 1.0,
 }
-## Long enough that a change reads as the mood shifting under you. The stings are
-## events rather than moods, so they arrive quicker.
-const FADE := 3.0
+## Short enough that the new track is simply there. A long crossfade sounds
+## indecisive between two beds that are both already playing — you spend it
+## hearing neither properly. The stings keep their own timing.
+const FADE := 0.8
 const STING_FADE := 0.7
 
 var muted := false

@@ -420,8 +420,9 @@ It is meant to sit **under** the game, not compete with it. The keystrokes and
 block impacts are the feedback you actually play on, so the bed runs at
 `MUSIC_DB` (-17) with a per-track `TRIM`, because the files are not mastered to
 matching loudness and a sting arriving hot is exactly the jolt worth avoiding.
-Two players crossfade over three seconds so a change reads as the mood shifting
-rather than a cut; the stings come in quicker at `STING_FADE`.
+Two players crossfade in `FADE` (0.8s) so the new track is simply there — a long
+crossfade between two beds that are both playing sounds indecisive, and you spend
+it hearing neither properly. Stings use `STING_FADE`.
 
 Escalation is instant — the music should arrive *with* the danger. Calming back
 down has to wait out `MUSIC_HOLD` (4s), because a board that dips below the line
