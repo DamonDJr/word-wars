@@ -40,6 +40,32 @@ var powers: Dictionary = {}
 ## Slot -> cosmetic id.
 var equipped: Dictionary = {}
 
+## Settings and remembered choices. Kept in the same file as the record because
+## it is all "this player's stuff", and one file is one thing that can go wrong.
+var prefs: Dictionary = {}
+
+const PREF_DEFAULTS := {
+	"music": 0.7,
+	"sfx": 0.8,
+	"texture": true,     ## film grain and vignette
+	"hitstop": true,     ## the freeze-frame on heavy hits
+	"fullscreen": false,
+	## Rival seats for a single-player match. "" is an empty seat, "?" is a
+	## random personality rolled at the start of each match, anything else names
+	## one from the roster.
+	"solo": ["Duelist", "", ""],
+}
+
+
+func pref(key: String):
+	return prefs.get(key, PREF_DEFAULTS.get(key))
+
+
+func set_pref(key: String, value) -> void:
+	prefs[key] = value
+	save()
+	changed.emit()
+
 
 # ------------------------------------------------------------------------- xp
 #
@@ -322,6 +348,7 @@ func load_profile() -> void:
 	longest_word = String(cfg.get_value("record", "longest_word", ""))
 	powers = cfg.get_value("record", "powers", {})
 	equipped = cfg.get_value("worn", "equipped", {})
+	prefs = cfg.get_value("worn", "prefs", {})
 
 
 func save() -> void:
@@ -340,6 +367,7 @@ func save() -> void:
 	cfg.set_value("record", "longest_word", longest_word)
 	cfg.set_value("record", "powers", powers)
 	cfg.set_value("worn", "equipped", equipped)
+	cfg.set_value("worn", "prefs", prefs)
 	cfg.save(save_path)
 
 

@@ -29,8 +29,8 @@ Open the folder in Godot 4.7 and press F5, or from a terminal:
 godot --path "$(pwd)"
 ```
 
-Pick an opponent by clicking a card or pressing `1` – `7`, `F` for a
-four-way free-for-all, or `V` for versus. Every match opens with a shared 3-2-1 before anyone can type. Type letters,
+The title screen has four doors: **single player**, **multiplayer**, **mastery**
+and **settings**, on `1` – `4`. Every match opens with a shared 3-2-1 before anyone can type. Type letters,
 fire with `Space` or `Enter`. `Backspace` deletes, `Ctrl+Backspace` or `Esc`
 clears the line. `H` on the title screen shows the full rules, `R` rematches after a game. `F1` mutes — it is
 not a letter key, because every letter is spoken for.
@@ -82,8 +82,8 @@ nothing else, so it should never need to change.
 
 ## Up to four boards
 
-`F` on the title starts a free-for-all against three CPUs; Versus seats up to
-four humans in one room. Yours is drawn full size on the left, rivals shrink into
+Single-player setup seats up to three CPUs and lets you name each one; Versus
+seats up to four humans in one room. Yours is drawn full size on the left, rivals shrink into
 a row on the right — same board, scaled by the node transform, so every effect
 and label keeps working on them.
 
@@ -608,6 +608,35 @@ verifies playback and mute:
 ```bash
 godot --headless --script res://tools/audiocheck.gd
 ```
+
+## The menus
+
+Four doors on the title screen and nothing else: **single player**,
+**multiplayer**, **mastery**, **settings**. It used to carry the entire opponent
+roster plus two mode buttons plus a rules toggle, which meant the first thing
+anybody saw was fourteen choices at once. Choosing an opponent is a decision
+that belongs *inside* single player rather than in front of it.
+
+**Single-player setup** is shaped like the versus lobby on purpose — seats along
+the top, a roster underneath that fills whichever seat is selected. Each of the
+three rival seats can be empty, a named personality, or **random**, which is
+rolled once at the start of each match rather than re-rolled between the menu and
+the countdown. Filling a seat advances the selection to the next empty one, so
+setting up three opponents is three clicks rather than six. A rematch rebuilds
+from the seats, which means a random seat is genuinely rolled again instead of
+quietly becoming whoever it was last time. The lineup is remembered between
+sessions.
+
+**Settings** covers music and effects volume, the screen texture and impact
+freeze toggles, fullscreen, and the name you play under — which previously only
+existed inside the versus lobby, where somebody playing alone would never find
+it. Everything writes straight through to the profile with no apply button: a
+settings screen that can be wrong until you confirm it is a settings screen that
+will get left wrong.
+
+The volume sliders are a trim on top of the existing mix rather than a
+replacement for it. The relative loudness of a keystroke against a block landing
+is a design decision, and a slider should not be able to flatten it.
 
 ## Opponents
 

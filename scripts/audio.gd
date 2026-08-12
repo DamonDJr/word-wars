@@ -31,8 +31,18 @@ func _ready() -> void:
 	_build_bank()
 
 
+## 0..1 from the settings screen, folded in as a trim rather than replacing the
+## per-call mix — the relative loudness of a keystroke against a block landing is
+## a design decision, not something a slider should flatten.
+var gain := 1.0
+
+
+func set_gain(v: float) -> void:
+	gain = clampf(v, 0.0, 1.0)
+
+
 func play(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
-	if muted:
+	if muted or gain <= 0.001:
 		return
 	var stream: AudioStreamWAV = _bank.get(sound)
 	if stream == null:
@@ -41,7 +51,7 @@ func play(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
 	_next = (_next + 1) % VOICES
 	p.stream = stream
 	p.pitch_scale = clampf(pitch, 0.25, 4.0)
-	p.volume_db = volume_db
+	p.volume_db = volume_db + linear_to_db(gain)
 	p.play()
 
 

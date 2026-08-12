@@ -159,7 +159,7 @@ const HITSTOP_SALVO := 220    ## the whole chain cashing in
 const GRAIN := 0.05
 const VIGNETTE := 0.40
 
-enum Phase { SPLASH, TITLE, LOBBY, MASTERY, COUNTDOWN, PLAY, OVER }
+enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, COUNTDOWN, PLAY, OVER }
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -304,6 +304,11 @@ var _key_flecks: Array = []
 var tracers: Array = []
 var _hitstop_until := 0
 
+## Cached from the profile by `_apply_prefs`, because these are read every frame
+## and every heavy hit respectively.
+var fx_texture := true
+var fx_hitstop := true
+
 var _grain: Texture2D
 var _vignette: Texture2D
 
@@ -313,6 +318,11 @@ var flash_color := Color.WHITE
 var show_rules := false
 ## Which cosmetic category the mastery screen is showing.
 var mastery_slot := 0
+## Single-player setup: the three rival seats, and which one the roster fills.
+var solo_seats: Array = ["Duelist", "", ""]
+var solo_pick := 0
+## True while the settings screen has the keyboard for the name field.
+var settings_editing := false
 ## Set when a finished match is folded into the profile, so the end screen can
 ## show what it earned. Cleared when a new match starts.
 var earned: Dictionary = {}
@@ -386,7 +396,11 @@ func _ready() -> void:
 	_build_screen_texture()
 
 	_apply_theme()
+	_apply_prefs()
 	Profile.changed.connect(_apply_theme)
+	var saved: Array = Profile.pref("solo")
+	if saved.size() == solo_seats.size():
+		solo_seats = saved.duplicate()
 
 	_net_setup()
 
@@ -512,10 +526,14 @@ func _bloom(color: Color, amount: float) -> void:
 
 ## `bots` is how many CPU rivals to line up. Versus passes 0 and fills the extra
 ## slots with peers instead.
-func start_match(diff: String, bots: int = 1) -> void:
+## `lineup` names each CPU outright — that is what single-player setup passes.
+## Left empty, the roster picks for you, which is what the networked path and a
+## rematch off an old save still do.
+func start_match(diff: String, bots: int = 1, lineup: Array = []) -> void:
 	difficulty = diff
 	slots_in_play = clampi(1 + bots, 2, SLOTS)
-	var lineup := _bot_lineup(diff, slots_in_play - 1)
+	if lineup.is_empty():
+		lineup = _bot_lineup(diff, slots_in_play - 1)
 
 	for s: SideState in sides:
 		s.in_match = s.slot < slots_in_play
@@ -732,6 +750,35 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		Sfx.play("back", 1.4)
 		return
 
+	if phase == Phase.SOLO:
+		match k.keycode:
+			KEY_ENTER, KEY_KP_ENTER: _activate("solo_start")
+			KEY_ESCAPE: _activate("title")
+			KEY_1, KEY_2, KEY_3:
+				_activate("pick:%d" % (k.keycode - KEY_1))
+		return
+
+	if phase == Phase.SETTINGS:
+		if settings_editing:
+			# The name field owns the keyboard while it is open, so nothing else
+			# in here can be triggered by a letter that belongs in a name.
+			match k.keycode:
+				KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
+					settings_editing = false
+					Sfx.play("back")
+				KEY_BACKSPACE:
+					Link.set_name_and_save(Link.my_name.substr(
+						0, maxi(0, Link.my_name.length() - 1)))
+				_:
+					if k.unicode > 0 and Link.my_name.length() < 14:
+						var ch := String.chr(k.unicode)
+						if ch.unicode_at(0) >= 32:
+							Link.set_name_and_save(Link.my_name + ch.to_upper())
+			return
+		match k.keycode:
+			KEY_ESCAPE: _activate("title")
+		return
+
 	if phase == Phase.MASTERY:
 		match k.keycode:
 			KEY_LEFT, KEY_A: _activate("slot:-1")
@@ -783,12 +830,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	if phase == Phase.TITLE or phase == Phase.OVER:
 		match k.keycode:
-			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7:
-				var pick := k.keycode - KEY_1
-				if pick < AiOpponent.ROSTER.size():
-					_activate("diff:" + AiOpponent.ROSTER[pick])
+			KEY_1: _activate("solo")
+			KEY_2: _activate("versus")
+			KEY_3: _activate("mastery")
+			KEY_4: _activate("settings")
 			KEY_V: _activate("versus")
-			KEY_F: _activate("ffa")
 			KEY_P: _activate("mastery")
 			KEY_R: _activate("rematch")
 			KEY_H:
@@ -1050,7 +1096,7 @@ func _tracer_impact(tr: Tracer) -> void:
 ## netcode runs on — so a networked match does without rather than risk the two
 ## machines disagreeing about how much time has passed.
 func _hitstop(ms: int) -> void:
-	if net_active():
+	if net_active() or not fx_hitstop:
 		return
 	_hitstop_until = maxi(_hitstop_until, Time.get_ticks_msec() + ms)
 
@@ -1406,7 +1452,8 @@ func _process(delta: float) -> void:
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
-		and phase != Phase.LOBBY and phase != Phase.MASTERY
+		and phase != Phase.LOBBY and phase != Phase.MASTERY \
+		and phase != Phase.SOLO and phase != Phase.SETTINGS
 	for s: SideState in sides:
 		s.board.visible = showing_boards and s.in_match
 	if phase != Phase.PLAY:
@@ -1475,7 +1522,7 @@ func _tick_music(delta: float) -> void:
 
 	var want := "menu"
 	match phase:
-		Phase.SPLASH, Phase.TITLE, Phase.LOBBY, Phase.MASTERY:
+		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -1762,8 +1809,7 @@ func _draw() -> void:
 			bg_top.lerp(bg_bottom, t), true)
 	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), bg_bottom, true)
 
-	if phase == Phase.SPLASH or phase == Phase.TITLE or phase == Phase.LOBBY \
-			or phase == Phase.MASTERY:
+	if phase != Phase.COUNTDOWN and phase != Phase.PLAY and phase != Phase.OVER:
 		return
 
 	_draw_side_header(player, player.board.position)
@@ -2259,7 +2305,7 @@ func _draw_rival_panel(s: SideState) -> void:
 ## reddens and starts beating, faster the closer you get. The screen itself gets
 ## nervous, which is a thing you notice without having to look at anything.
 func _draw_screen_texture(size: Vector2) -> void:
-	if _vignette == null:
+	if _vignette == null or not fx_texture:
 		return
 	var full := Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0)
@@ -2306,8 +2352,12 @@ func _draw_overlay() -> void:
 		_draw_splash(size)
 	elif phase == Phase.TITLE:
 		_draw_title(size)
+	elif phase == Phase.SOLO:
+		_draw_solo(size)
 	elif phase == Phase.MASTERY:
 		_draw_mastery(size)
+	elif phase == Phase.SETTINGS:
+		_draw_settings(size)
 	elif phase == Phase.LOBBY:
 		_draw_lobby(size)
 	elif phase == Phase.COUNTDOWN:
@@ -2446,22 +2496,19 @@ func _draw_title(size: Vector2) -> void:
 	# while this is up, so what is drawn and what is clickable still agree.
 	if show_rules:
 		_draw_rules_panel(size)
-		_otext(_font, Vector2(cx, 646), "H — back to the opponents", 14, Color("#5d6a92"))
+		_otext(_font, Vector2(cx, 646), "H — back to the menu", 14, Color("#5d6a92"))
 		_otext(_font, Vector2(cx, 674), "F1 — %s      ESC — quit" % [
 			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 		return
 
 	_draw_how_cards(cx)
-	_otext(_font_bold, Vector2(cx, 384), "CHOOSE YOUR OPPONENT", 15, Color("#7c88ad"))
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 646), "click a card, or press 1 – %d" % AiOpponent.ROSTER.size(),
-		14, Color("#5d6a92"))
+	_otext(_font, Vector2(cx, 578), "click, or press 1 – 4", 13, Color("#5d6a92"))
 	_otext(_font, Vector2(cx, 674),
-		"%s — full rules      F1 — %s      ESC — quit" % [
-			"H" if not show_rules else "H to hide", "sound on" if Sfx.muted else "mute"],
-		13, Color("#4d5878"))
+		"H — full rules      F1 — %s      ESC — quit" % [
+			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 
 
 ## Three worked examples instead of a wall of instructions. Each one shows the
@@ -2515,6 +2562,293 @@ func _draw_how_cards(cx: float) -> void:
 					_mini_block(Vector2(mid - 76.0 + k * 76.0, base - sz.y * 0.5), sz, k * 2, "")
 				_otext(_font, Vector2(mid, caption), "a run hits harder, then detonates",
 					12, Color("#8d99bd"))
+
+
+## Sound, effects, and the name you play under. Every row is either a slider or
+## a switch, and every one of them writes straight through to the profile — there
+## is no apply button, because a settings screen that can be wrong until you
+## confirm it is a settings screen that will be left wrong.
+func _draw_settings(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	_otext(_font_bold, Vector2(cx, 78.0), "SETTINGS", 32, Color("#e6ecff"))
+
+	for row: Dictionary in _settings_rows():
+		var r: Rect2 = row["rect"]
+		var hot: bool = String(_hover_action).begins_with(String(row["action"]))
+		_panel(r, Color("#141b33"), Color(PLAYER_ACCENT, 0.3 if hot else 0.14), 10.0,
+			2.0 if hot else 1.0)
+		_otext(_font_bold, Vector2(r.position.x + 150.0, r.get_center().y),
+			String(row["label"]), 15, Color("#e6ecff"))
+		_otext(_font, Vector2(r.position.x + 150.0, r.get_center().y + 20.0),
+			String(row["note"]), 11, Color("#5d6a92"))
+
+		match String(row["kind"]):
+			"slider":
+				var track := Rect2(r.position.x + 300.0, r.get_center().y - 4.0,
+					320.0, 8.0)
+				_panel(track, Color("#0e142a"), Color(PLAYER_ACCENT, 0.2), 4.0, 1.0)
+				var v: float = float(row["value"])
+				_overlay.draw_rect(Rect2(track.position + Vector2(2, 2),
+					Vector2((track.size.x - 4.0) * v, track.size.y - 4.0)),
+					Color(PLAYER_ACCENT), true)
+				_overlay.draw_circle(
+					Vector2(track.position.x + 2.0 + (track.size.x - 4.0) * v,
+						track.get_center().y), 7.0, Color("#e6ecff"))
+				_otext(_font_bold, Vector2(r.end.x - 44.0, r.get_center().y),
+					"%d%%" % int(round(v * 100.0)), 14, Color("#8d99bd"))
+			"toggle":
+				var on: bool = bool(row["value"])
+				var sw := Rect2(r.end.x - 132.0, r.get_center().y - 14.0, 92.0, 28.0)
+				_panel(sw, Color("#1f8a70") if on else Color("#2a3355"),
+					Color(PLAYER_ACCENT if on else Color("#4d5878"), 0.8), 14.0, 1.0)
+				_overlay.draw_circle(Vector2(sw.position.x + (68.0 if on else 24.0),
+					sw.get_center().y), 10.0, Color("#e6ecff"))
+				_otext(_font_bold, Vector2(sw.position.x + (26.0 if on else 66.0),
+					sw.get_center().y), "ON" if on else "OFF", 11,
+					Color("#e6ecff") if on else Color("#7c88ad"))
+			"text":
+				var field := Rect2(r.end.x - 336.0, r.get_center().y - 18.0, 300.0, 36.0)
+				var editing: bool = settings_editing
+				_panel(field, Color("#111730"),
+					Color(PLAYER_ACCENT, 0.7 if editing else 0.25), 8.0,
+					2.0 if editing else 1.0)
+				var caret := "_" if editing and fmod(
+					Time.get_ticks_msec() / 1000.0, 1.0) < 0.55 else ""
+				_text_fit_overlay(_font_bold, field.get_center(),
+					String(row["value"]) + caret, 18, field.size.x - 20.0,
+					Color("#e6ecff"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	_otext(_font, Vector2(cx, 656.0),
+		"click a slider or switch · click your name to change it · ESC back", 12,
+		Color("#5d6a92"))
+
+
+## One table for drawing and hit-testing both, so a control that is on screen is
+## always a control that responds.
+func _settings_rows() -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var defs := [
+		["music", "slider", "Music", "the bed under everything",
+			float(Profile.pref("music"))],
+		["sfx", "slider", "Sound effects", "typing, impacts, power words",
+			float(Profile.pref("sfx"))],
+		["texture", "toggle", "Screen texture", "film grain and vignette",
+			bool(Profile.pref("texture"))],
+		["hitstop", "toggle", "Impact freeze", "the pause on a heavy hit",
+			bool(Profile.pref("hitstop"))],
+		["fullscreen", "toggle", "Fullscreen", "",
+			bool(Profile.pref("fullscreen"))],
+		["name", "text", "Your name", "shown to other players",
+			Link.my_name],
+	]
+	var out: Array = []
+	for i in defs.size():
+		var d: Array = defs[i]
+		out.append({
+			"rect": Rect2(cx - 360.0, 136.0 + i * 72.0, 720.0, 60.0),
+			"action": "set:" + String(d[0]),
+			"kind": String(d[1]), "label": String(d[2]), "note": String(d[3]),
+			"value": d[4],
+		})
+	return out
+
+
+## A click on a settings row. Sliders take their new value from where along the
+## track you clicked, which is one gesture rather than the drag-and-release a
+## real handle would need — and for six rows of preferences, a handle is more
+## machinery than the job is worth.
+func _change_setting(key: String) -> void:
+	if key == "name":
+		settings_editing = not settings_editing
+		Sfx.play("key", 1.2)
+		return
+	if key == "texture" or key == "hitstop" or key == "fullscreen":
+		Profile.set_pref(key, not bool(Profile.pref(key)))
+		_apply_prefs()
+		Sfx.play("count", 1.3 if bool(Profile.pref(key)) else 0.9)
+		return
+
+	for row: Dictionary in _settings_rows():
+		if String(row["action"]) != "set:" + key:
+			continue
+		var r: Rect2 = row["rect"]
+		var track_x := r.position.x + 302.0
+		var at := get_viewport().get_mouse_position().x
+		var v := clampf((at - track_x) / 316.0, 0.0, 1.0)
+		Profile.set_pref(key, v)
+		_apply_prefs()
+		# Audible on the way past, or a volume slider is set blind.
+		Sfx.play("key", 1.0 + v * 0.5)
+
+
+## Push every stored preference at the thing that owns it. Called on boot and
+## after any change, so there is one path from the saved value to the effect and
+## no chance of the screen and the game disagreeing.
+func _apply_prefs() -> void:
+	Music.set_gain(float(Profile.pref("music")))
+	Sfx.set_gain(float(Profile.pref("sfx")))
+	fx_texture = bool(Profile.pref("texture"))
+	fx_hitstop = bool(Profile.pref("hitstop"))
+	if not fx_hitstop:
+		_clear_hitstop()
+	var full := bool(Profile.pref("fullscreen"))
+	var want := DisplayServer.WINDOW_MODE_FULLSCREEN if full \
+		else DisplayServer.WINDOW_MODE_WINDOWED
+	if DisplayServer.window_get_mode() != want:
+		DisplayServer.window_set_mode(want)
+
+
+## Who you are lining up against. Deliberately shaped like the versus lobby:
+## seats along the top, and a roster underneath that fills whichever seat you
+## have picked. Choosing an opponent was the title screen's job until it had
+## seven of them on it — and it never let you choose more than one at a time,
+## which made a free-for-all three copies of the same personality.
+func _draw_solo(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.93), true)
+	_draw_decor()
+
+	_otext(_font_bold, Vector2(cx, 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
+	_otext(_font, Vector2(cx, 96.0), "add up to three, and pick who they are", 14,
+		Color("#8d99bd"))
+
+	# The table, you included, so the size of the match is visible rather than
+	# inferred from how many seats happen to be filled.
+	var seats := _solo_seat_rects()
+	for i in seats.size():
+		var r: Rect2 = seats[i]
+		var mine := i == 0
+		var who: String = "" if mine else String(solo_seats[i - 1])
+		var picked: bool = not mine and solo_pick == i - 1
+		var accent: Color = SLOT_ACCENTS[i]
+		var filled: bool = mine or who != ""
+
+		_panel(r, Color("#1b2444") if picked else Color("#141b33"),
+			Color(accent, 0.95 if picked else (0.4 if filled else 0.16)), 10.0,
+			3.0 if picked else 2.0)
+		_otext(_font, Vector2(r.get_center().x, r.position.y + 20.0),
+			"YOU" if mine else "SEAT %d" % i, 10, Color("#7c88ad"))
+
+		var label := Profile.title_text().to_upper() if mine else "EMPTY"
+		if mine and label == "":
+			label = "READY"
+		elif not mine and who == "?":
+			label = "RANDOM"
+		elif not mine and who != "":
+			label = who.to_upper()
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 44.0),
+			label, 17, r.size.x - 16.0,
+			Color("#e6ecff") if filled else Color("#4d5878"))
+
+		if not mine and who != "" and who != "?":
+			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
+				"%d wpm" % int(AiOpponent.spec(who)["wpm"]), 11, accent)
+		elif not mine and who == "?":
+			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
+				"rolled each match", 11, Color("#7c88ad"))
+
+	_otext(_font, Vector2(cx, 210.0),
+		"click a seat, then pick below · %d opponent%s" % [
+			_solo_filled(), "" if _solo_filled() == 1 else "s"], 12, Color("#5d6a92"))
+
+	for c: Dictionary in _solo_cards():
+		var r: Rect2 = c["rect"]
+		var hot: bool = _hover_action == String(c["action"])
+		var on: bool = String(solo_seats[solo_pick]) == String(c["id"])
+		if hot:
+			r = Rect2(r.position - Vector2(0, 3), r.size)
+		var accent: Color = c["accent"]
+		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
+			Color("#ffd166") if on else Color(accent, 0.9 if hot else 0.28), 10.0,
+			3.0 if on else 2.0)
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 26.0),
+			String(c["name"]).to_upper(), 17, r.size.x - 20.0,
+			Color.WHITE if hot else Color("#e6ecff"))
+		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 48.0),
+			String(c["note"]), 11, r.size.x - 14.0, Color("#8d99bd"), 9)
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	_otext(_font, Vector2(cx, 566.0),
+		"1 / 2 / 3 select a seat · ENTER starts · ESC back", 12, Color("#5d6a92"))
+
+
+func _solo_seat_rects() -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var w := 168.0
+	var gap := 12.0
+	var span := 4.0 * w + 3.0 * gap
+	var out: Array = []
+	for i in 4:
+		out.append(Rect2(cx - span * 0.5 + i * (w + gap), 118.0, w, 76.0))
+	return out
+
+
+## Everything that can go in a seat: nothing, a random pick, or one of the
+## roster. Built from `AiOpponent.ROSTER`, so a new personality appears here the
+## moment it exists.
+func _solo_cards() -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var list: Array = [
+		{"id": "", "name": "Empty", "note": "leave the seat open",
+			"accent": Color("#5d6a92")},
+		{"id": "?", "name": "Random", "note": "rolled at the start of each match",
+			"accent": Color("#ffd166")},
+	]
+	for name: String in AiOpponent.ROSTER:
+		var d: Dictionary = AiOpponent.spec(name)
+		list.append({"id": name, "name": name, "note": String(d["style"]),
+			"accent": Color(String(d["tint"]))})
+
+	var out: Array = []
+	var per_row := 5
+	var cw := 202.0
+	var ch := 66.0
+	for i in list.size():
+		var e: Dictionary = list[i]
+		var row := i / per_row
+		var col := i % per_row
+		var wide: int = mini(per_row, list.size() - row * per_row)
+		var span := wide * cw + (wide - 1) * 10.0
+		e["rect"] = Rect2(cx - span * 0.5 + col * (cw + 10.0), 234.0 + row * (ch + 10.0),
+			cw, ch)
+		e["action"] = "seat:%s" % String(e["id"])
+		out.append(e)
+	return out
+
+
+func _solo_filled() -> int:
+	var n := 0
+	for w in solo_seats:
+		if String(w) != "":
+			n += 1
+	return n
+
+
+## Turn the seats into the lineup a match actually runs. Random seats roll here,
+## once, so a "random" opponent is a surprise rather than a thing that changes
+## under you between the menu and the countdown.
+func _solo_lineup() -> Array:
+	var out: Array = []
+	for w in solo_seats:
+		var id := String(w)
+		if id == "":
+			continue
+		out.append(AiOpponent.ROSTER.pick_random() if id == "?" else id)
+	if out.is_empty():
+		out.append("Duelist")
+	return out
 
 
 ## Everything you have ever done, what it earned, and what you are wearing.
@@ -3271,75 +3605,41 @@ func _menu_buttons() -> Array:
 		# Nothing behind the rules screen is clickable; see `_draw_title`.
 		if show_rules and phase == Phase.TITLE:
 			return out
-		# Seven opponents in two rows, widest first. They are laid out from the
-		# roster rather than a hand-written list, so adding a personality to
-		# `AiOpponent` puts it on the menu with no layout to touch.
-		var roster: Array = AiOpponent.ROSTER
-		var per_row := int(ceil(roster.size() / 2.0))
-		var cw := 236.0
-		var ch := 84.0
-		var gap := 8.0
-		for i in roster.size():
-			var d: Dictionary = AiOpponent.spec(roster[i])
-			var row := i / per_row
-			var col := i % per_row
-			var wide: int = mini(per_row, roster.size() - row * per_row)
-			var span := wide * cw + (wide - 1) * gap
+		# Four doors, and that is the entire title screen. It used to carry the
+		# whole opponent roster plus two mode buttons plus the rules toggle,
+		# which meant the first thing anybody saw was fourteen choices at once.
+		# Choosing an opponent is a decision that belongs *inside* single player,
+		# not in front of it.
+		var doors := [
+			["1", "Single player", "you against the machines", "solo", Color("#7bdff2")],
+			["2", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
+			["3", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
+			["4", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
+		]
+		var w := 262.0
+		var gap := 14.0
+		var span := doors.size() * w + (doors.size() - 1) * gap
+		for i in doors.size():
+			var d: Array = doors[i]
 			out.append({
-				"rect": Rect2(cx - span * 0.5 + col * (cw + gap),
-					398.0 + row * (ch + gap), cw, ch),
-				"key": str(i + 1), "label": roster[i], "sub": "%d wpm" % int(d["wpm"]),
-				"note": d["style"], "rating": int(d["rating"]),
-				"accent": Color(String(d["tint"])),
-				"action": "diff:" + roster[i],
+				"rect": Rect2(cx - span * 0.5 + i * (w + gap), 428.0, w, 112.0),
+				"key": String(d[0]), "label": String(d[1]), "sub": String(d[2]),
+				"note": "", "rating": 0, "accent": d[4], "action": String(d[3]),
 			})
+	elif phase == Phase.SOLO:
 		out.append({
-			"rect": Rect2(cx - 234.0, 582.0, 230.0, 44.0), "key": "F",
-			"label": "Free-for-all", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#ffd166"), "action": "ffa"})
+			"rect": Rect2(cx - 150.0, 428.0, 300.0, 54.0), "key": "ENTER",
+			"label": "Start", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#7bdff2"), "action": "solo_start"})
 		out.append({
-			"rect": Rect2(cx + 4.0, 582.0, 230.0, 44.0), "key": "V",
-			"label": "Versus a friend", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#c77dff"), "action": "versus"})
+			"rect": Rect2(cx - 150.0, 494.0, 300.0, 38.0), "key": "ESC",
+			"label": "Back", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.SETTINGS:
 		out.append({
-			"rect": Rect2(cx - 110.0, 634.0, 220.0, 38.0), "key": "P",
-			"label": "Mastery", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#ffd166"), "action": "mastery"})
-	elif phase == Phase.LOBBY:
-		if Link.connected:
-			if Link.is_host and Link.free_seats() > 0:
-				out.append({
-					"rect": Rect2(cx + 186.0, 436.0, 150.0, 74.0), "key": "+",
-					"label": "Add CPU", "sub": "", "note": "", "rating": 0,
-					"accent": Color("#ffd166"), "action": "addbot"})
-			if Link.is_host and Link.bot_count > 0:
-				out.append({
-					"rect": Rect2(cx - 336.0, 436.0, 150.0, 74.0), "key": "-",
-					"label": "Drop CPU", "sub": "", "note": "", "rating": 0,
-					"accent": Color("#8d99bd"), "action": "dropbot"})
-			out.append({
-				"rect": Rect2(cx - 170.0, 436.0, 340.0, 74.0), "key": "ENTER",
-				"label": "Not ready" if Link.my_ready else "Ready up",
-				"sub": "", "note": "", "rating": 0,
-				"accent": Color("#ffd166") if Link.my_ready else PLAYER_ACCENT,
-				"action": "ready"})
-			out.append({
-				"rect": Rect2(cx - 90.0, 526.0, 180.0, 44.0), "key": "ESC",
-				"label": "Leave", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#8d99bd"), "action": "leave"})
-		else:
-			out.append({
-				"rect": Rect2(cx - 330.0, 448.0, 320.0, 66.0), "key": "CTRL+H",
-				"label": "Host", "sub": "", "note": "", "rating": 0,
-				"accent": PLAYER_ACCENT, "action": "host"})
-			out.append({
-				"rect": Rect2(cx + 10.0, 448.0, 320.0, 66.0), "key": "ENTER",
-				"label": "Join", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#c77dff"), "action": "join"})
-			out.append({
-				"rect": Rect2(cx - 90.0, 530.0, 180.0, 44.0), "key": "ESC",
-				"label": "Back", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#8d99bd"), "action": "title"})
+			"rect": Rect2(cx - 90.0, 600.0, 180.0, 42.0), "key": "ESC",
+			"label": "Back", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.MASTERY:
 		out.append({
 			"rect": Rect2(cx - 128.0, 238.0, 30.0, 26.0), "key": "<",
@@ -3557,6 +3857,18 @@ func _action_at(p: Vector2) -> String:
 	for b: Dictionary in _menu_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
+	if phase == Phase.SOLO:
+		var seats := _solo_seat_rects()
+		for i in range(1, seats.size()):
+			if (seats[i] as Rect2).has_point(p):
+				return "pick:%d" % (i - 1)
+		for c: Dictionary in _solo_cards():
+			if (c["rect"] as Rect2).has_point(p):
+				return String(c["action"])
+	if phase == Phase.SETTINGS:
+		for row: Dictionary in _settings_rows():
+			if (row["rect"] as Rect2).has_point(p):
+				return String(row["action"])
 	if phase == Phase.MASTERY:
 		for c: Dictionary in _mastery_cards():
 			if (c["rect"] as Rect2).has_point(p):
@@ -3585,9 +3897,6 @@ func _activate(action: String) -> void:
 		phase = Phase.TITLE
 		_hover_action = ""
 		Sfx.play("back")
-	elif action == "ffa":
-		Link.leave()
-		start_match(difficulty, 3)
 	elif action == "rematch":
 		# Still connected? Both players go back to the room and ready up again.
 		if Link.connected:
@@ -3595,7 +3904,10 @@ func _activate(action: String) -> void:
 		elif net_active() or difficulty == "Versus":
 			_activate("versus")
 		else:
-			start_match(difficulty, slots_in_play - 1)
+			# Straight from the seats, so a random opponent is genuinely rolled
+			# again rather than quietly becoming whoever it was last time.
+			var again := _solo_lineup()
+			start_match(again[0], again.size(), again)
 	elif action == "versus":
 		Link.leave()
 		Link.status = ""
@@ -3634,6 +3946,36 @@ func _activate(action: String) -> void:
 			Sfx.play("count", 1.3)
 		else:
 			lobby_field = which
+	elif action == "solo":
+		phase = Phase.SOLO
+		_hover_action = ""
+		Sfx.play("count", 1.1)
+	elif action == "settings":
+		phase = Phase.SETTINGS
+		settings_editing = false
+		_hover_action = ""
+		Sfx.play("count", 1.1)
+	elif action == "solo_start":
+		var lineup := _solo_lineup()
+		Link.leave()
+		start_match(lineup[0], lineup.size(), lineup)
+	elif action.begins_with("pick:"):
+		solo_pick = clampi(int(action.substr(5)), 0, solo_seats.size() - 1)
+		Sfx.play("key", 1.2)
+	elif action.begins_with("seat:"):
+		solo_seats[solo_pick] = action.substr(5)
+		# Filling a seat moves you on to the next empty one, so setting up three
+		# opponents is three clicks rather than six.
+		if String(solo_seats[solo_pick]) != "":
+			for i in solo_seats.size():
+				var at := (solo_pick + 1 + i) % solo_seats.size()
+				if String(solo_seats[at]) == "":
+					solo_pick = at
+					break
+		Profile.set_pref("solo", solo_seats.duplicate())
+		Sfx.play("count", 1.25)
+	elif action.begins_with("set:"):
+		_change_setting(action.substr(4))
 	elif action == "mastery":
 		phase = Phase.MASTERY
 		_hover_action = ""

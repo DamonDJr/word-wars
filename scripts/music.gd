@@ -40,6 +40,9 @@ const FADE := 0.8
 const STING_FADE := 0.7
 
 var muted := false
+## 0..1 from the settings screen. Applied on top of MUSIC_DB and the per-track
+## trim, so the mix between tracks is preserved at every volume.
+var gain := 1.0
 
 var _players: Array[AudioStreamPlayer] = []
 var _live := 0
@@ -109,9 +112,15 @@ func _stream(key: String) -> AudioStream:
 	return s
 
 
+func set_gain(v: float) -> void:
+	gain = clampf(v, 0.0, 1.0)
+
+
 func _process(delta: float) -> void:
 	_fade_t = minf(1.0, _fade_t + delta / maxf(_fade_len, 0.01))
-	var ceiling := -80.0 if muted else MUSIC_DB + float(TRIM.get(_current, 0.0))
+	var trim := linear_to_db(maxf(gain, 0.0001))
+	var ceiling := -80.0 if (muted or gain <= 0.001) else \
+		MUSIC_DB + float(TRIM.get(_current, 0.0)) + trim
 	for i in _players.size():
 		var p := _players[i]
 		if not p.playing:
@@ -119,7 +128,7 @@ func _process(delta: float) -> void:
 		# The incoming track rises while the outgoing one falls. Fading in dB
 		# rather than linear amplitude keeps the crossover from dipping.
 		var mix: float = _fade_t if i == _live else 1.0 - _fade_t
-		p.volume_db = lerpf(-80.0, ceiling if i == _live else MUSIC_DB, mix)
+		p.volume_db = lerpf(-80.0, ceiling if i == _live else MUSIC_DB + trim, mix)
 		if i != _live and _fade_t >= 1.0:
 			p.stop()
 

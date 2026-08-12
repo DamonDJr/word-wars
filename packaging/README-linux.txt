@@ -9,7 +9,7 @@ Run it
 
 Playing a friend
 ----------------
-Press V on the title screen.
+Press 2 on the title screen for multiplayer.
 
   One of you clicks HOST and gets a room code. Click the code to copy it,
   then send it over — Discord, text, whatever.
@@ -54,7 +54,7 @@ board themes, block styles and effects.
 None of it changes how the game plays. It is there to be shown off, not cashed
 in, so nobody ever has an advantage because they have played longer.
 
-Press P on the title screen to see where you are and what is close.
+Press 3 on the title screen to see where you are and what is close.
 
 Seven opponents, and they do not just type at different speeds. Magpie is as
 slow as the beginner but answers with nine-letter words. Metronome never lets
@@ -81,6 +81,7 @@ Controls
   CTRL+BACKSPACE       clear the line
   ESC                   pause menu / leave match
   H   (title screen)    full rules
+  1-4 (title screen)    single player / multiplayer / mastery / settings
   R   (after a match)   rematch
   F1                    mute
 

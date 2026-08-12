@@ -28,7 +28,7 @@ to install and nothing to tidy up.
 
 Playing a friend
 ----------------
-Press V on the title screen. One of you clicks HOST and gets a room code —
+Press 2 on the title screen for multiplayer. One of you clicks HOST and gets a room code —
 click it to copy, then send it over. The other pastes it with CTRL+V and clicks
 JOIN. Everyone readies up. Up to four people per room, and the host can add
 CPUs with + to fill the empty seats.
