@@ -76,6 +76,11 @@ func _build_bank() -> void:
 	# Cashing in a maxed chain: a fast rising run, then the rain of blocks.
 	_bank["salvo"] = _arp([392.0, 523.0, 659.0, 784.0, 1047.0, 1319.0], 0.055, 0.80, 2.6, 0.40)
 
+	# A power word landing. A bright open fifth rather than a full run — it has
+	# to be able to fire three times in a second when one word trips several,
+	# and a fanfare that long would smear into the next one.
+	_bank["power"] = _arp([659.0, 988.0, 1319.0], 0.045, 0.42, 3.0, 0.34)
+
 	# Countdown ticks, rising toward the GO fanfare.
 	_bank["count"] = _tone(520.0, 500.0, 0.16, 3.0, 0.20, 0.02, 0.30)
 

@@ -626,6 +626,63 @@ without a second packet.
 Tune all of it in `AiOpponent.DIFFICULTIES`. Adding an entry there and to
 `ROSTER` puts it on the menu; the picker builds itself from the roster.
 
+## Power words
+
+Four situations the rules already allowed and the game never bothered to notice.
+That is the whole design: none of them asks anything new of you, so the first one
+you trigger is always an accident — the game names it, pays for it, and you spend
+the next match trying to do it again on purpose.
+
+| | When | What you get |
+|:--|:--|:--|
+| **COUNTER** | you shoot down something already inbound | one goes straight back |
+| **COMBO** | you break three blocks at once | your **next** attack is a tier bigger |
+| **PERFECT** | you break three *without* dropping your run | a whole extra attack, now |
+| **CLUTCH** | you break anything with one row of headroom left | the garbage nearly stops |
+
+They stack. One word that intercepts, breaks three and keeps the run going fires
+COUNTER, COMBO and PERFECT together, and the banners pile up the board rather
+than landing on each other.
+
+A few decisions worth knowing:
+
+- **COMBO pays forward, PERFECT pays now.** That is the only difference in their
+  timing and it is deliberate: COMBO is a promise you have to survive long enough
+  to cash, so it changes how you play the *next* word. The tier it owes is spent
+  the moment you attack again, and the match log says `(+1 tier)` so it never
+  cashes in invisibly.
+- **PERFECT is the hard version of COMBO**, not a separate trick — same three
+  blocks, but you had to already be mid-run. The two firing together is the
+  crescendo, not a bug.
+- **COUNTER is one for one.** It sends back exactly what it shot down, so it can
+  never pay out more than was aimed at you in the first place.
+- **CLUTCH slows the garbage rather than stopping it** — `CLUTCH_RATE`, about a
+  third speed — and suppresses the next ambient pressure seed on that board. A
+  stay of execution, not a pardon; you still have to type your way out. Note its
+  threshold is stricter than the music's: the soundtrack escalates at three rows
+  of headroom as a warning, the power word pays at one.
+- **Everyone can earn them**, CPUs included. They are rules, not a player perk.
+  Only your own get a banner, for the same reason only your own score is drawn.
+- **A salvo swallows them.** Cashing a maxed chain is already the biggest thing
+  in the game and does not need power words stacked on top.
+
+Each pays a flat bonus — 150 to 500 — announced on the banner itself rather than
+as a second floating number, so one thing arrives saying both what happened and
+what it was worth.
+
+### Testing them
+
+They fire on situations that are hard to reach by playing: COMBO wants three
+identically stamped blocks and a word long enough to reach all three, CLUTCH
+wants a board one row from the ceiling. Waiting for those to happen by accident
+is not a test, so `tools/powertest.gd` builds the board to order and plays the
+word straight into `_play_word`, then reads the match log — the same evidence the
+player gets. It checks the negative cases too: PERFECT must stay quiet when the
+chain has lapsed, and an ordinary word on a quiet board must trip nothing at all.
+A power word that fires constantly is not a power word.
+
+`tools/build.sh` will not produce a build if that check fails.
+
 ## Scoring
 
 Letter values are Scrabble's, unchanged, because everybody already knows them —

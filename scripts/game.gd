@@ -84,6 +84,36 @@ const RESPITE := 2.5
 ## celebration that fires on every third word stops reading as a celebration.
 const BIG_SCORE := 600
 
+## Power words. None of these ask anything new of you — they are all things the
+## rules already let you do, that the game never bothered to notice. That is the
+## point: they teach the deep play by rewarding it the first time it happens by
+## accident, rather than by explaining it up front.
+##
+##   COUNTER  shoot down something already inbound   -> send one straight back
+##   COMBO    break three at once                    -> next attack is a tier bigger
+##   PERFECT  break three at once WITHOUT dropping   -> a whole extra attack
+##            your run, which is the hard version
+##   CLUTCH   break anything with one row of         -> the garbage nearly stops
+##            headroom left
+const COMBO_AT := 3
+const PERFECT_AT := 3
+## Headroom, in rows, that counts as one from death.
+const CLUTCH_ROWS := 1
+const CLUTCH_TIME := 4.5
+## How fast garbage falls during a reprieve. Not zero — a stay of execution, not
+## a pardon.
+const CLUTCH_RATE := 0.3
+
+const POWERS := {
+	"COUNTER": {"tint": "#7bdff2", "bonus": 150, "note": "sent it back"},
+	"COMBO": {"tint": "#ffd166", "bonus": 250, "note": "next hit is bigger"},
+	"PERFECT": {"tint": "#c77dff", "bonus": 500, "note": "free attack"},
+	"CLUTCH": {"tint": "#90be6d", "bonus": 300, "note": "garbage slowed"},
+}
+## Loudest last, so a word that trips several announces the best of them nearest
+## the eye and does not bury it under the ordinary ones.
+const POWER_ORDER := ["COUNTER", "COMBO", "CLUTCH", "PERFECT"]
+
 ## A word earns time proportional to its own length, so long words are not
 ## punished for taking longer to type — but they buy no extra block size.
 const CHAIN_BASE := 1.8
@@ -165,6 +195,11 @@ class SideState extends RefCounted:
 	var life_flash := 0.0
 	var salvos := 0
 	var salvo_flash := 0.0
+	## Owed by a COMBO to the NEXT attack, and spent there.
+	var tier_bonus := 0
+	## Seconds of CLUTCH reprieve still running on this board.
+	var slowdown := 0.0
+	var powers_fired := 0
 	var in_danger := false
 	var flash := 0.0
 
@@ -204,6 +239,9 @@ var winner := ""
 var score_pops: Array = []
 var score_shown := 0.0
 var score_kick := 0.0
+## Power-word banners. Kept separate from the score pops because they are an
+## announcement rather than a number, and they stack when one word trips several.
+var power_pops: Array = []
 ## Characters actually typed, for a real WPM rather than one inferred from words.
 var chars_typed := 0
 
@@ -400,6 +438,9 @@ func start_match(diff: String, bots: int = 1) -> void:
 		s.life_flash = 0.0
 		s.salvos = 0
 		s.salvo_flash = 0.0
+		s.tier_bonus = 0
+		s.slowdown = 0.0
+		s.powers_fired = 0
 		s.in_danger = false
 		s.flash = 0.0
 		s.target = 0
@@ -410,6 +451,7 @@ func start_match(diff: String, bots: int = 1) -> void:
 	events.clear()
 	recent_stamps.clear()
 	score_pops.clear()
+	power_pops.clear()
 	score_shown = 0.0
 	score_kick = 0.0
 	chars_typed = 0
@@ -720,6 +762,12 @@ func _play_word(attacker: SideState, word: String) -> void:
 	attacker.used[word] = true
 	attacker.words_played += 1
 
+	# Both measured before the word does its work: clearing raises the ceiling and
+	# firing resets the chain window, so afterwards there is no way to tell
+	# whether this was a rescue or whether the run was already going.
+	var on_the_brink := attacker.board.stack_top() <= CLUTCH_ROWS
+	var held_chain := attacker.chain_timer > 0.0
+
 	# One word only reaches so far. Blocks already on the board go first — they
 	# are the ones crowding you right now — then anything still inbound.
 	var budget := _reach(word)
@@ -753,33 +801,107 @@ func _play_word(attacker: SideState, word: String) -> void:
 	attacker.best_chain = maxi(attacker.best_chain, attacker.chain)
 	# Banked after the chain steps up, so the word that extends a run is paid at
 	# the run's new length rather than its old one.
-	_award(attacker, word, combo)
+	var earned := _award(attacker, word, combo)
 
-	# Top of the ladder: cash the run in and start over.
+	# What this word noticed about itself. Order does not matter here; it does
+	# when they are announced.
+	var powers: Array = []
+	if intercepted > 0:
+		powers.append("COUNTER")
+	if cleared >= COMBO_AT:
+		powers.append("COMBO")
+	if cleared >= PERFECT_AT and held_chain:
+		powers.append("PERFECT")
+	if cleared > 0 and on_the_brink:
+		powers.append("CLUTCH")
+
+	# Top of the ladder: cash the run in and start over. A salvo is already the
+	# biggest thing in the game, so it swallows any power words the same word
+	# earned rather than stacking on top of them.
 	if attacker.chain >= SALVO_AT:
+		_note_best(attacker, word, earned)
 		_fire_salvo(attacker, defender, word, combo)
 		return
 
 	# Garbage is only ever removed by answering its letters, so the whole hit
-	# goes out. Nothing is held back to defend with.
-	var out_tier := clampi(_chain_tier(attacker.chain) + combo, 0, TIERS.size() - 1)
+	# goes out. Nothing is held back to defend with. A tier owed by an earlier
+	# COMBO is spent here — one earned just now is owed to the next word, which
+	# is what makes it a promise rather than a bonus.
+	var spent := attacker.tier_bonus
+	attacker.tier_bonus = 0
+	var out_tier := clampi(_chain_tier(attacker.chain) + combo + spent, 0, TIERS.size() - 1)
 
 	if out_tier >= 0:
-		if net_active() and not _owned_here(defender):
-			# The defender mints the stamp; only they know their own board.
-			Link.send_attack(defender.peer_id, word, out_tier)
-			defender.flash = 1.0
-		else:
-			var p := Pending.new()
-			p.tier = out_tier
-			p.prefix = _mint_stamp(word, STAMP_WANT, defender)
-			p.cells = _cells(out_tier)
-			p.timer = DROP_DELAY
-			defender.pending.append(p)
-			defender.flash = 1.0
+		_send_block(defender, word, out_tier, DROP_DELAY)
 
+	earned += _fire_powers(attacker, defender, word, powers, out_tier, intercepted)
+	_note_best(attacker, word, earned)
 	_voice_attack(attacker, cleared, intercepted, out_tier)
-	_report(attacker, word, cleared, intercepted, out_tier)
+	_report(attacker, word, cleared, intercepted, out_tier, spent)
+
+
+## The best word of the match is what that word was worth all in — its own score
+## plus anything it triggered — since that is the one you would want to tell
+## somebody about afterwards.
+func _note_best(side: SideState, word: String, earned: int) -> void:
+	if earned > side.best_word_score:
+		side.best_word_score = earned
+		side.best_word = word
+
+
+## One block on its way. The defender mints its own stamp over a network,
+## because only they can see what their board is already holding.
+func _send_block(defender: SideState, word: String, tier: int, delay: float) -> void:
+	if net_active() and not _owned_here(defender):
+		Link.send_attack(defender.peer_id, word, tier)
+		defender.flash = 1.0
+		return
+	var p := Pending.new()
+	p.tier = tier
+	p.prefix = _mint_stamp(word, STAMP_WANT, defender)
+	p.cells = _cells(tier)
+	p.timer = delay
+	defender.pending.append(p)
+	defender.flash = 1.0
+
+
+## Pay out whatever the word triggered, and say so. Everyone can earn these —
+## they are rules, not a player perk — but only your own get a banner, for the
+## same reason only your own score is drawn.
+func _fire_powers(attacker: SideState, defender: SideState, word: String,
+		powers: Array, out_tier: int, intercepted: int) -> int:
+	var paid := 0
+	for name: String in POWER_ORDER:
+		if not powers.has(name):
+			continue
+		attacker.powers_fired += 1
+		var spec: Dictionary = POWERS[name]
+		var tint := Color(String(spec["tint"]))
+
+		match name:
+			"COUNTER":
+				# Literally back where it came from: one for one, so it can never
+				# pay out more than was aimed at you in the first place.
+				for i in intercepted:
+					_send_block(defender, word, 0, DROP_DELAY + 0.25 + i * 0.12)
+			"COMBO":
+				attacker.tier_bonus = 1
+			"PERFECT":
+				_send_block(defender, word, out_tier, DROP_DELAY + 0.4)
+			"CLUTCH":
+				attacker.slowdown = CLUTCH_TIME
+
+		# Flat, and announced on the banner itself rather than as a second
+		# floating number — one thing arriving that says both what happened and
+		# what it paid, instead of two things competing.
+		var bonus := int(spec["bonus"])
+		attacker.score += bonus
+		paid += bonus
+		_log("%s: %s — %s" % [attacker.label, name, String(spec["note"])], tint)
+		if attacker == player:
+			_pop_power(name, bonus, tint)
+			score_kick = 1.0
+	return paid
 
 
 ## Bank what a word was worth. Everyone scores — a rival's total is how you know
@@ -789,9 +911,6 @@ func _award(side: SideState, word: String, combo: int, extra: int = 0) -> int:
 	var a: Dictionary = Scoring.award(word, side.chain, combo)
 	var total: int = int(a["total"]) + extra
 	side.score += total
-	if total > side.best_word_score:
-		side.best_word_score = total
-		side.best_word = word
 
 	if side == player:
 		# The popup shows its working — "34 x3.4" teaches the multipliers without
@@ -809,6 +928,22 @@ func _award(side: SideState, word: String, combo: int, extra: int = 0) -> int:
 			shake = maxf(shake, 0.18)
 			_bloom(Color("#ffd166"), 0.14)
 	return total
+
+
+## An announcement across your own board. Several can be up at once — a word
+## that counters, combos and clutches all at once has earned three lines — so
+## each new one pushes the ones before it upward rather than landing on them.
+func _pop_power(name: String, bonus: int, tint: Color) -> void:
+	for p: Dictionary in power_pops:
+		p["row"] = int(p["row"]) + 1
+	power_pops.append({
+		"name": name, "bonus": bonus, "tint": tint, "life": 1.0, "row": 0,
+	})
+	if power_pops.size() > 4:
+		power_pops.pop_front()
+	Sfx.play("power", 0.9 + 0.12 * POWER_ORDER.find(name))
+	shake = maxf(shake, 0.16)
+	_bloom(tint, 0.12)
 
 
 ## A number where the eye already is: just under your own board, drifting up.
@@ -894,14 +1029,18 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 
 
 func _report(attacker: SideState, word: String, cleared: int, intercepted: int,
-		out_tier: int) -> void:
+		out_tier: int, spent: int = 0) -> void:
 	var bits: Array = []
 	if cleared > 0:
 		bits.append("cleared %d" % cleared)
 	if intercepted > 0:
 		bits.append("shot down %d" % intercepted)
 	if out_tier >= 0:
-		bits.append("sent %dx%d" % [TIERS[out_tier]["w"], TIERS[out_tier]["h"]])
+		var how := "sent %dx%d" % [TIERS[out_tier]["w"], TIERS[out_tier]["h"]]
+		# Worth saying out loud, or a COMBO's promise cashes in invisibly.
+		if spent > 0:
+			how += " (+%d tier)" % spent
+		bits.append(how)
 	var tail := (" (%s)" % ", ".join(bits)) if not bits.is_empty() else " (fizzled)"
 
 	var combo := cleared + intercepted
@@ -1012,6 +1151,13 @@ func _process(delta: float) -> void:
 		if p["life"] > 0.0:
 			live_pops.append(p)
 	score_pops = live_pops
+
+	var live_powers: Array = []
+	for p: Dictionary in power_pops:
+		p["life"] = float(p["life"]) - delta * 0.62
+		if p["life"] > 0.0:
+			live_powers.append(p)
+	power_pops = live_powers
 
 	# Shake the world, then hold the menus still on top of it.
 	shake = maxf(0.0, shake - delta * 2.6)
@@ -1153,9 +1299,15 @@ func _tick_pending(side: SideState, delta: float) -> void:
 	if side.respite > 0.0:
 		side.respite -= delta
 		return
+	# A CLUTCH does not stop the garbage, it slows it. A stay of execution rather
+	# than a pardon — you still have to type your way out.
+	var rate := 1.0
+	if side.slowdown > 0.0:
+		side.slowdown -= delta
+		rate = CLUTCH_RATE
 	for i in range(side.pending.size() - 1, -1, -1):
 		var p: Pending = side.pending[i]
-		p.timer -= delta
+		p.timer -= delta * rate
 		if p.timer <= 0.0:
 			side.pending.remove_at(i)
 			var spec: Dictionary = TIERS[p.tier]
@@ -1189,15 +1341,27 @@ func _tick_pressure(delta: float) -> void:
 ## One seed per board. Each side mints its own stamp from the shared word, so the
 ## stamps stay varied against whatever that player is already holding.
 func _seed_pressure(source: String) -> void:
-	var sides: Array = [player] if net_active() else [player, ai_side]
+	# Every board this machine is responsible for: your own, plus any bots you
+	# are running. Everyone else seeds their own from the same shared word.
+	# This used to name `player` and `ai_side` outright, which quietly left the
+	# third and fourth boards out of the ambient pressure entirely — a free ride
+	# for two of the three CPUs in every free-for-all.
+	var fed := 0
 	for side: SideState in sides:
+		if not side.in_match or not side.alive or not _owned_here(side):
+			continue
+		# A reprieve means nothing NEW arrives either, or the mercy is hollow.
+		if side.slowdown > 0.0:
+			continue
 		var p := Pending.new()
 		p.tier = 0
 		p.prefix = _mint_stamp(source, STAMP_WANT, side)
 		p.cells = _cells(0)
 		p.timer = DROP_DELAY
 		side.pending.append(p)
-	_log("pressure rising — both boards seeded", Color("#8892b0"))
+		fed += 1
+	if fed > 0:
+		_log("pressure rising — every board seeded", Color("#8892b0"))
 
 
 ## Every bot runs its own search against its own board and its own victim.
@@ -1644,6 +1808,7 @@ func _draw_overlay() -> void:
 			Color(flash_color, flash * 0.5), true)
 	if phase == Phase.PLAY:
 		_draw_score_pops()
+		_draw_power_pops()
 		if paused:
 			_draw_pause(size)
 		elif not player.alive:
@@ -1682,6 +1847,41 @@ func _draw_score_pops() -> void:
 		if String(p["note"]) != "":
 			_otext(_font, at + Vector2(0.0, size * 0.72), String(p["note"]),
 				maxi(11, size / 3), Color("#e6ecff", fade * 0.8))
+
+
+## Power-word banners, struck across the middle of your own board. They punch in
+## oversized and settle, which is the whole trick: the eye reads the word before
+## it has finished arriving.
+func _draw_power_pops() -> void:
+	var bw := WWBoard.COLS * WWBoard.CELL
+	var cx := player.board.position.x + bw * 0.5
+	const PUNCH := 1.3
+	for p: Dictionary in power_pops:
+		var life: float = p["life"]
+		var tint: Color = p["tint"]
+		var fade: float = clampf(life * 2.2, 0.0, 1.0)
+		var punch: float = clampf((1.0 - life) * 5.0, 0.0, 1.0)
+		var y: float = BOARD_TOP + WWBoard.ROWS * WWBoard.CELL * 0.42 - int(p["row"]) * 46.0
+
+		# Name and payout on one line, so there is nothing to hang off the side
+		# of a playfield that is only six cells wide. The size is fitted at the
+		# punched size rather than the settled one — otherwise the arrival, which
+		# is the part anybody actually notices, is the part that overflows.
+		var text := "%s +%s" % [String(p["name"]), _commas(int(p["bonus"]))]
+		var size := 34
+		while size > 14 and _font_bold.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT,
+				-1, int(size * PUNCH)).x > bw - 24.0:
+			size -= 2
+		var shown := int(size * lerpf(PUNCH, 1.0, punch))
+
+		var m := _font_bold.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, shown)
+		# A bar behind it, because these land on top of a board full of blocks
+		# and coloured type alone would not survive the background.
+		_overlay.draw_rect(Rect2(cx - m.x * 0.5 - 12.0, y - m.y * 0.5 - 4.0,
+			m.x + 24.0, m.y + 8.0), Color(BG_TOP, 0.78 * fade), true)
+		_overlay.draw_rect(Rect2(cx - m.x * 0.5 - 12.0, y + m.y * 0.5 + 2.0,
+			m.x + 24.0, 2.0), Color(tint, 0.85 * fade), true)
+		_otext(_font_bold, Vector2(cx, y), text, shown, Color(tint, fade))
 
 
 ## Big and unmissable, scaling down as each number's second runs out.
@@ -1746,11 +1946,18 @@ func _draw_title(size: Vector2) -> void:
 		Color(PLAYER_ACCENT, 0.25 + 0.35 * pulse), true)
 	_otext(_font, Vector2(cx, 162), "your endings become their beginnings", 17, Color("#8d99bd"))
 
+	# The full rules take the whole screen, opponent cards included. There is
+	# nowhere to put the power words otherwise, and somebody reading the rules is
+	# not picking an opponent in the same breath. `_menu_buttons` returns nothing
+	# while this is up, so what is drawn and what is clickable still agree.
 	if show_rules:
 		_draw_rules_panel(size)
-	else:
-		_draw_how_cards(cx)
+		_otext(_font, Vector2(cx, 646), "H — back to the opponents", 14, Color("#5d6a92"))
+		_otext(_font, Vector2(cx, 674), "F1 — %s      ESC — quit" % [
+			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
+		return
 
+	_draw_how_cards(cx)
 	_otext(_font_bold, Vector2(cx, 384), "CHOOSE YOUR OPPONENT", 15, Color("#7c88ad"))
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -2047,7 +2254,8 @@ func _lobby_backend_rect(i: int) -> Rect2:
 
 
 func _draw_rules_panel(size: Vector2) -> void:
-	var r := Rect2(size.x * 0.5 - 430.0, 188.0, 860.0, 196.0)
+	var cx := size.x * 0.5
+	var r := Rect2(cx - 430.0, 172.0, 860.0, 424.0)
 	_panel(r, Color("#111730"), Color(PLAYER_ACCENT, 0.22), 12.0)
 	var lines := [
 		"Type a word, fire with SPACE or ENTER. Its LAST letters brand a block on your rival.",
@@ -2058,11 +2266,48 @@ func _draw_rules_panel(size: Vector2) -> void:
 		"A tenth word cashes the run in as a SALVO of single blocks and resets you to nothing.",
 		"Pause or fire a non-word and the run is gone.",
 		"Topping out costs one of THREE LIVES and wipes your board — it does not end the match.",
+		"Words score by their letters, times your chain, times what they broke.",
 	]
-	var y := 210.0
+	var y := 194.0
 	for l: String in lines:
-		_otext(_font, Vector2(size.x * 0.5, y), l, 14, Color("#aab4d4"))
-		y += 26.0
+		_otext(_font, Vector2(cx, y), l, 14, Color("#aab4d4"))
+		y += 25.0
+
+	# Power words are worth spelling out here, but they are meant to be met in
+	# play first: the game announces one the first time you manage it by
+	# accident, and this is where you come to find out what happened.
+	y += 12.0
+	_overlay.draw_rect(Rect2(cx - 380.0, y - 8.0, 760.0, 1.0), Color(PLAYER_ACCENT, 0.2), true)
+	y += 16.0
+	_otext(_font_bold, Vector2(cx, y), "POWER WORDS", 15, Color("#e6ecff"))
+	y += 24.0
+	var how := {
+		"COUNTER": "shoot down something already inbound     send one straight back",
+		"COMBO": "break three blocks at once     your next attack is a tier bigger",
+		"PERFECT": "break three WITHOUT dropping your run     a whole extra attack",
+		"CLUTCH": "break anything with one row left     the garbage nearly stops",
+	}
+	# Measured first so the four rows share one column layout: names right-aligned
+	# against a common edge, bodies all starting at the same x. Centring each row
+	# on its own width reads as four unrelated notes rather than a table.
+	var name_w := 0.0
+	var body_w := 0.0
+	for name: String in POWER_ORDER:
+		name_w = maxf(name_w, _font_bold.get_string_size(
+			name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x)
+		body_w = maxf(body_w, _font.get_string_size(
+			String(how[name]), HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x)
+	var left := cx - (name_w + 18.0 + body_w) * 0.5
+
+	for name: String in POWER_ORDER:
+		var tint := Color(String(POWERS[name]["tint"]))
+		var text: String = how[name]
+		var nm := _font_bold.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
+		var bd := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
+		_otext(_font_bold, Vector2(left + name_w - nm.x * 0.5, y), name, 14, tint)
+		_otext(_font, Vector2(left + name_w + 18.0 + bd.x * 0.5, y), text, 13,
+			Color("#8d99bd"))
+		y += 24.0
 
 
 func _draw_gameover(size: Vector2) -> void:
@@ -2099,9 +2344,10 @@ func _draw_gameover(size: Vector2) -> void:
 		["CLEARED", str(player.blocks_cleared)],
 		["BEST CHAIN", "x%d" % player.best_chain],
 		["BEST COMBO", "x%d" % player.best_combo],
+		["POWERS", str(player.powers_fired)],
 		["SALVOS", str(player.salvos)],
 	]
-	var tw := 148.0
+	var tw := 132.0
 	var total := stats.size() * tw + (stats.size() - 1) * 12.0
 	for i in stats.size():
 		var x := cx - total * 0.5 + i * (tw + 12.0)
@@ -2329,6 +2575,9 @@ func _menu_buttons() -> Array:
 	# would undo the point of cross-fading at all. Nothing can be clicked yet —
 	# input is still swallowed by the splash.
 	if phase == Phase.TITLE or phase == Phase.SPLASH:
+		# Nothing behind the rules screen is clickable; see `_draw_title`.
+		if show_rules and phase == Phase.TITLE:
+			return out
 		# Seven opponents in two rows, widest first. They are laid out from the
 		# roster rather than a hand-written list, so adding a personality to
 		# `AiOpponent` puts it on the menu with no layout to touch.

@@ -34,6 +34,16 @@ Words score like Scrabble — a Q is worth reaching for and an E is not — then
 multiply by the chain you are holding and the blocks you just broke. Your score
 and typing speed are both on the summary at the end.
 
+POWER WORDS fire when you pull off something hard. You do not need to learn
+them — the game names them when they happen:
+
+  COUNTER   shoot down a block before it lands   send one straight back
+  COMBO     break three blocks at once           next attack is a tier bigger
+  PERFECT   break three WITHOUT losing your run  a whole extra attack
+  CLUTCH    break one with a single row left     the garbage nearly stops
+
+Press H on the title screen for the full rules.
+
 Seven opponents, and they do not just type at different speeds. Magpie is as
 slow as the beginner but answers with nine-letter words. Metronome never lets
 its chain lapse. Berserker never defends at all. A free-for-all deals you three

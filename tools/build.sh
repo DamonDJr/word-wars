@@ -12,6 +12,22 @@ OUT=build
 rm -rf "$OUT"
 mkdir -p "$OUT/linux" "$OUT/windows"
 
+# Power words fire on situations that are hard to reach by playing — three
+# identically stamped blocks, or a board one row from the ceiling — so they are
+# exactly the rules most likely to rot unnoticed. Gate the build on them.
+#
+# Captured to a variable rather than piped into `grep -q`: this script runs under
+# `pipefail`, and grep exiting the moment it matches sends godot a SIGPIPE, which
+# would fail the pipeline on success.
+echo "==> Rules check"
+RULES=$("$(command -v godot)" --headless --script tools/powertest.gd 2>&1 || true)
+if ! grep -q "all power words behave" <<<"$RULES"; then
+	echo "FAILED: the power words are not behaving." >&2
+	grep -E "FAILED" <<<"$RULES" >&2 || true
+	echo "        Run: godot --headless --script tools/powertest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"
