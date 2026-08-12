@@ -125,8 +125,11 @@ const AI_ACCENT := Color("#ff8fa3")
 const SLOT_ACCENTS := [
 	Color("#7bdff2"), Color("#ff8fa3"), Color("#ffd166"), Color("#c77dff"),
 ]
-const BG_TOP := Color("#0b1020")
-const BG_BOTTOM := Color("#141a36")
+## Repainted by the equipped board theme; see `_apply_theme`. Everything that
+## draws a backdrop reads these rather than a constant, which is what lets a
+## cosmetic change the whole world without touching a single drawing routine.
+var bg_top := Color("#0b1020")
+var bg_bottom := Color("#141a36")
 
 ## The whole scene shifts when something heavy lands, so the background is drawn
 ## this far past the viewport on every side to keep the edges covered.
@@ -156,7 +159,7 @@ const HITSTOP_SALVO := 220    ## the whole chain cashing in
 const GRAIN := 0.05
 const VIGNETTE := 0.40
 
-enum Phase { SPLASH, TITLE, LOBBY, COUNTDOWN, PLAY, OVER }
+enum Phase { SPLASH, TITLE, LOBBY, MASTERY, COUNTDOWN, PLAY, OVER }
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -193,6 +196,7 @@ class Tracer extends RefCounted:
 	var text := ""
 	var width := 3.0
 	var at_me := false
+	var mine := false
 	## Untyped on purpose: `SideState` is declared after this class.
 	var target = null
 
@@ -240,6 +244,9 @@ class SideState extends RefCounted:
 	var salvos := 0
 	var salvo_flash := 0.0
 	## Owed by a COMBO to the NEXT attack, and spent there.
+	## Power word name -> times earned this match, and the longest word played.
+	var power_tally: Dictionary = {}
+	var longest_word := ""
 	var tier_bonus := 0
 	## Seconds of CLUTCH reprieve still running on this board.
 	var slowdown := 0.0
@@ -289,6 +296,10 @@ var power_pops: Array = []
 ## Characters actually typed, for a real WPM rather than one inferred from words.
 var chars_typed := 0
 
+## One per accepted keystroke, for the equipped typing effect to draw. Spawned
+## even when the effect is "plain" would be waste, so the input handler checks.
+var _key_flecks: Array = []
+
 ## Attacks in flight, and the deadline for the current freeze-frame.
 var tracers: Array = []
 var _hitstop_until := 0
@@ -300,6 +311,11 @@ var shake := 0.0
 var flash := 0.0
 var flash_color := Color.WHITE
 var show_rules := false
+## Which cosmetic category the mastery screen is showing.
+var mastery_slot := 0
+## Set when a finished match is folded into the profile, so the end screen can
+## show what it earned. Cleared when a new match starts.
+var earned: Dictionary = {}
 var decor: Array = []
 var join_ip := "127.0.0.1"
 var lobby_field := 1        # 0 = name, 1 = address
@@ -369,7 +385,26 @@ func _ready() -> void:
 	_overlay.draw.connect(_draw_overlay)
 	_build_screen_texture()
 
+	_apply_theme()
+	Profile.changed.connect(_apply_theme)
+
 	_net_setup()
+
+
+## Push the equipped board theme and block style out to everything that paints.
+## Called on boot and whenever the profile changes, so equipping something in the
+## mastery screen shows up behind it immediately rather than next match.
+func _apply_theme() -> void:
+	var id := Profile.worn("theme")
+	bg_top = Cosmetics.theme_color(id, "top")
+	bg_bottom = Cosmetics.theme_color(id, "bottom")
+	var panel := Cosmetics.theme_color(id, "panel")
+	var grid := Cosmetics.theme_color(id, "grid")
+	var grid_a: float = float(Cosmetics.theme(id)["grid_a"])
+	var style := Profile.worn("blocks")
+	for s: SideState in sides:
+		s.board.set_theme(panel, grid, grid_a, style)
+	queue_redraw()
 
 
 ## Two small textures, built once and tiled or stretched from then on. A
@@ -522,6 +557,8 @@ func start_match(diff: String, bots: int = 1) -> void:
 		s.tier_bonus = 0
 		s.slowdown = 0.0
 		s.powers_fired = 0
+		s.power_tally = {}
+		s.longest_word = ""
 		s.in_danger = false
 		s.flash = 0.0
 		s.target = 0
@@ -533,6 +570,7 @@ func start_match(diff: String, bots: int = 1) -> void:
 	recent_stamps.clear()
 	score_pops.clear()
 	power_pops.clear()
+	_key_flecks.clear()
 	tracers.clear()
 	_clear_hitstop()
 	score_shown = 0.0
@@ -547,6 +585,7 @@ func start_match(diff: String, bots: int = 1) -> void:
 	_hover_action = ""
 	position = Vector2.ZERO
 	_overlay.position = Vector2.ZERO
+	earned = {}
 	countdown = COUNTDOWN_TIME
 	paused = false
 	_last_count_beep = -1
@@ -693,6 +732,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		Sfx.play("back", 1.4)
 		return
 
+	if phase == Phase.MASTERY:
+		match k.keycode:
+			KEY_LEFT, KEY_A: _activate("slot:-1")
+			KEY_RIGHT, KEY_D: _activate("slot:1")
+			KEY_ESCAPE, KEY_P: _activate("title")
+		return
+
 	# The lobby's text fields own the keyboard while it is up.
 	if phase == Phase.LOBBY:
 		match k.keycode:
@@ -743,6 +789,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					_activate("diff:" + AiOpponent.ROSTER[pick])
 			KEY_V: _activate("versus")
 			KEY_F: _activate("ffa")
+			KEY_P: _activate("mastery")
 			KEY_R: _activate("rematch")
 			KEY_H:
 				show_rules = not show_rules
@@ -794,6 +841,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				# what you actually typed — including the letters you thought
 				# better of. That is what a typing test would measure.
 				chars_typed += 1
+				_fleck(low)
 				# Slight per-key drift, or a held burst sounds like a machine.
 				Sfx.play("key", randf_range(0.92, 1.10))
 
@@ -844,6 +892,8 @@ func _play_word(attacker: SideState, word: String) -> void:
 		_aim(attacker, defender)
 	attacker.used[word] = true
 	attacker.words_played += 1
+	if word.length() > attacker.longest_word.length():
+		attacker.longest_word = word
 
 	# Both measured before the word does its work: clearing raises the ceiling and
 	# firing resets the chain window, so afterwards there is no way to tell
@@ -969,6 +1019,7 @@ func _throw(from_side: SideState, to_side: SideState, tier: int, text: String) -
 	tr.width = 3.2 + tier * 1.2
 	tr.span = TRACER_SPAN + 0.035 * tier
 	tr.at_me = to_side == player
+	tr.mine = from_side == player
 	tr.target = to_side
 	tracers.append(tr)
 	# A salvo throws ten at once; past this the screen is a smear anyway.
@@ -1019,6 +1070,7 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 		if not powers.has(name):
 			continue
 		attacker.powers_fired += 1
+		attacker.power_tally[name] = int(attacker.power_tally.get(name, 0)) + 1
 		var spec: Dictionary = POWERS[name]
 		var tint := Color(String(spec["tint"]))
 
@@ -1315,6 +1367,13 @@ func _process(delta: float) -> void:
 			live_pops.append(p)
 	score_pops = live_pops
 
+	var live_flecks: Array = []
+	for f: Dictionary in _key_flecks:
+		f["life"] = float(f["life"]) - delta * 1.7
+		if f["life"] > 0.0:
+			live_flecks.append(f)
+	_key_flecks = live_flecks
+
 	var live_powers: Array = []
 	for p: Dictionary in power_pops:
 		p["life"] = float(p["life"]) - delta * 0.62
@@ -1347,7 +1406,7 @@ func _process(delta: float) -> void:
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
-		and phase != Phase.LOBBY
+		and phase != Phase.LOBBY and phase != Phase.MASTERY
 	for s: SideState in sides:
 		s.board.visible = showing_boards and s.in_match
 	if phase != Phase.PLAY:
@@ -1416,7 +1475,7 @@ func _tick_music(delta: float) -> void:
 
 	var want := "menu"
 	match phase:
-		Phase.SPLASH, Phase.TITLE, Phase.LOBBY:
+		Phase.SPLASH, Phase.TITLE, Phase.LOBBY, Phase.MASTERY:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -1621,6 +1680,53 @@ func _end_match(loser: SideState) -> void:
 	loser.board.shake = 1.0
 	Sfx.play("win" if winner == "YOU" else "lose")
 	_log("%s wins" % winner, Color("#ffd166"))
+	_record_mastery()
+
+
+## Fold the finished match into the lifetime record, and keep what it earned so
+## the end screen can show it. Done here rather than as the match runs, so a
+## match abandoned halfway banks nothing — the level has to mean matches played
+## through, or it means nothing.
+func _record_mastery() -> void:
+	var was_xp := Profile.xp_total()
+	var was_level := Profile.level()
+	var was_unlocked := Profile.unlocked_set()
+
+	Profile.record_match({
+		"won": winner == "YOU",
+		# Winning without spending a single life. The hardest of the flags and
+		# the only one that gates two cosmetics.
+		"flawless": winner == "YOU" and player.lives >= LIVES,
+		"words": player.words_played,
+		"chars": chars_typed,
+		"salvos": player.salvos,
+		# COMBO fires on exactly "three or more broken by one word", so it is
+		# already the multi-clear count; deriving it beats keeping a second
+		# tally that could disagree with the first.
+		"multi_clears": int(player.power_tally.get("COMBO", 0)),
+		"wpm": _wpm(),
+		"chain": player.best_chain,
+		"combo": player.best_combo,
+		"score": player.score,
+		"longest": player.longest_word,
+		"powers": player.power_tally,
+	})
+
+	var fresh: Array = []
+	var now := Profile.unlocked_set()
+	for slot: String in Profile.SLOTS:
+		for id in now[slot]:
+			if not (was_unlocked[slot] as Array).has(id):
+				fresh.append("%s: %s" % [String(Profile.SLOT_NAMES[slot]),
+					String(Profile.entry(slot, String(id))["name"]).to_upper()])
+	earned = {
+		"xp": Profile.xp_total() - was_xp,
+		"from": was_level,
+		"to": Profile.level(),
+		"new": fresh,
+	}
+	if not fresh.is_empty() or Profile.level() > was_level:
+		Sfx.play("salvo", 1.15)
 
 
 ## Gross words per minute, the way a typing test counts it: every five characters
@@ -1648,15 +1754,16 @@ func _log(text: String, color: Color) -> void:
 func _draw() -> void:
 	var size := get_viewport_rect().size
 	var m := SHAKE_MARGIN
-	draw_rect(Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0), BG_TOP, true)
+	draw_rect(Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0), bg_top, true)
 	# Soft vertical wash so the board area lifts off the background.
 	for i in 24:
 		var t := float(i) / 24.0
 		draw_rect(Rect2(-m, size.y * t, size.x + m * 2.0, size.y / 24.0 + 1.0),
-			BG_TOP.lerp(BG_BOTTOM, t), true)
-	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), BG_BOTTOM, true)
+			bg_top.lerp(bg_bottom, t), true)
+	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), bg_bottom, true)
 
-	if phase == Phase.SPLASH or phase == Phase.TITLE or phase == Phase.LOBBY:
+	if phase == Phase.SPLASH or phase == Phase.TITLE or phase == Phase.LOBBY \
+			or phase == Phase.MASTERY:
 		return
 
 	_draw_side_header(player, player.board.position)
@@ -1681,9 +1788,16 @@ func _draw() -> void:
 func _draw_tracers() -> void:
 	const STEPS := 12
 	const STEP := 0.035
+	# Only your own attacks wear your cosmetic. A rival's shot has to keep
+	# reading as a rival's shot, or the one thing tracers were added to make
+	# clear — who is hitting whom — goes back to being a guess.
+	var style := Profile.worn("attack")
 	for tr: Tracer in tracers:
 		var u := clampf(tr.t, 0.0, 1.0)
 		var head := tr.at(u)
+		if tr.mine and style != "comet":
+			_draw_tracer_styled(tr, style, u, head)
+			continue
 		# Two passes: a wide soft one for the glow, a narrow bright one for the
 		# filament inside it. One line at one width reads as a UI stroke; the
 		# pair reads as something hot going past.
@@ -1708,6 +1822,56 @@ func _draw_tracers() -> void:
 		if tr.text != "":
 			_text_centered(_font_bold, head - Vector2(0.0, 22.0), tr.text, 16,
 				Color(1.0, 1.0, 1.0, 0.9 * (1.0 - u * 0.45)))
+
+
+## The earned alternatives to the default comet. Each has to keep the two things
+## the tracer exists for — a clear direction of travel and the stamp it carries
+## — and differ in everything else.
+func _draw_tracer_styled(tr: Tracer, style: String, u: float, head: Vector2) -> void:
+	match style:
+		"dart":
+			# A rigid arrowhead facing its own travel, with a thin taut line
+			# behind it. No glow at all; it reads as precision rather than power.
+			var back := tr.at(maxf(0.0, u - 0.09))
+			var dir := (head - back).normalized()
+			if dir == Vector2.ZERO:
+				dir = Vector2.RIGHT
+			var side := Vector2(-dir.y, dir.x)
+			draw_line(tr.at(maxf(0.0, u - 0.5)), head, Color(tr.color, 0.45),
+				tr.width * 0.45, true)
+			var nose: float = 9.0 + tr.width * 1.5
+			draw_colored_polygon(PackedVector2Array([
+				head + dir * nose,
+				head - dir * nose * 0.5 + side * nose * 0.55,
+				head - dir * nose * 0.5 - side * nose * 0.55,
+			]), Color(tr.color, 0.95))
+		"swarm":
+			# One shot drawn as a shoal, each member weaving around the path.
+			for i in 9:
+				var lag: float = float(i) * 0.028
+				var at := tr.at(clampf(u - lag, 0.0, 1.0))
+				var wob := Vector2(
+					sin(Time.get_ticks_msec() / 90.0 + float(i) * 1.7),
+					cos(Time.get_ticks_msec() / 70.0 + float(i) * 2.3)) * (5.0 + i)
+				draw_circle(at + wob, tr.width * (0.85 - 0.05 * i),
+					Color(tr.color, 0.85 - 0.07 * i))
+		"bolt":
+			# The path, redrawn as a jagged discharge that re-strikes every frame.
+			var pts := PackedVector2Array()
+			var steps := 14
+			for i in steps + 1:
+				var f: float = float(i) / float(steps)
+				var on := tr.at(clampf(u * f + (u - 0.35) * (1.0 - f), 0.0, 1.0))
+				var kink: float = 0.0 if i == 0 or i == steps else randf_range(-11.0, 11.0)
+				pts.append(on + Vector2(kink, kink * 0.6))
+			for i in pts.size() - 1:
+				draw_line(pts[i], pts[i + 1], Color(tr.color, 0.28), tr.width * 2.6, true)
+				draw_line(pts[i], pts[i + 1], Color(1.0, 1.0, 1.0, 0.8), tr.width * 0.7, true)
+			draw_circle(head, tr.width * 2.2, Color(tr.color, 0.6))
+
+	if tr.text != "":
+		_text_centered(_font_bold, head - Vector2(0.0, 22.0), tr.text, 16,
+			Color(1.0, 1.0, 1.0, 0.9 * (1.0 - u * 0.45)))
 
 
 func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
@@ -1898,8 +2062,13 @@ func _draw_player_input(size: Vector2) -> void:
 		elif not WordBank.is_valid(typed):
 			col = Color("#7c88ad")
 
-	var caret := "_" if fmod(Time.get_ticks_msec() / 1000.0, 1.0) < 0.55 else " "
-	_text_fit(_font_bold, Vector2(cx, base_y), typed.to_upper() + caret, 34, bw + 46.0, col)
+	# The cosmetic caret is drawn rather than typed, so it can be a shape instead
+	# of an underscore. The text is measured without it and the caret is placed
+	# after — a caret glyph inside the string would shove the line about as it
+	# blinked.
+	_text_fit(_font_bold, Vector2(cx, base_y), typed.to_upper(), 34, bw + 46.0, col)
+	_draw_caret(Vector2(cx, base_y), typed, col, bw + 46.0)
+	_draw_typing_effect(Vector2(cx, base_y), col)
 
 	var status_y := base_y + 26.0
 	if hits > 0:
@@ -1929,6 +2098,84 @@ func _draw_player_input(size: Vector2) -> void:
 	else:
 		_text_centered(_font, Vector2(cx, status_y),
 			"keep firing without pausing — the chain makes blocks bigger", 12, Color("#4d5878"))
+
+
+## One keystroke's worth of flourish, parked where the line is being typed. The
+## effect that consumes it decides what it looks like; this only decides that
+## something happened and roughly where.
+func _fleck(ch: String) -> void:
+	if Profile.worn("typing") == "plain":
+		return
+	var bw := WWBoard.COLS * WWBoard.CELL
+	var at := Vector2(player.board.position.x + bw * 0.5 + randf_range(-70.0, 70.0),
+		BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 46.0)
+	_key_flecks.append({
+		"at": at,
+		"vel": Vector2(randf_range(-150.0, 150.0), randf_range(-230.0, -90.0)),
+		"life": 1.0,
+		"ch": ch.to_upper(),
+	})
+	if _key_flecks.size() > 26:
+		_key_flecks.pop_front()
+
+
+## Where the next letter would go, in whatever shape has been earned. Blinks on
+## the same clock in every style so the styles differ in look, not in rhythm.
+func _draw_caret(at: Vector2, text: String, col: Color, max_width: float) -> void:
+	var size := 34
+	var m := _font_bold.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	while size > 11 and m.x > max_width:
+		size -= 1
+		m = _font_bold.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	var x := at.x + m.x * 0.5 + 5.0
+	var on: bool = fmod(Time.get_ticks_msec() / 1000.0, 1.0) < 0.55
+	var h := float(size) * 0.78
+
+	match Profile.worn("cursor"):
+		"block":
+			if on:
+				draw_rect(Rect2(x, at.y - h * 0.5, size * 0.46, h), Color(col, 0.85), true)
+		"pulse":
+			# Never fully gone: it breathes rather than blinks.
+			var beat: float = 0.35 + 0.65 * absf(sin(Time.get_ticks_msec() / 260.0))
+			draw_rect(Rect2(x, at.y - h * 0.5 * beat, 4.0, h * beat), Color(col, beat), true)
+			draw_circle(Vector2(x + 2.0, at.y), 7.0 * beat, Color(col, 0.16 * beat))
+		"spark":
+			var t := Time.get_ticks_msec() / 1000.0
+			draw_rect(Rect2(x, at.y - h * 0.5, 3.0, h), Color("#ffd166"), true)
+			for i in 7:
+				var ph: float = fmod(t * 1.7 + float(i) * 0.31, 1.0)
+				var lift: float = ph * 26.0
+				draw_rect(Rect2(x + sin(t * 5.0 + float(i)) * 4.0, at.y - h * 0.4 - lift,
+					2.5, 2.5), Color(Color("#f8961e").lerp(Color("#ffd166"), ph),
+					0.9 * (1.0 - ph)), true)
+		_:
+			if on:
+				draw_rect(Rect2(x, at.y + h * 0.42, size * 0.5, 3.0), Color(col, 0.9), true)
+
+
+## Per-keystroke flourish around the line you are typing. Fed by `_key_flecks`,
+## which the input handler stocks on every accepted letter.
+func _draw_typing_effect(at: Vector2, col: Color) -> void:
+	var style := Profile.worn("typing")
+	if style == "plain" or _key_flecks.is_empty():
+		return
+	for f: Dictionary in _key_flecks:
+		var life: float = f["life"]
+		var age: float = 1.0 - life
+		var p: Vector2 = f["at"]
+		match style:
+			"sparks":
+				var v: Vector2 = f["vel"]
+				draw_rect(Rect2(p + v * age * 0.34 + Vector2(0.0, age * age * 90.0),
+					Vector2(3.0, 3.0)), Color(col, life), true)
+			"ripple":
+				draw_arc(p, 6.0 + age * 46.0, 0.0, TAU, 22,
+					Color(col, 0.45 * life), 2.0, true)
+			"ghost":
+				# The letter you just pressed, left behind and drifting up.
+				_text_centered(_font_bold, p - Vector2(0.0, age * 34.0),
+					String(f["ch"]), int(30.0 - 10.0 * age), Color(col, 0.55 * life))
 
 
 ## A rival, in the space of a postcard: name, lives, what they are typing, how
@@ -2059,6 +2306,8 @@ func _draw_overlay() -> void:
 		_draw_splash(size)
 	elif phase == Phase.TITLE:
 		_draw_title(size)
+	elif phase == Phase.MASTERY:
+		_draw_mastery(size)
 	elif phase == Phase.LOBBY:
 		_draw_lobby(size)
 	elif phase == Phase.COUNTDOWN:
@@ -2115,7 +2364,7 @@ func _draw_power_pops() -> void:
 		# A bar behind it, because these land on top of a board full of blocks
 		# and coloured type alone would not survive the background.
 		_overlay.draw_rect(Rect2(cx - m.x * 0.5 - 12.0, y - m.y * 0.5 - 4.0,
-			m.x + 24.0, m.y + 8.0), Color(BG_TOP, 0.78 * fade), true)
+			m.x + 24.0, m.y + 8.0), Color(bg_top, 0.78 * fade), true)
 		_overlay.draw_rect(Rect2(cx - m.x * 0.5 - 12.0, y + m.y * 0.5 + 2.0,
 			m.x + 24.0, 2.0), Color(tint, 0.85 * fade), true)
 		_otext(_font_bold, Vector2(cx, y), text, shown, Color(tint, fade))
@@ -2163,7 +2412,7 @@ func _draw_splash(size: Vector2) -> void:
 func _draw_title(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(BG_TOP, 0.90), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.90), true)
 	_draw_decor()
 
 	# Wordmark, with the tail of WARS picked out — the whole game in one gag.
@@ -2182,6 +2431,14 @@ func _draw_title(size: Vector2) -> void:
 	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 96.0 + wm.y * 0.5 - 8.0, wm.x, 3),
 		Color(PLAYER_ACCENT, 0.25 + 0.35 * pulse), true)
 	_otext(_font, Vector2(cx, 162), "your endings become their beginnings", 17, Color("#8d99bd"))
+
+	# Who you are, above the door. This is the entire payoff for the mastery
+	# system, so it goes where the eye already is rather than behind a menu.
+	var who := Profile.title_text()
+	var badge := "LEVEL %d" % Profile.level()
+	if who != "":
+		badge += "  ·  " + who.to_upper()
+	_otext(_font_bold, Vector2(cx, 186), badge, 13, Color("#ffd166"))
 
 	# The full rules take the whole screen, opponent cards included. There is
 	# nowhere to put the power words otherwise, and somebody reading the rules is
@@ -2260,12 +2517,152 @@ func _draw_how_cards(cx: float) -> void:
 					12, Color("#8d99bd"))
 
 
+## Everything you have ever done, what it earned, and what you are wearing.
+##
+## Locked entries are shown with what would unlock them and how close you are,
+## because a lock that will not say what it wants is just a taunt. Nothing here
+## affects play — that is what makes it safe to hand out for showing off.
+func _draw_mastery(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	var prog := Profile.level_progress()
+	_otext(_font_bold, Vector2(cx, 58.0), "MASTERY", 34, Color("#e6ecff"))
+	var title := Profile.title_text()
+	_otext(_font_bold, Vector2(cx, 96.0),
+		"LEVEL %d%s" % [int(prog["level"]), ("  ·  " + title.to_upper()) if title != "" else ""],
+		20, Color("#ffd166"))
+
+	# The bar carries the numbers rather than sitting beside them; one thing to
+	# read instead of three.
+	var bar := Rect2(cx - 300.0, 116.0, 600.0, 12.0)
+	_panel(bar, Color("#141b33"), Color("#ffd166", 0.25), 6.0, 1.0)
+	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
+		Vector2((bar.size.x - 4.0) * float(prog["frac"]), bar.size.y - 4.0)),
+		Color("#ffd166"), true)
+	_otext(_font, Vector2(cx, 144.0), "%s / %s xp to level %d" % [
+		_commas(int(prog["into"])), _commas(int(prog["need"])), int(prog["level"]) + 1],
+		12, Color("#7c88ad"))
+
+	# Lifetime record, as the things the level is actually made of.
+	var stats := [
+		["MATCHES", str(Profile.matches)],
+		["WINS", str(Profile.wins)],
+		["WORDS", _commas(Profile.words)],
+		["BEST WPM", str(int(Profile.best_wpm))],
+		["BEST CHAIN", "x%d" % Profile.best_chain],
+		["MULTI-CLEARS", str(Profile.multi_clears)],
+		["SALVOS", str(Profile.salvos)],
+		["LONGEST", Profile.longest_word.to_upper() if Profile.longest_word != "" else "—"],
+	]
+	var tw := 138.0
+	var span := stats.size() * tw + (stats.size() - 1) * 8.0
+	for i in stats.size():
+		var r := Rect2(cx - span * 0.5 + i * (tw + 8.0), 166.0, tw, 56.0)
+		_panel(r, Color("#141b33"), Color(PLAYER_ACCENT, 0.16), 8.0, 1.0)
+		_otext(_font, Vector2(r.get_center().x, 184.0), stats[i][0], 10, Color("#7c88ad"))
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, 207.0), stats[i][1], 18,
+			tw - 12.0, Color("#e6ecff"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	var slot: String = Profile.SLOTS[mastery_slot]
+	_otext(_font_bold, Vector2(cx, 251.0),
+		String(Profile.SLOT_NAMES[slot]), 15, Color("#7c88ad"))
+
+	var worn := Profile.worn(slot)
+	for c: Dictionary in _mastery_cards():
+		var r: Rect2 = c["rect"]
+		var got: bool = Profile.meets(c["need"])
+		var on: bool = got and String(c["id"]) == worn
+		var hot: bool = _hover_action == String(c["action"])
+		if hot:
+			r = Rect2(r.position - Vector2(0, 3), r.size)
+
+		var edge := Color("#2a3355")
+		if on:
+			edge = Color("#ffd166")
+		elif got:
+			edge = Color(PLAYER_ACCENT, 0.9 if hot else 0.4)
+		_panel(r, Color("#1b2444") if hot else Color("#141b33"), edge, 10.0,
+			3.0 if on else 2.0)
+
+		# The name is the reward, so it stays bright when earned and goes grey
+		# when not — the state should be readable without finding the tick.
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 30.0),
+			String(c["name"]).to_upper(), 19, r.size.x - 30.0,
+			Color("#e6ecff") if got else Color("#4d5878"))
+
+		if on:
+			_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 55.0),
+				"EQUIPPED", 11, Color("#ffd166"))
+		elif got:
+			_otext(_font, Vector2(r.get_center().x, r.position.y + 55.0),
+				"click to wear", 11, Color("#7c88ad"))
+		else:
+			var st := Profile.standing(c["need"])
+			_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 55.0),
+				String(st["what"]), 11, r.size.x - 20.0, Color("#5d6a92"), 9)
+			# A sliver of progress along the bottom edge. At a glance you can see
+			# which locks are nearly open, which is what makes them targets.
+			var frac: float = clampf(float(st["have"]) / float(maxi(1, int(st["want"]))),
+				0.0, 1.0)
+			_overlay.draw_rect(Rect2(r.position.x + 8.0, r.end.y - 7.0,
+				(r.size.x - 16.0) * frac, 3.0), Color("#ffd166", 0.55), true)
+	_otext(_font, Vector2(cx, 620.0),
+		"← → change category · click to equip · ESC back", 13, Color("#5d6a92"))
+
+	# Whatever the hovered entry wants, spelled out. Shown under the grid so it
+	# does not jump about as the mouse moves between rows.
+	var hint := ""
+	for e: Dictionary in _mastery_cards():
+		if _hover_action == String(e["action"]):
+			var need: Dictionary = e["need"]
+			if not need.is_empty() and not Profile.meets(need):
+				var st := Profile.standing(need)
+				hint = "%s — %s / %s" % [String(st["what"]).capitalize(),
+					_commas(int(st["have"])), _commas(int(st["want"]))]
+	if hint != "":
+		_otext(_font, Vector2(cx, 592.0), hint, 14, Color("#ffd166"))
+
+
+## The unlock grid for the category on show. Doubles as the hit-test source, so
+## a card that is drawn is always a card that can be clicked.
+func _mastery_cards() -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var slot: String = Profile.SLOTS[mastery_slot]
+	var list: Array = Profile.entries(slot)
+	var out: Array = []
+	var per_row := 5
+	var cw := 202.0
+	var ch := 70.0
+	for i in list.size():
+		var e: Dictionary = list[i]
+		var row := i / per_row
+		var col := i % per_row
+		var wide: int = mini(per_row, list.size() - row * per_row)
+		var span := wide * cw + (wide - 1) * 10.0
+		out.append({
+			"rect": Rect2(cx - span * 0.5 + col * (cw + 10.0), 276.0 + row * (ch + 10.0),
+				cw, ch),
+			"id": String(e["id"]),
+			"name": String(e["name"]),
+			"need": e.get("need", {}),
+			"action": "wear:%s:%s" % [slot, String(e["id"])],
+		})
+	return out
+
+
 ## Out of the match but not out of the room. The screen greys so it is obvious
 ## the words you type would go nowhere, and they no longer can.
 func _draw_spectating(size: Vector2) -> void:
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(BG_TOP, 0.5), true)
+		Color(bg_top, 0.5), true)
 	# Sit the notice low and centre, clear of the boards you are here to watch.
 	var cx := size.x * 0.5
 	var y := size.y - 108.0
@@ -2279,7 +2676,7 @@ func _draw_spectating(size: Vector2) -> void:
 func _draw_pause(size: Vector2) -> void:
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(BG_TOP, 0.86), true)
+		Color(bg_top, 0.86), true)
 	var cx := size.x * 0.5
 	_otext(_font_bold, Vector2(cx, 230.0), "PAUSED", 64, Color("#e6ecff"))
 	# Be honest about what pausing does when other people are involved.
@@ -2300,7 +2697,7 @@ func _draw_pause(size: Vector2) -> void:
 func _draw_lobby(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(BG_TOP, 0.92), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.92), true)
 	_draw_decor()
 
 	_otext(_font_bold, Vector2(cx, 104), "VERSUS", 66, Color("#e6ecff"))
@@ -2554,10 +2951,24 @@ func _draw_gameover(size: Vector2) -> void:
 	# almost the same place, and two different numbers ghosting through each
 	# other reads as a rendering fault.
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(BG_TOP, 0.985), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.985), true)
 
 	var win := winner == "YOU"
 	var tint := Color("#ffd166") if win else Color("#ff6b6b")
+
+	# The earned victory animation, behind everything else on the screen and only
+	# ever on a win. Losing gets the plain card: a celebration that fires either
+	# way is not a celebration.
+	if win:
+		var t := Time.get_ticks_msec() / 1000.0
+		match Profile.worn("victory"):
+			"confetti":
+				Cosmetics.victory_confetti(_overlay, size, t, tint)
+			"rays":
+				Cosmetics.victory_rays(_overlay, Vector2(cx, 150.0), t, tint)
+			"shatter":
+				Cosmetics.victory_shatter(_overlay, Vector2(cx, 150.0), t, tint)
+
 	_otext(_font_bold, Vector2(cx, 132), "YOU WIN" if win else "YOU LOSE", 68, tint)
 	var wm := _font_bold.get_string_size("YOU WIN" if win else "YOU LOSE",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 68)
@@ -2600,9 +3011,54 @@ func _draw_gameover(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 648),
-		"R — rematch      1 – %d — new opponent      V — versus      ESC — title"
+	_draw_mastery_strip(cx)
+
+	_otext(_font, Vector2(cx, 674),
+		"R — rematch      1 – %d — new opponent      P — mastery      ESC — title"
 			% AiOpponent.ROSTER.size(), 13, Color("#4d5878"))
+
+
+## What the match just did to your record. This is the hook — win or lose, the
+## screen has something on it that went up — so it runs under both results, and
+## a level-up gets announced rather than left to be noticed.
+func _draw_mastery_strip(cx: float) -> void:
+	if earned.is_empty():
+		return
+	var gained := int(earned.get("xp", 0))
+	var from_lv := int(earned.get("from", 1))
+	var to_lv := int(earned.get("to", 1))
+	var fresh: Array = earned.get("new", [])
+	var prog := Profile.level_progress()
+
+	# One row: what you earned on the left, the bar in the middle, where it put
+	# you on the right. A level-up takes over that right-hand label rather than
+	# claiming a line of its own — there is no room above it that the buttons
+	# and their shadows are not already using.
+	var bar := Rect2(cx - 176.0, 570.0, 352.0, 9.0)
+	_panel(bar, Color("#141b33"), Color("#ffd166", 0.22), 5.0, 1.0)
+	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
+		Vector2((bar.size.x - 4.0) * float(prog["frac"]), bar.size.y - 4.0)),
+		Color("#ffd166"), true)
+	_otext(_font_bold, Vector2(cx - 232.0, 574.0), "+%s XP" % _commas(gained), 15,
+		Color("#ffd166"))
+
+	if to_lv > from_lv:
+		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 170.0)
+		_otext(_font_bold, Vector2(cx + 248.0, 574.0), "LEVEL %d" % to_lv, 19,
+			Color("#ffd166") * Color(1, 1, 1, pulse))
+	else:
+		_otext(_font, Vector2(cx + 240.0, 574.0),
+			"%s to level %d" % [_commas(int(prog["need"]) - int(prog["into"])), to_lv + 1],
+			12, Color("#8d99bd"))
+
+	if not fresh.is_empty():
+		# Two at most. A wall of unlocks reads as a patch note; two reads as a
+		# reward, and the rest are waiting on the mastery screen anyway.
+		var line := " · ".join(fresh.slice(0, mini(2, fresh.size())))
+		if fresh.size() > 2:
+			line += "  (+%d more)" % (fresh.size() - 2)
+		_text_fit_overlay(_font_bold, Vector2(cx, 604.0), "UNLOCKED — " + line, 14,
+			980.0, Color("#7bdff2"))
 
 
 # ------------------------------------------------------------------ networking
@@ -2845,6 +3301,10 @@ func _menu_buttons() -> Array:
 			"rect": Rect2(cx + 4.0, 582.0, 230.0, 44.0), "key": "V",
 			"label": "Versus a friend", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#c77dff"), "action": "versus"})
+		out.append({
+			"rect": Rect2(cx - 110.0, 634.0, 220.0, 38.0), "key": "P",
+			"label": "Mastery", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#ffd166"), "action": "mastery"})
 	elif phase == Phase.LOBBY:
 		if Link.connected:
 			if Link.is_host and Link.free_seats() > 0:
@@ -2880,6 +3340,19 @@ func _menu_buttons() -> Array:
 				"rect": Rect2(cx - 90.0, 530.0, 180.0, 44.0), "key": "ESC",
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.MASTERY:
+		out.append({
+			"rect": Rect2(cx - 128.0, 238.0, 30.0, 26.0), "key": "<",
+			"label": "", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "slot:-1"})
+		out.append({
+			"rect": Rect2(cx + 98.0, 238.0, 30.0, 26.0), "key": ">",
+			"label": "", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "slot:1"})
+		out.append({
+			"rect": Rect2(cx - 90.0, 528.0, 180.0, 42.0), "key": "ESC",
+			"label": "Back", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.OVER:
 		var w := 264.0
 		out.append({
@@ -3084,6 +3557,10 @@ func _action_at(p: Vector2) -> String:
 	for b: Dictionary in _menu_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
+	if phase == Phase.MASTERY:
+		for c: Dictionary in _mastery_cards():
+			if (c["rect"] as Rect2).has_point(p):
+				return String(c["action"])
 	# The lobby's fields and backend tiles are clickable too.
 	if phase == Phase.LOBBY and not Link.connected:
 		for i in 2:
@@ -3157,6 +3634,23 @@ func _activate(action: String) -> void:
 			Sfx.play("count", 1.3)
 		else:
 			lobby_field = which
+	elif action == "mastery":
+		phase = Phase.MASTERY
+		_hover_action = ""
+		Sfx.play("count", 1.1)
+	elif action.begins_with("slot:"):
+		mastery_slot = posmod(mastery_slot + int(action.substr(5)), Profile.SLOTS.size())
+		_hover_action = ""
+		Sfx.play("key", 1.2)
+	elif action.begins_with("wear:"):
+		var bits := action.split(":")
+		if bits.size() == 3:
+			# Equipping something you have not earned is a no-op rather than an
+			# error: the card said so, and the click was a question.
+			if Profile.equip(bits[1], bits[2]):
+				Sfx.play("count", 1.3)
+			else:
+				Sfx.play("reject", 1.3)
 	elif action == "title":
 		Link.leave()
 		Link.status = ""

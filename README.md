@@ -770,6 +770,96 @@ because in a four-way that is the only quick answer to "am I winning".
 beat common ones, long beats short, the multipliers compound instead of
 replacing each other, and one great word beats eight poor ones.
 
+## Mastery
+
+Everything you have ever done is kept in `user://profile.cfg` and turned into a
+level, and the level unlocks cosmetics. **None of it touches how the game
+plays.** That is the point rather than a limitation: a level 30 player and a
+level 1 player meet on exactly the same terms, which is what makes the level
+worth showing off — it is a claim about the person, not the loadout.
+
+### The level
+
+XP is a pure function of the record, the level is a pure function of XP, and
+what is unlocked is a pure function of the record. Nothing is stored that can
+drift out of step with anything else, and changing a weight re-grades every
+existing profile on the next boot rather than stranding it.
+
+| Pays for | Weight |
+|:--|--:|
+| a match played | 90 |
+| a match won | 240 |
+| a win costing no lives | 350 |
+| each word typed | 4 |
+| each salvo landed | 130 |
+| each multi-clear | 22 |
+| best WPM | 4 each |
+| best chain | 12, **squared** |
+| best multi-clear | 30, **squared** |
+| longest word | 5 per letter, **squared** |
+
+The `best_` figures are peaks rather than totals, so they pay once and pay well
+— a claim about your ceiling rather than your patience — and the squared ones
+are squared because the difference between a five-chain and a nine-chain is not
+four more words, it is four more words without a single mistake. A bad match can
+never pull a peak back down.
+
+Levels get further apart forever: `1 + sqrt(xp / 300)`. `tools/masterytest.gd`
+prints the resulting curve rather than asserting on it, because the pacing is
+the whole feel of the system and is the thing most likely to be wrong:
+
+```
+  1 match  -> level 3        50 matches -> level 10
+ 10 matches -> level 5      100 matches -> level 14
+ 25 matches -> level 7      200 matches -> level 19
+```
+
+### The unlocks
+
+Seven slots — **titles, board themes, block styles, typing effects, attack
+effects, cursor effects and victory animations** — all declared in one table in
+`profile.gd`. The mastery screen builds itself from it and the unlock check
+reads the same rows, so there is nowhere for a "shown but not obtainable" entry
+to hide.
+
+Each entry names **one** requirement, never a combination. "Reach a x8 chain" is
+something a person can go and do; "reach a x8 chain and 400 words and level 12"
+is a wall. Titles are earned by deeds rather than by level, which is what makes
+them worth wearing — `Chainbreaker` wants a x8 chain, `Speed Demon` wants 65
+wpm, `No Looking Back` wants a win that cost no lives, `SALVO KING` wants twelve
+salvos.
+
+Locked cards show what they want, how close you are, and a sliver of progress
+along the bottom edge, because a lock that will not say what it wants is a
+taunt rather than a target.
+
+### What the cosmetics actually do
+
+- **Board themes** repaint the backdrop wash, the board panel and the grid
+  ruling. They deliberately do **not** touch tier colours: those carry meaning —
+  a 4x3 is always red — and recolouring them would trade readability for
+  decoration.
+- **Block styles** change how garbage draws: solid, wireframe, glass, circuit.
+  Each picks its own stamp colour rather than assuming dark-on-bright, or the
+  letters stop being legible on half of them.
+- **Typing, cursor and victory** effects are local flourishes — a flourish per
+  keystroke, the shape of the caret, and what happens behind a win.
+- **Attack effects** restyle the tracer, and **only your own**. A rival's shot
+  has to keep reading as a rival's shot, or the one thing tracers were added to
+  make clear — who is hitting whom — goes back to being a guess.
+
+### Failure modes worth knowing about
+
+The profile is somebody's entire history with the game, so `masterytest`
+checks the parts that would cost them it: that a save survives a round trip to
+disk, that equipping refuses anything unearned, and that a profile carrying a
+cosmetic it *no longer qualifies for* falls back to the default rather than
+showing a locked item. `tools/build.sh` will not produce a build if any of that
+fails.
+
+Matches are banked at the end, not as they run, so a match abandoned halfway
+earns nothing — the level has to mean matches played through.
+
 ## Not done yet
 
 - **Given names still leak into the CPU's vocabulary** — it will occasionally

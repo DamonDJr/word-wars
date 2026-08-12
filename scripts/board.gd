@@ -64,6 +64,9 @@ class Bit extends RefCounted:
 
 
 var accent := Color("#7bdff2")
+## Set by the equipped board theme and block style; see `set_theme`.
+var grid_color := Color(1.0, 1.0, 1.0, 0.035)
+var style := "solid"
 var blocks: Array = []
 var bits: Array = []
 var highlight_word := ""
@@ -112,6 +115,16 @@ func _ready() -> void:
 		hot.shadow_color = Color(c, 0.75)
 		hot.shadow_size = 12
 		_block_sb_hot.append(hot)
+
+
+## Repaint for the equipped board theme. Tier colours are deliberately left
+## alone: those carry meaning — a 4x3 is always red — and recolouring them would
+## be trading readability for decoration.
+func set_theme(panel: Color, grid: Color, grid_alpha: float, block_style: String) -> void:
+	grid_color = Color(grid, grid_alpha)
+	style = block_style
+	if _panel_sb:
+		_panel_sb.bg_color = panel
 
 
 func set_accent(c: Color) -> void:
@@ -529,9 +542,9 @@ func _draw() -> void:
 	draw_style_box(_panel_sb, Rect2(Vector2(-9, -9), size + Vector2(18, 18)))
 
 	for x in range(1, COLS):
-		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, size.y), Color(1, 1, 1, 0.035), 1.0)
+		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, size.y), grid_color, 1.0)
 	for y in range(1, ROWS):
-		draw_line(Vector2(0, y * CELL), Vector2(size.x, y * CELL), Color(1, 1, 1, 0.035), 1.0)
+		draw_line(Vector2(0, y * CELL), Vector2(size.x, y * CELL), grid_color, 1.0)
 
 	_draw_danger_zone(size)
 
@@ -571,16 +584,51 @@ func _draw_block(b: Blk, hot: bool) -> void:
 		draw_rect(Rect2(rect.position - Vector2(0, tail), Vector2(rect.size.x, tail)),
 			Color(TIER_COLORS[b.tier], 0.16), true)
 
-	draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
+	var col: Color = TIER_COLORS[b.tier]
+	# The stamp has to stay legible against whatever the style does behind it,
+	# so its colour is decided per style rather than assumed dark-on-bright.
+	var ink := Color("#0b1020")
 
-	# Inner bevel so bigger blocks do not read as flat slabs.
-	draw_rect(Rect2(rect.position + Vector2(5, 5), rect.size - Vector2(10, 10)),
-		Color(1, 1, 1, 0.10), false, 1.0)
+	match style:
+		"outline":
+			# Nothing but the frame. Reads as a hologram, and lets the board's
+			# own grid show through the stack.
+			draw_rect(rect, Color(col, 0.10), true)
+			draw_rect(rect, Color(col.lightened(0.2) if not hot else Color.WHITE, 0.95),
+				false, 2.0 if not hot else 3.0)
+			draw_rect(rect.grow(-5.0), Color(col, 0.35), false, 1.0)
+			ink = col.lightened(0.55)
+		"glass":
+			draw_rect(rect, Color(col, 0.34), true)
+			# A highlight across the top half is most of what sells glass.
+			draw_rect(Rect2(rect.position + Vector2(3, 3),
+				Vector2(rect.size.x - 6.0, rect.size.y * 0.38)),
+				Color(1, 1, 1, 0.13), true)
+			draw_rect(rect, Color(col.lightened(0.4) if not hot else Color.WHITE, 0.9),
+				false, 2.0 if not hot else 3.0)
+			ink = Color.WHITE
+		"circuit":
+			draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
+			# Traces running out of a centre pad. Deterministic from the grid
+			# position, so a block does not rewire itself every frame.
+			var pad := rect.get_center()
+			var span: float = minf(rect.size.x, rect.size.y) * 0.5 - 4.0
+			for i in 4:
+				var a := TAU * float(i) / 4.0 + float(b.gx + b.gy) * 0.6
+				var out := pad + Vector2(cos(a), sin(a)) * span
+				draw_line(pad, out, Color(0, 0, 0, 0.30), 2.0)
+				draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
+			draw_circle(pad, 6.0, Color(0, 0, 0, 0.22))
+		_:
+			draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
+			# Inner bevel so bigger blocks do not read as flat slabs.
+			draw_rect(Rect2(rect.position + Vector2(5, 5), rect.size - Vector2(10, 10)),
+				Color(1, 1, 1, 0.10), false, 1.0)
 
 	# Stamps run up to five letters, so the type has to give way on small tiles.
 	var font_size := 17 + 5 * mini(b.h, 3)
 	_draw_fit(_font_bold, rect.get_center(), b.prefix.to_upper(), font_size,
-		rect.size.x - 10.0, Color("#0b1020"))
+		rect.size.x - 10.0, ink)
 
 	if b.w * b.h > 2:
 		var sub := "%d" % (b.w * b.h)

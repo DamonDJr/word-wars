@@ -46,6 +46,18 @@ them — the game names them when they happen:
 
 Press H on the title screen for the full rules.
 
+
+Mastery
+-------
+Everything you do is remembered — matches, words typed, top speed, best chain,
+salvos, your longest word. It all feeds one level, and levels unlock titles,
+board themes, block styles and effects.
+
+None of it changes how the game plays. It is there to be shown off, not cashed
+in, so nobody ever has an advantage because they have played longer.
+
+Press P on the title screen to see where you are and what is close.
+
 Seven opponents, and they do not just type at different speeds. Magpie is as
 slow as the beginner but answers with nine-letter words. Metronome never lets
 its chain lapse. Berserker never defends at all. A free-for-all deals you three

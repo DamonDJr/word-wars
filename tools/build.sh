@@ -28,6 +28,18 @@ if ! grep -q "all power words behave" <<<"$RULES"; then
 	exit 1
 fi
 
+# The profile is somebody's entire history with the game. A bug that loses it is
+# a different order of mistake from a block landing in the wrong column, so the
+# save round-trip is checked before anything ships.
+echo "==> Mastery check"
+MASTERY=$("$(command -v godot)" --headless --script tools/masterytest.gd 2>&1 || true)
+if ! grep -q "mastery holds up" <<<"$MASTERY"; then
+	echo "FAILED: the mastery record is not behaving." >&2
+	grep -E "FAILED" <<<"$MASTERY" >&2 || true
+	echo "        Run: godot --headless --script tools/masterytest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"
