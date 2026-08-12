@@ -80,6 +80,10 @@ const LIVES := 3
 ## Nothing lands for a moment after a wipe, so you get to type before it rains.
 const RESPITE := 2.5
 
+## What counts as a hit worth shaking the room for. Set high on purpose: a
+## celebration that fires on every third word stops reading as a celebration.
+const BIG_SCORE := 600
+
 ## A word earns time proportional to its own length, so long words are not
 ## punished for taking longer to type — but they buy no extra block size.
 const CHAIN_BASE := 1.8
@@ -146,6 +150,10 @@ class SideState extends RefCounted:
 	var used: Dictionary = {}
 	var words_played := 0
 	var blocks_cleared := 0
+	var score := 0
+	## Best single word, for the end screen — the one you want to tell people about.
+	var best_word := ""
+	var best_word_score := 0
 	var best_combo := 0
 	var chain := 0
 	var chain_timer := 0.0
@@ -189,6 +197,15 @@ var match_time := 0.0
 var pressure_interval := PRESSURE_START
 var pressure_timer := PRESSURE_START
 var winner := ""
+
+## Floating "+N" numbers, and the running total's own animation. `score_shown`
+## chases the real total rather than snapping to it, so the counter visibly
+## climbs — half the pleasure of a big word is watching it land.
+var score_pops: Array = []
+var score_shown := 0.0
+var score_kick := 0.0
+## Characters actually typed, for a real WPM rather than one inferred from words.
+var chars_typed := 0
 
 var shake := 0.0
 var flash := 0.0
@@ -344,6 +361,7 @@ func _bloom(color: Color, amount: float) -> void:
 func start_match(diff: String, bots: int = 1) -> void:
 	difficulty = diff
 	slots_in_play = clampi(1 + bots, 2, SLOTS)
+	var lineup := _bot_lineup(diff, slots_in_play - 1)
 
 	for s: SideState in sides:
 		s.in_match = s.slot < slots_in_play
@@ -351,9 +369,14 @@ func start_match(diff: String, bots: int = 1) -> void:
 		if s.slot == 0:
 			s.label = "YOU"
 		elif s.in_match and not net_active():
-			s.label = "CPU %d" % s.slot if slots_in_play > 2 else "CPU"
+			var who: String = lineup[s.slot - 1]
+			# Named by personality rather than "CPU 2". In a four-way, knowing
+			# that the board on the right is BERSERKER and the one beside it is
+			# BULWARK is the difference between three opponents and one opponent
+			# drawn three times.
+			s.label = who.to_upper() if slots_in_play > 2 else "CPU"
 			s.bot = AiOpponent.new()
-			s.bot.configure(diff)
+			s.bot.configure(who)
 			s.peer_id = 0
 		if s.bot != null and not s.in_match:
 			s.bot = null
@@ -365,6 +388,9 @@ func start_match(diff: String, bots: int = 1) -> void:
 		s.used.clear()
 		s.words_played = 0
 		s.blocks_cleared = 0
+		s.score = 0
+		s.best_word = ""
+		s.best_word_score = 0
 		s.best_combo = 0
 		s.chain = 0
 		s.chain_timer = 0.0
@@ -383,6 +409,10 @@ func start_match(diff: String, bots: int = 1) -> void:
 	message_life = 0.0
 	events.clear()
 	recent_stamps.clear()
+	score_pops.clear()
+	score_shown = 0.0
+	score_kick = 0.0
+	chars_typed = 0
 	match_time = 0.0
 	pressure_interval = PRESSURE_START
 	pressure_timer = PRESSURE_START
@@ -397,6 +427,38 @@ func start_match(diff: String, bots: int = 1) -> void:
 	_last_count_beep = -1
 	phase = Phase.COUNTDOWN
 	_log("%s — get ready" % diff, Color("#c8d3f5"))
+
+
+## Who you are actually facing. The one you picked always turns up; the rest of
+## a free-for-all is filled with *different* personalities, because three copies
+## of the same opponent is one opponent with more boards. They are drawn from
+## nearby on the roster so the table stays roughly the difficulty you asked for.
+func _bot_lineup(pick: String, count: int) -> Array:
+	var out: Array = [pick]
+	if count <= 1:
+		return out
+
+	var roster: Array = AiOpponent.ROSTER
+	var at := roster.find(pick)
+	if at < 0:
+		at = roster.find("Duelist")
+	# Nearest neighbours first, alternating either side of the one you chose.
+	var near: Array = []
+	for step in range(1, roster.size()):
+		for dir: int in [-1, 1]:
+			var i: int = at + step * dir
+			if i >= 0 and i < roster.size() and not near.has(roster[i]):
+				near.append(roster[i])
+	# Shuffle only the closest handful. Shuffling the whole roster would throw
+	# away the ordering that keeps the table near the level you asked for, but
+	# taking the nearest strictly would deal the same names every single match.
+	var window: Array = near.slice(0, mini(count + 2, near.size()))
+	window.shuffle()
+	while out.size() < count and not window.is_empty():
+		out.append(window.pop_front())
+	while out.size() < count:
+		out.append(pick)
+	return out
 
 
 ## Boards this machine is responsible for: your own, and any bots you run.
@@ -550,9 +612,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	if phase == Phase.TITLE or phase == Phase.OVER:
 		match k.keycode:
-			KEY_1: _activate("diff:Rookie")
-			KEY_2: _activate("diff:Duelist")
-			KEY_3: _activate("diff:Wordsmith")
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7:
+				var pick := k.keycode - KEY_1
+				if pick < AiOpponent.ROSTER.size():
+					_activate("diff:" + AiOpponent.ROSTER[pick])
 			KEY_V: _activate("versus")
 			KEY_F: _activate("ffa")
 			KEY_R: _activate("rematch")
@@ -602,6 +665,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			var low := String.chr(k.unicode).to_lower()
 			if low.length() == 1 and low >= "a" and low <= "z" and typed.length() < 20:
 				typed += low
+				# Counted here rather than on submit, so the WPM at the end is
+				# what you actually typed — including the letters you thought
+				# better of. That is what a typing test would measure.
+				chars_typed += 1
 				# Slight per-key drift, or a held burst sounds like a machine.
 				Sfx.play("key", randf_range(0.92, 1.10))
 
@@ -684,6 +751,9 @@ func _play_word(attacker: SideState, word: String) -> void:
 	attacker.chain_window = CHAIN_BASE + word.length() * CHAIN_PER_CHAR
 	attacker.chain_timer = attacker.chain_window
 	attacker.best_chain = maxi(attacker.best_chain, attacker.chain)
+	# Banked after the chain steps up, so the word that extends a run is paid at
+	# the run's new length rather than its old one.
+	_award(attacker, word, combo)
 
 	# Top of the ladder: cash the run in and start over.
 	if attacker.chain >= SALVO_AT:
@@ -710,6 +780,51 @@ func _play_word(attacker: SideState, word: String) -> void:
 
 	_voice_attack(attacker, cleared, intercepted, out_tier)
 	_report(attacker, word, cleared, intercepted, out_tier)
+
+
+## Bank what a word was worth. Everyone scores — a rival's total is how you know
+## whether you are actually ahead — but only yours gets thrown up on screen,
+## because four sets of arithmetic flying about is noise, not feedback.
+func _award(side: SideState, word: String, combo: int, extra: int = 0) -> int:
+	var a: Dictionary = Scoring.award(word, side.chain, combo)
+	var total: int = int(a["total"]) + extra
+	side.score += total
+	if total > side.best_word_score:
+		side.best_word_score = total
+		side.best_word = word
+
+	if side == player:
+		# The popup shows its working — "34 x3.4" teaches the multipliers without
+		# anybody having to read a rules screen.
+		var mult: float = a["mult"]
+		var note := ""
+		if mult > 1.01:
+			note = "x%.1f" % mult
+		_pop_score("+%s" % _commas(total), note, total)
+		score_kick = minf(1.0, score_kick + 0.35 + 0.45 * clampf(total / 900.0, 0.0, 1.0))
+		# Genuinely big hits get the room to move. The threshold is high enough
+		# that it stays an event rather than a texture.
+		if total >= BIG_SCORE:
+			Sfx.play("clear", 1.35, -2.0)
+			shake = maxf(shake, 0.18)
+			_bloom(Color("#ffd166"), 0.14)
+	return total
+
+
+## A number where the eye already is: just under your own board, drifting up.
+func _pop_score(text: String, note: String, weight: int) -> void:
+	var bw := WWBoard.COLS * WWBoard.CELL
+	score_pops.append({
+		"text": text,
+		"note": note,
+		"at": Vector2(player.board.position.x + bw * 0.5 + randf_range(-40.0, 40.0),
+			BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 4.0),
+		"life": 1.0,
+		"size": clampf(22.0 + weight / 44.0, 22.0, 58.0),
+	})
+	# A salvo can stack several at once; keep the oldest from piling up.
+	if score_pops.size() > 10:
+		score_pops.pop_front()
 
 
 ## The audible shape of a turn. Firing rises with the chain and clears rise with
@@ -757,6 +872,13 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 
 	attacker.salvos += 1
 	attacker.salvo_flash = 1.0
+	# Paid on top of the word that cashed the run in, which `_play_word` has
+	# already banked at full chain.
+	var bounty: int = Scoring.SALVO_BONUS * Scoring.SCALE
+	attacker.score += bounty
+	if attacker == player:
+		_pop_score("SALVO +%s" % _commas(bounty), "", bounty)
+		score_kick = 1.0
 	attacker.chain = 0
 	attacker.chain_timer = 0.0
 
@@ -879,6 +1001,17 @@ func _process(delta: float) -> void:
 		s.board.highlight_limit = _reach(w) if w.length() >= MIN_WORD_LEN else 0
 
 	message_life = maxf(0.0, message_life - delta)
+
+	# The counter chases the real total instead of snapping to it, and the kick
+	# fattens the type for a moment when it moves.
+	score_shown = lerpf(score_shown, float(player.score), clampf(delta * 7.0, 0.0, 1.0))
+	score_kick = maxf(0.0, score_kick - delta * 2.4)
+	var live_pops: Array = []
+	for p: Dictionary in score_pops:
+		p["life"] = float(p["life"]) - delta * 0.85
+		if p["life"] > 0.0:
+			live_pops.append(p)
+	score_pops = live_pops
 
 	# Shake the world, then hold the menus still on top of it.
 	shake = maxf(0.0, shake - delta * 2.6)
@@ -1075,13 +1208,15 @@ func _tick_bots(delta: float) -> void:
 		s.bot_switch -= delta
 		if s.bot_switch <= 0.0:
 			# Bots wander their aim, so a four-way is not three guns on one board.
-			s.bot_switch = randf_range(6.0, 13.0)
+			# How long each one stays put is part of its personality: a grudge
+			# holder picks a victim and works on them.
+			s.bot_switch = s.bot.attention_span()
 			_aim(s, _pick_target_for(s))
 
 		var targets := s.board.prefixes()
 		for p: Pending in s.pending:
 			targets.append(p.prefix)
-		var word := s.bot.update(delta, targets, s.used)
+		var word := s.bot.update(delta, targets, s.used, s.chain_timer, _peril(s))
 		if s.bot.fumbled:
 			s.bot.fumbled = false
 			if s.chain >= 2:
@@ -1090,6 +1225,16 @@ func _tick_bots(delta: float) -> void:
 			s.chain_timer = 0.0
 		if word != "":
 			_play_word(s, word)
+
+
+## How close a board is to topping out — 0 calm, 1 drowning. The bots read this
+## so a personality stays a tendency rather than a suicide note: the ones that
+## never defend still start defending when the stack reaches the ceiling.
+func _peril(s: SideState) -> float:
+	# Inbound garbage counts against the headroom. A board that looks calm with
+	# six cells already falling towards it is not calm.
+	var headroom: float = float(s.board.stack_top()) - float(s.pending_cells()) * 0.15
+	return clampf(1.0 - headroom / float(WWBoard.ROWS), 0.0, 1.0)
 
 
 ## Hitting the ceiling wipes the board and costs a life. The wipe is the whole
@@ -1149,6 +1294,14 @@ func _end_match(loser: SideState) -> void:
 	_log("%s wins" % winner, Color("#ffd166"))
 
 
+## Gross words per minute, the way a typing test counts it: every five characters
+## entered is one "word", including the ones you backspaced away.
+func _wpm() -> float:
+	if match_time < 1.0 or chars_typed == 0:
+		return 0.0
+	return (float(chars_typed) / 5.0) / (match_time / 60.0)
+
+
 func _say(text: String, color: Color) -> void:
 	message = text
 	message_color = color
@@ -1183,7 +1336,9 @@ func _draw() -> void:
 	for s: SideState in sides:
 		if s.slot > 0 and s.in_match:
 			_draw_rival_panel(s)
-	if phase != Phase.COUNTDOWN:
+	# The summary covers the same ground and sits in the same column, so leaving
+	# the live readout underneath it just prints two scores on top of each other.
+	if phase != Phase.COUNTDOWN and phase != Phase.OVER:
 		_draw_center_hud(size)
 	_draw_player_input(size)
 
@@ -1193,7 +1348,8 @@ func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
 	var center_x := board_pos.x + bw * 0.5
 	_text_centered(_font_bold, Vector2(center_x, BOARD_TOP - 44.0), side.label, 26, side.accent)
 
-	var sub := "%d words · %d cleared" % [side.words_played, side.blocks_cleared]
+	# Score leads: in a four-way it is the only quick answer to "am I winning".
+	var sub := "%s · %d words" % [_commas(side.score), side.words_played]
 	_text_centered(_font, Vector2(center_x, BOARD_TOP - 20.0), sub, 13, Color("#7c88ad"))
 
 	# Lives, as pips beside the board name. The last one pulses, because being on
@@ -1330,19 +1486,26 @@ func _draw_center_hud(size: Vector2) -> void:
 		"%d:%02d" % [int(match_time) / 60, int(match_time) % 60], 30, Color("#e6ecff"))
 	_text_centered(_font, Vector2(cx, BOARD_TOP + 32.0), difficulty.to_upper(), 12, Color("#5d6a92"))
 
+	# The score is the loudest thing in this column on purpose: it is the number
+	# you are playing for, and it swells for a beat every time it moves.
+	var kick := score_kick * score_kick
+	_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 66.0),
+		_commas(int(round(score_shown))), int(30 + 12.0 * kick),
+		Color("#ffd166").lerp(Color.WHITE, kick * 0.7))
+
 	var next_seed: int = int(ceil(pressure_timer))
-	_text_centered(_font, Vector2(cx, BOARD_TOP + 62.0),
+	_text_centered(_font, Vector2(cx, BOARD_TOP + 96.0),
 		"pressure in %ds" % next_seed, 12, Color("#7c88ad"))
 
 	if slots_in_play > 2 and player.alive:
 		var mark: SideState = sides[player.target]
-		_text_centered(_font, Vector2(cx, BOARD_TOP + 84.0), "AIMING AT", 10, Color("#5d6a92"))
-		_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 102.0), mark.label, 17, mark.accent)
+		_text_centered(_font, Vector2(cx, BOARD_TOP + 118.0), "AIMING AT", 10, Color("#5d6a92"))
+		_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 136.0), mark.label, 17, mark.accent)
 
 
 	# Kept inside the free band so it never draws over anybody's playfield.
 	var log_width := maxf(180.0, band.y - band.x - 24.0)
-	var y := BOARD_TOP + (110.0 if slots_in_play <= 2 else 132.0)
+	var y := BOARD_TOP + (144.0 if slots_in_play <= 2 else 166.0)
 	var room := 7 if slots_in_play <= 2 else 5
 	var shown := 0
 	for e: Dictionary in events:
@@ -1426,8 +1589,16 @@ func _draw_rival_panel(s: SideState) -> void:
 		26 if slots_in_play <= 2 else 16, name_col)
 	if slots_in_play <= 2:
 		_text_centered(_font, Vector2(cx, r.position.y - 30.0),
-			"%d words · %d cleared" % [s.words_played, s.blocks_cleared], 13,
+			"%s · %d words" % [_commas(s.score), s.words_played], 13,
 			Color("#7c88ad"))
+	else:
+		# In a four-way this is the only quick read on who is actually winning —
+		# the boards tell you who is in trouble, which is a different question.
+		# It sits under the panel rather than under the name because the aim
+		# marker lives up there, and it stays on screen after somebody is
+		# knocked out so the final table is still readable.
+		_text_centered(_font, Vector2(cx, r.end.y + 62.0), _commas(s.score), 12,
+			Color("#7c88ad") if not out else Color("#4d5878"))
 
 	# Lives as pips.
 	var pip := 9.0
@@ -1472,6 +1643,7 @@ func _draw_overlay() -> void:
 			size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
 			Color(flash_color, flash * 0.5), true)
 	if phase == Phase.PLAY:
+		_draw_score_pops()
 		if paused:
 			_draw_pause(size)
 		elif not player.alive:
@@ -1491,6 +1663,25 @@ func _draw_overlay() -> void:
 		_draw_countdown(size)
 	elif phase == Phase.OVER:
 		_draw_gameover(size)
+
+
+## The numbers you just earned, rising off the bottom of your own board and
+## fading out. Drawn on the overlay so the screen shake does not drag them about
+## — a number that jitters is a number you cannot read.
+func _draw_score_pops() -> void:
+	for p: Dictionary in score_pops:
+		var life: float = p["life"]
+		# Leaps out of the board and then eases to a stop, rather than drifting
+		# at a constant rate — the snap is what makes it feel like a payout.
+		var t: float = 1.0 - life
+		var rise: float = 74.0 * (1.0 - (1.0 - t) * (1.0 - t))
+		var at: Vector2 = (p["at"] as Vector2) - Vector2(0.0, rise)
+		var fade: float = clampf(life * 1.6, 0.0, 1.0)
+		var size: int = int(p["size"] * (0.75 + 0.25 * clampf(life * 2.4, 0.0, 1.0)))
+		_otext(_font_bold, at, String(p["text"]), size, Color("#ffd166", fade))
+		if String(p["note"]) != "":
+			_otext(_font, at + Vector2(0.0, size * 0.72), String(p["note"]),
+				maxi(11, size / 3), Color("#e6ecff", fade * 0.8))
 
 
 ## Big and unmissable, scaling down as each number's second runs out.
@@ -1560,12 +1751,13 @@ func _draw_title(size: Vector2) -> void:
 	else:
 		_draw_how_cards(cx)
 
-	_otext(_font_bold, Vector2(cx, 392), "CHOOSE YOUR OPPONENT", 15, Color("#7c88ad"))
+	_otext(_font_bold, Vector2(cx, 384), "CHOOSE YOUR OPPONENT", 15, Color("#7c88ad"))
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 630), "click a card, or press 1 / 2 / 3", 14, Color("#5d6a92"))
-	_otext(_font, Vector2(cx, 664),
+	_otext(_font, Vector2(cx, 646), "click a card, or press 1 – %d" % AiOpponent.ROSTER.size(),
+		14, Color("#5d6a92"))
+	_otext(_font, Vector2(cx, 674),
 		"%s — full rules      F1 — %s      ESC — quit" % [
 			"H" if not show_rules else "H to hide", "sound on" if Sfx.muted else "mute"],
 		13, Color("#4d5878"))
@@ -1586,14 +1778,14 @@ func _draw_how_cards(cx: float) -> void:
 
 		match i:
 			0:
-				_otext(_font_bold, Vector2(mid, top + 24), "1 · BRAND", 14, PLAYER_ACCENT)
+				_otext(_font_bold, Vector2(mid, top + 24), "BRAND", 14, PLAYER_ACCENT)
 				_draw_split_word(mid, top + 64, "FRIEND", "SHIP", 26)
 				_draw_arrow(mid, top + 86, 24.0, Color("#5d6a92"))
 				_mini_block(Vector2(mid, top + 130), Vector2(66, 34), 2, "SHIP")
 				_otext(_font, Vector2(mid, caption), "your word's tail brands their block",
 					12, Color("#8d99bd"))
 			1:
-				_otext(_font_bold, Vector2(mid, top + 24), "2 · SMASH", 14, Color("#ffd166"))
+				_otext(_font_bold, Vector2(mid, top + 24), "SMASH", 14, Color("#ffd166"))
 				# A burst of shards, the way it actually looks in play.
 				var at := Vector2(mid, top + 76)
 				for s in 10:
@@ -1607,7 +1799,7 @@ func _draw_how_cards(cx: float) -> void:
 				_otext(_font, Vector2(mid, caption), "longer words smash more at once",
 					12, Color("#8d99bd"))
 			2:
-				_otext(_font_bold, Vector2(mid, top + 24), "3 · CHAIN", 14, Color("#f8961e"))
+				_otext(_font_bold, Vector2(mid, top + 24), "CHAIN", 14, Color("#f8961e"))
 				var seg := 46.0
 				var lit := 1 + int(Time.get_ticks_msec() / 420.0) % 6
 				for k in 6:
@@ -1835,11 +2027,11 @@ func _chunk_code(code: String) -> String:
 
 ## Overlay twin of `_text_fit`, since the lobby draws on the overlay layer.
 func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
-		max_width: float, color: Color) -> void:
+		max_width: float, color: Color, min_size: int = 9) -> void:
 	if font == null or text == "":
 		return
 	var s := size
-	while s > 9 and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
+	while s > min_size and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
 		s -= 1
 	_otext(font, center, text, s, color)
 
@@ -1875,19 +2067,34 @@ func _draw_rules_panel(size: Vector2) -> void:
 
 func _draw_gameover(size: Vector2) -> void:
 	var cx := size.x * 0.5
+	# Nearly opaque. The boards used to show faintly through, which was pleasant
+	# until the summary grew a score of its own — the live one underneath sits in
+	# almost the same place, and two different numbers ghosting through each
+	# other reads as a rendering fault.
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(BG_TOP, 0.93), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(BG_TOP, 0.985), true)
 
 	var win := winner == "YOU"
 	var tint := Color("#ffd166") if win else Color("#ff6b6b")
-	_otext(_font_bold, Vector2(cx, 168), "YOU WIN" if win else "YOU LOSE", 84, tint)
+	_otext(_font_bold, Vector2(cx, 132), "YOU WIN" if win else "YOU LOSE", 68, tint)
 	var wm := _font_bold.get_string_size("YOU WIN" if win else "YOU LOSE",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 84)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 214, wm.x, 3), Color(tint, 0.45), true)
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 68)
+	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170, wm.x, 3), Color(tint, 0.45), true)
+
+	# The score is the headline, above the tiles rather than inside one. Winning
+	# is binary and says nothing about how well you played; this is the number
+	# worth arguing over afterwards.
+	_otext(_font, Vector2(cx, 204), "SCORE", 13, Color("#7c88ad"))
+	_otext(_font_bold, Vector2(cx, 248), _commas(player.score), 62, Color("#ffd166"))
+	if player.best_word != "":
+		_otext(_font, Vector2(cx, 288),
+			"best word — %s for %s" % [player.best_word.to_upper(),
+				_commas(player.best_word_score)], 14, Color("#8d99bd"))
 
 	# Stat tiles read far better than one long sentence of numbers.
 	var stats := [
 		["TIME", "%d:%02d" % [int(match_time) / 60, int(match_time) % 60]],
+		["WPM", str(int(round(_wpm())))],
 		["WORDS", str(player.words_played)],
 		["CLEARED", str(player.blocks_cleared)],
 		["BEST CHAIN", "x%d" % player.best_chain],
@@ -1898,18 +2105,21 @@ func _draw_gameover(size: Vector2) -> void:
 	var total := stats.size() * tw + (stats.size() - 1) * 12.0
 	for i in stats.size():
 		var x := cx - total * 0.5 + i * (tw + 12.0)
-		var r := Rect2(x, 262, tw, 78)
+		var r := Rect2(x, 314, tw, 74)
 		_panel(r, Color("#141b33"), Color(tint, 0.20), 10.0)
-		_otext(_font, Vector2(r.get_center().x, 286), stats[i][0], 11, Color("#7c88ad"))
-		_otext(_font_bold, Vector2(r.get_center().x, 315), stats[i][1], 26, Color("#e6ecff"))
+		_otext(_font, Vector2(r.get_center().x, 336), stats[i][0], 11, Color("#7c88ad"))
+		_otext(_font_bold, Vector2(r.get_center().x, 364), stats[i][1], 24, Color("#e6ecff"))
 
-	_otext(_font, Vector2(cx, 372), "on %s" % difficulty, 14, Color("#7c88ad"))
+	_otext(_font, Vector2(cx, 410), "versus %s — %s" % [
+		difficulty.to_upper(), String(AiOpponent.spec(difficulty)["style"])],
+		14, Color("#7c88ad"))
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 640), "R — rematch      1 / 2 / 3 — change difficulty      V — versus      ESC — title",
-		13, Color("#4d5878"))
+	_otext(_font, Vector2(cx, 648),
+		"R — rematch      1 – %d — new opponent      V — versus      ESC — title"
+			% AiOpponent.ROSTER.size(), 13, Color("#4d5878"))
 
 
 # ------------------------------------------------------------------ networking
@@ -1959,9 +2169,11 @@ func _on_net_match_begin() -> void:
 		s.peer_id = int(seat["id"])
 		s.label = String(seat["name"])
 		# Only the host actually runs the bots; everyone else just watches them.
+		# The seat name IS the personality — the host chose it when it built the
+		# seating, so both ends already agree on who this is.
 		if s.peer_id < 0 and Link.is_host:
 			s.bot = AiOpponent.new()
-			s.bot.configure(difficulty)
+			s.bot.configure(s.label)
 		else:
 			s.bot = null
 	_layout_boards()
@@ -2117,24 +2329,34 @@ func _menu_buttons() -> Array:
 	# would undo the point of cross-fading at all. Nothing can be clicked yet —
 	# input is still swallowed by the splash.
 	if phase == Phase.TITLE or phase == Phase.SPLASH:
-		var names := ["Rookie", "Duelist", "Wordsmith"]
-		var notes := ["learning the ropes", "a fair fight", "brutal"]
-		var tints := [Color("#64dfdf"), Color("#f9c74f"), Color("#f94144")]
-		var w := 300.0
-		for i in names.size():
-			var d: Dictionary = AiOpponent.DIFFICULTIES[names[i]]
+		# Seven opponents in two rows, widest first. They are laid out from the
+		# roster rather than a hand-written list, so adding a personality to
+		# `AiOpponent` puts it on the menu with no layout to touch.
+		var roster: Array = AiOpponent.ROSTER
+		var per_row := int(ceil(roster.size() / 2.0))
+		var cw := 236.0
+		var ch := 84.0
+		var gap := 8.0
+		for i in roster.size():
+			var d: Dictionary = AiOpponent.spec(roster[i])
+			var row := i / per_row
+			var col := i % per_row
+			var wide: int = mini(per_row, roster.size() - row * per_row)
+			var span := wide * cw + (wide - 1) * gap
 			out.append({
-				"rect": Rect2(cx + (i - 1) * (w + 18.0) - w * 0.5, 408.0, w, 146.0),
-				"key": str(i + 1), "label": names[i], "sub": "%d wpm" % int(d["wpm"]),
-				"note": notes[i], "rating": i + 1, "accent": tints[i],
-				"action": "diff:" + names[i],
+				"rect": Rect2(cx - span * 0.5 + col * (cw + gap),
+					398.0 + row * (ch + gap), cw, ch),
+				"key": str(i + 1), "label": roster[i], "sub": "%d wpm" % int(d["wpm"]),
+				"note": d["style"], "rating": int(d["rating"]),
+				"accent": Color(String(d["tint"])),
+				"action": "diff:" + roster[i],
 			})
 		out.append({
-			"rect": Rect2(cx - 234.0, 566.0, 230.0, 46.0), "key": "F",
+			"rect": Rect2(cx - 234.0, 582.0, 230.0, 44.0), "key": "F",
 			"label": "Free-for-all", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#ffd166"), "action": "ffa"})
 		out.append({
-			"rect": Rect2(cx + 4.0, 566.0, 230.0, 46.0), "key": "V",
+			"rect": Rect2(cx + 4.0, 582.0, 230.0, 44.0), "key": "V",
 			"label": "Versus a friend", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#c77dff"), "action": "versus"})
 	elif phase == Phase.LOBBY:
@@ -2175,11 +2397,11 @@ func _menu_buttons() -> Array:
 	elif phase == Phase.OVER:
 		var w := 264.0
 		out.append({
-			"rect": Rect2(cx - w - 10.0, 410.0, w, 96.0), "key": "R",
+			"rect": Rect2(cx - w - 10.0, 442.0, w, 96.0), "key": "R",
 			"label": "Rematch", "sub": difficulty, "note": "", "rating": 0,
 			"accent": PLAYER_ACCENT, "action": "rematch"})
 		out.append({
-			"rect": Rect2(cx + 10.0, 410.0, w, 96.0), "key": "ESC",
+			"rect": Rect2(cx + 10.0, 442.0, w, 96.0), "key": "ESC",
 			"label": "Title", "sub": "pick a new opponent", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "title"})
 	return out
@@ -2203,11 +2425,32 @@ func _draw_menu_button(b: Dictionary) -> void:
 	_otext(_font_bold, badge.get_center(), key, 12, accent)
 
 	var cx := r.get_center().x
+	var rating: int = b["rating"]
 	# Short buttons have no room for stacked lines. Centre the label in what is
 	# left beside the key badge, or the two collide.
 	if r.size.y < 70.0:
 		_otext(_font_bold, Vector2((badge.end.x + r.end.x) * 0.5, r.get_center().y),
 			String(b["label"]).to_upper(), 20, Color.WHITE if hot else Color("#e6ecff"))
+		return
+
+	# Opponent cards: name, pace, and what it actually does to you. The rating
+	# pips sit up on the badge line, since the third line is spoken for.
+	if r.size.y < 120.0:
+		# The name shares its line with the key badge and the rating pips, so it
+		# is centred in the gap between them rather than on the card — otherwise
+		# a long one like METRONOME runs straight into the pips.
+		var pip_x := r.end.x - 56.0
+		_text_fit_overlay(_font_bold,
+			Vector2((badge.end.x + pip_x) * 0.5, r.position.y + 32.0),
+			String(b["label"]).to_upper(), 20, pip_x - badge.end.x - 12.0,
+			Color.WHITE if hot else Color("#e6ecff"))
+		_otext(_font, Vector2(cx, r.position.y + 54.0), b["sub"], 12, accent)
+		_text_fit_overlay(_font, Vector2(cx, r.position.y + 71.0), String(b["note"]), 11,
+			r.size.x - 20.0, Color("#8d99bd") if hot else Color("#7c88ad"), 8)
+		if rating > 0:
+			for k in 3:
+				_overlay.draw_rect(Rect2(pip_x + k * 16.0, r.position.y + 22.0,
+					10.0, 5.0), accent if k < rating else Color("#2a3355"), true)
 		return
 
 	_otext(_font_bold, Vector2(cx, r.position.y + 60.0), String(b["label"]).to_upper(), 26,
@@ -2216,7 +2459,6 @@ func _draw_menu_button(b: Dictionary) -> void:
 	if String(b["note"]) != "":
 		_otext(_font, Vector2(cx, r.position.y + 108.0), b["note"], 12, Color("#7c88ad"))
 
-	var rating: int = b["rating"]
 	if rating > 0:
 		for k in 3:
 			_overlay.draw_rect(Rect2(cx - 23.0 + k * 16.0, r.position.y + 128.0, 10.0, 5.0),
@@ -2438,6 +2680,18 @@ func _activate(action: String) -> void:
 
 
 # ---------------------------------------------------------------- text helpers
+
+## Thousands separators. A five-figure score is meant to be read at a glance in
+## the middle of a match, and 14820 is not.
+func _commas(n: int) -> String:
+	var s := str(absi(n))
+	var out := ""
+	for i in s.length():
+		if i > 0 and (s.length() - i) % 3 == 0:
+			out += ","
+		out += s[i]
+	return ("-" + out) if n < 0 else out
+
 
 func _text_centered(font: Font, center: Vector2, text: String, size: int, color: Color) -> void:
 	if font == null or text == "":

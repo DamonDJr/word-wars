@@ -76,4 +76,39 @@ func _initialize() -> void:
 			total += s.length()
 		print("  want %d -> avg %.2f  %s" % [want, float(total) / 3000.0, hist])
 
+	_scoring()
 	quit()
+
+
+## Scoring is the one part of the game with an arithmetic answer, so check the
+## answer rather than eyeballing the popups. The point is not that these exact
+## numbers are sacred — it is that the shape is right: a rare-letter word beats a
+## common one of the same length, a long word beats a short one, and the
+## multipliers compound instead of replacing each other.
+func _scoring() -> void:
+	print("--- scoring ---")
+	var cases := [
+		["cat", 0, 0], ["quiz", 0, 0], ["cats", 0, 0],
+		["friendship", 0, 0], ["friendship", 5, 0], ["friendship", 5, 2],
+		["alignment", 9, 3],
+	]
+	for c: Array in cases:
+		var a: Dictionary = Scoring.award(c[0], c[1], c[2])
+		print("  %-12s chain %-2d combo %d  letters %-3d bonus %-3d x%.2f  = %d" % [
+			c[0].to_upper(), c[1], c[2], a["base"], a["bonus"], a["mult"], a["total"]])
+
+	var plain: int = Scoring.award("cat", 0, 0)["total"]
+	var rare: int = Scoring.award("jazz", 0, 0)["total"]
+	var long_word: int = Scoring.award("beginning", 0, 0)["total"]
+	var chained: int = Scoring.award("cat", 6, 0)["total"]
+	var combod: int = Scoring.award("cat", 6, 3)["total"]
+	print("  rare letters beat common      %s" % ("ok" if rare > plain else "WRONG"))
+	print("  long beats short              %s" % ("ok" if long_word > plain else "WRONG"))
+	print("  chain multiplies              %s" % ("ok" if chained > plain else "WRONG"))
+	print("  combo compounds on chain      %s" % ("ok" if combod > chained else "WRONG"))
+	# The single most valuable thing a player can do should be worth more than
+	# grinding short words, or the chain ladder is decoration.
+	var grind: int = Scoring.award("cat", 1, 0)["total"] * 8
+	var payoff: int = Scoring.award("alignment", 9, 4)["total"]
+	print("  one great word beats 8 poor   %s  (%d vs %d)" % [
+		"ok" if payoff > grind else "WRONG", payoff, grind])

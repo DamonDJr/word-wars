@@ -32,6 +32,15 @@ Type a real word and fire it. The LAST letters of your word get stamped onto
 a block dropped on your rival. To destroy a block, type a word that STARTS
 with the letters stamped on it.
 
+Words score like Scrabble — a Q is worth reaching for and an E is not — then
+multiply by the chain you are holding and the blocks you just broke. Your score
+and typing speed are both on the summary at the end.
+
+Seven opponents, and they do not just type at different speeds. Magpie is as
+slow as the beginner but answers with nine-letter words. Metronome never lets
+its chain lapse. Berserker never defends at all. A free-for-all deals you three
+different ones.
+
 Keep firing without pausing and each hit lands bigger. Pause, or fire
 something that is not a word, and the run resets.
 

@@ -29,8 +29,8 @@ Open the folder in Godot 4.7 and press F5, or from a terminal:
 godot --path "$(pwd)"
 ```
 
-Pick a difficulty by clicking a card or pressing `1` / `2` / `3`, or `V` for
-versus. Every match opens with a shared 3-2-1 before anyone can type. Type letters,
+Pick an opponent by clicking a card or pressing `1` – `7`, `F` for a
+four-way free-for-all, or `V` for versus. Every match opens with a shared 3-2-1 before anyone can type. Type letters,
 fire with `Space` or `Enter`. `Backspace` deletes, `Ctrl+Backspace` or `Esc`
 clears the line. `H` on the title screen shows the full rules, `R` rematches after a game. `F1` mutes — it is
 not a letter key, because every letter is spoken for.
@@ -286,7 +286,8 @@ project.godot            autoloads WordBank, 1280x720, gl_compatibility
 scenes/main.tscn         one Node2D running scripts/game.gd
 scripts/game.gd          match flow, attack resolution, all HUD drawing
 scripts/board.gd         WWBoard — grid, rectangle gravity, block rendering
-scripts/ai_opponent.gd   CPU word choice and its wpm-paced "typing"
+scripts/ai_opponent.gd   CPU personalities: word choice, pace, strategy
+scripts/scoring.gd       Scrabble letter values plus chain/combo multipliers
 scripts/word_bank.gd     autoload; word lists, prefix index, fairness lookups
 scripts/audio.gd         autoload; synthesises the whole sound bank at startup
 data/words.txt           ~350k words, sorted — what counts as valid input
@@ -561,34 +562,109 @@ verifies playback and mute:
 godot --headless --script res://tools/audiocheck.gd
 ```
 
-## Difficulty
+## Opponents
 
-| | WPM | Reaction | Fumble | Vocabulary | Focus | Combo sense |
-|:--|----:|---------:|-------:|-----------:|------:|------------:|
-| Rookie | 26 | 1.5s | 22% | top 2,500 | 45% | 10% |
-| Duelist | 40 | 0.9s | 14% | top 6,000 | 65% | 35% |
-| Wordsmith | 58 | 0.5s | 7% | top 25,000 | 90% | 80% |
+Seven of them, and speed is only one axis. The interesting one is that this game
+has a real strategic tension built in: **block size comes from rhythm, and how
+many blocks a word clears comes from length.** Fire short words and your chain
+climbs, so the slabs you send get bigger. Reach for long words and each answer
+sweeps several blocks off your own board, but the run keeps lapsing. You cannot
+have both, and every personality is a different answer to that trade.
+
+| | WPM | Words | Vocabulary | Focus | Combo | Rhythm | Plays like |
+|:--|--:|:--|--:|--:|--:|--:|:--|
+| Rookie | 26 | 3–7 | 2,500 | 45% | 10% | 30% | no plan yet |
+| Magpie | 26 | 7–13 | 9,000 | 70% | 45% | 5% | hoards letters, clears in sweeps |
+| Metronome | 34 | 3–6 | 4,000 | 45% | 20% | 95% | short words, relentless tempo |
+| Duelist | 40 | 4–9 | 6,000 | 65% | 35% | 50% | no weakness, no specialty |
+| Bulwark | 38 | 4–10 | 20,000 | 97% | 85% | 20% | all defence, soft punches |
+| Berserker | 52 | 3–7 | 5,000 | 12% | 15% | 90% | all offence, drowns itself |
+| Wordsmith | 58 | 5–12 | 25,000 | 90% | 80% | 65% | does everything, and quickly |
+
+Magpie is the clearest illustration: Rookie's hands, nothing like Rookie's head.
+It types no faster than the easiest opponent on the list and still answers almost
+everything, because a nine-letter word takes four blocks off its board at once.
+What it never does is build a chain, so it barely hits back.
 
 The CPU spends real time entering each word at its WPM, which is why you can
 watch an attack forming under its board and race to answer it.
 
-The last three columns govern defense, and they exist because "the CPU is too
-good at defending" turned out to be three separate problems:
+### The dials
 
 - **Vocabulary** is how deep into the frequency list it may look. A hard stamp
   like `DING` only has answers buried deep, so a shallow CPU cannot find one and
   has to eat the block.
 - **Focus** is the chance it hunts for a defensive word at all, and that it goes
-  after the most dangerous block rather than whichever one it noticed. Below it,
-  the CPU answers a random block or just swings back.
+  after the most dangerous block rather than whichever one it noticed.
 - **Combo sense** is the chance it looks for the word clearing *several* blocks
-  at once. This was the real damage — a perfect multi-clear counterattack every
-  time, which is how it turned your best attack into a 4x3 in its favour. Below
-  it, the CPU grabs the first answer that comes to mind.
+  at once, rather than the first answer that comes to mind. This was the real
+  damage back when the CPU was too strong: a perfect multi-clear counterattack
+  every single time.
+- **Rhythm** is how much it protects a run in progress. A high-rhythm bot works
+  out what it can finish before the chain window shuts and deliberately picks
+  something that short; a low one swings regardless and eats the lapse.
+- **Grudge** is how long it stays pointed at one rival in a four-way. Without it
+  everybody re-aims at the same rate, which is three identical guns.
 
-Against a fixed eight-word assault, Duelist went from clearing 6 to clearing 3,
-and its counterattacks fell from a 4x3 haymaker to mostly 1x1s and 2x1s. Tune all
-of it in `AiOpponent.DIFFICULTIES`.
+Two things stop a personality from being a suicide note. Every bot reads its own
+**peril** — how full its board is, counting inbound garbage — and starts
+defending regardless of temperament once the stack nears the ceiling, which is
+the only reason Berserker is worth playing twice. And a long-word bot that finds
+no answer at its preferred length searches again with no floor, because a bot
+sitting on a block it could have cleared reads as broken rather than as
+characterful.
+
+A free-for-all deals **different** personalities to the other three boards,
+drawn from near your pick on the roster so the table stays roughly the level you
+asked for. Three copies of one opponent is one opponent with more boards. They
+are named on screen for what they are, so you can tell at a glance that the board
+on the right is a Berserker and the one beside it is a Bulwark. Networked CPUs
+work the same way — the host picks the personalities when it builds the seating
+and sends the names, so the label *is* the configuration and both ends agree
+without a second packet.
+
+Tune all of it in `AiOpponent.DIFFICULTIES`. Adding an entry there and to
+`ROSTER` puts it on the menu; the picker builds itself from the roster.
+
+## Scoring
+
+Letter values are Scrabble's, unchanged, because everybody already knows them —
+a `Q` is worth reaching for and an `E` is not, and nobody has to be taught that.
+Everything above that is this game's own, and it pays for different things than
+Scrabble does. Scrabble rewards rare letters and lucky squares; Word Wars rewards
+**rhythm and damage**, so the multipliers come from the chain you are holding and
+the blocks you just broke.
+
+```
+word    = sum of Scrabble letter values
+bonus   = 15 + 10 per letter past 7      (long words only)
+mult    = (1 + 0.20 x chain-1) x (1 + 0.60 x blocks broken)
+total   = (word + bonus) x mult x 5
+```
+
+Clearing is deliberately worth more per unit than chaining: it is the harder
+thing to do and the one you have to plan for rather than merely keep up with.
+The long-word bonus is Scrabble's bingo in spirit, and it is paid twice over
+because a long word is also what clears several blocks at once.
+
+The whole thing is scaled by five at the end. Raw Scrabble scores are small — a
+good word is twenty — and a counter creeping from 9 to 34 over a minute does not
+feel like anything. Scaling changes no letter's worth relative to any other.
+
+For scale: `CAT` cold is 25, `QUIZ` cold is 110, `FRIENDSHIP` is 320 — and the
+same `FRIENDSHIP` on a five-chain that breaks two blocks is 1,267. Cashing a
+salvo pays a flat 1,000 on top of the word that earned it.
+
+The number lands where your eyes already are: a `+1,267 x3.96` leaps off the
+bottom of your own board and eases to a stop, and the running total in the centre
+column chases the real one rather than snapping to it, so you watch it climb.
+Only your own arithmetic is ever drawn — four sets of numbers flying about is
+noise, not feedback. Rivals still score, and their totals sit under their boards,
+because in a four-way that is the only quick answer to "am I winning".
+
+`tools/selftest.gd` checks the shape rather than the exact numbers: rare letters
+beat common ones, long beats short, the multipliers compound instead of
+replacing each other, and one great word beats eight poor ones.
 
 ## Not done yet
 

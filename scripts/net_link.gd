@@ -336,8 +336,13 @@ func _build_seating() -> Array:
 	var out: Array = [{"id": multiplayer.get_unique_id(), "name": my_name}]
 	for id in peer_ids():
 		out.append({"id": id, "name": String(roster[id]["name"])})
+	# CPUs are named for the personality they will play as, and the host decides
+	# once so everybody in the room sees the same table. The name is the whole
+	# message: the host configures its bots straight back off these labels.
+	var picks: Array = AiOpponent.ROSTER.duplicate()
+	picks.shuffle()
 	for i in bot_count:
-		out.append({"id": -(i + 1), "name": "CPU %d" % (i + 1)})
+		out.append({"id": -(i + 1), "name": String(picks[i % picks.size()]).to_upper()})
 	return out
 
 
