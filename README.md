@@ -447,6 +447,53 @@ Everything that happens to a block throws debris, all of it in `board.gd`:
 Particle count is capped at `MAX_BITS` (900) — a big combo can ask for a lot at
 once.
 
+### Attacks travel
+
+An attack used to teleport: you fired, and a number appeared under somebody
+else's board. Now it flies there — a comet on a lobbed curve, drawn as a wide
+soft pass for the glow and a narrow bright one for the filament inside it,
+carrying the stamp it is about to brand. With four boards this is the difference
+between knowing you were hit and knowing *who* hit you, and the moment it spends
+in the air is the moment the hit actually feels like it lands.
+
+Everyone's tracers carry their letters, not just yours. Watching `ING` cross the
+screen towards you is a second of warning about what you are going to have to
+answer. It arrives on the target board as its own debris burst — `WWBoard.splash`
+— because an attack that crossed the whole screen and then simply stopped was
+failing at the one moment it most needed to sell.
+
+The whole thing is cosmetic: the rules resolved the instant the word was fired,
+which is exactly why it is free to take its time.
+
+### Hit stop
+
+The world freezes for a fortieth of a second on a heavy landing, a power word or
+a salvo. It is the cheapest trick available and the one that does the most — a
+moment of nothing is what makes an impact feel like it has weight rather than
+merely happening.
+
+It scales `Engine.time_scale`, which means it also scales the clock the netcode
+runs on, so **a networked match does without it** rather than risk two machines
+disagreeing about how much time has passed. The timer is measured against the
+wall clock rather than `delta`, since `delta` is the thing being slowed and a
+freeze timed with it would never end.
+
+### Screen texture
+
+Film grain and a vignette, both pitched just at the edge of noticing. The grain
+is one 96px tile of squared noise, re-offset every frame — a per-pixel effect
+done honestly in `_draw` would cost more than the rest of the game put together,
+and in motion nobody can tell.
+
+The vignette does double duty. It frames the picture, and it is where the board's
+danger is *felt* rather than read: past halfway to the ceiling it reddens and
+starts beating, faster the closer you get, so the screen itself gets nervous.
+That is a thing you notice without having to look at anything.
+
+Scanlines were tried here and cut. At any strength you could actually see they
+claimed a CRT this game is not pretending to be, and below that they were a draw
+call doing nothing.
+
 ## The menus
 
 ### Starting up

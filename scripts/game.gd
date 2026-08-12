@@ -132,6 +132,30 @@ const BG_BOTTOM := Color("#141a36")
 ## this far past the viewport on every side to keep the edges covered.
 const SHAKE_MARGIN := 56.0
 
+## An attack used to teleport: you fired, and a number appeared under somebody
+## else's board. Now it flies there. With four boards this is the difference
+## between knowing you were hit and knowing WHO hit you, and it costs the attack
+## a moment in the air, which is the moment the hit actually feels like it lands.
+const TRACER_SPAN := 0.46
+const TRACER_ARC := 150.0
+
+## Time briefly stops on a heavy hit. This is the cheapest trick in the box and
+## the one that does the most: a fortieth of a second of nothing is what makes an
+## impact feel like it has weight rather than merely happening.
+const HITSTOP_SCALE := 0.12
+const HITSTOP_HEAVY := 90     ## milliseconds, a big block landing
+const HITSTOP_POWER := 120    ## a power word
+const HITSTOP_SALVO := 220    ## the whole chain cashing in
+
+## Screen texture, all of it deliberately near the threshold of noticing. Turn
+## any of these up and the game starts looking like a filter instead of a game.
+## Scanlines were tried here and cut: at any strength you could actually see,
+## they claim a CRT this game is not pretending to be, and below that they were
+## a draw call doing nothing. Grain and a vignette give the surface interest
+## without making a period argument.
+const GRAIN := 0.05
+const VIGNETTE := 0.40
+
 enum Phase { SPLASH, TITLE, LOBBY, COUNTDOWN, PLAY, OVER }
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
@@ -155,6 +179,26 @@ class Pending extends RefCounted:
 	var prefix := ""
 	var cells := 1
 	var timer := 0.0
+
+
+## An attack in flight. Purely cosmetic — the rules already resolved the moment
+## the word was fired — so it can be lobbed on a curve and take its time.
+class Tracer extends RefCounted:
+	var from := Vector2.ZERO
+	var to := Vector2.ZERO
+	var arc := Vector2.ZERO
+	var t := 0.0
+	var span := TRACER_SPAN
+	var color := Color.WHITE
+	var text := ""
+	var width := 3.0
+	var at_me := false
+	## Untyped on purpose: `SideState` is declared after this class.
+	var target = null
+
+	func at(u: float) -> Vector2:
+		var v := 1.0 - u
+		return from * (v * v) + arc * (2.0 * v * u) + to * (u * u)
 
 
 class SideState extends RefCounted:
@@ -245,6 +289,13 @@ var power_pops: Array = []
 ## Characters actually typed, for a real WPM rather than one inferred from words.
 var chars_typed := 0
 
+## Attacks in flight, and the deadline for the current freeze-frame.
+var tracers: Array = []
+var _hitstop_until := 0
+
+var _grain: Texture2D
+var _vignette: Texture2D
+
 var shake := 0.0
 var flash := 0.0
 var flash_color := Color.WHITE
@@ -312,9 +363,38 @@ func _ready() -> void:
 
 	_overlay = Node2D.new()
 	add_child(_overlay)
+	# The grain is tiled from a small texture, which needs repeat turned on for
+	# this canvas item specifically.
+	_overlay.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	_overlay.draw.connect(_draw_overlay)
+	_build_screen_texture()
 
 	_net_setup()
+
+
+## Two small textures, built once and tiled or stretched from then on. A
+## per-pixel grain done honestly in `_draw` would cost more than the rest of the
+## game put together; one 96px tile with a moving offset is indistinguishable
+## from the real thing in motion, and it is a single draw call.
+func _build_screen_texture() -> void:
+	var g := Image.create(96, 96, false, Image.FORMAT_RGBA8)
+	for y in 96:
+		for x in 96:
+			# Squared so most of the tile is nearly clear and the speckle is
+			# sparse — even noise reads as a dirty screen rather than as film.
+			var n := randf()
+			g.set_pixel(x, y, Color(1.0, 1.0, 1.0, n * n))
+	_grain = ImageTexture.create_from_image(g)
+
+	# White with an alpha ramp toward the corners, so the colour it is drawn in
+	# is decided at draw time — which is what lets it turn red when you are
+	# about to die instead of needing a second texture.
+	var v := Image.create(160, 90, false, Image.FORMAT_RGBA8)
+	for y in 90:
+		for x in 160:
+			var d: float = Vector2(x / 159.0 - 0.5, y / 89.0 - 0.5).length() / 0.7071
+			v.set_pixel(x, y, Color(1.0, 1.0, 1.0, clampf(pow(d, 2.4), 0.0, 1.0)))
+	_vignette = ImageTexture.create_from_image(v)
 
 
 ## Art and fonts are cosmetic, so a build that somehow shipped without one should
@@ -386,6 +466,7 @@ func _on_block_landed(tier: int, _at: Vector2, impact: float) -> void:
 		return
 	shake = maxf(shake, (0.12 + 0.10 * (tier - 1)) * (0.55 + 0.45 * impact))
 	if tier >= 4:
+		_hitstop(HITSTOP_HEAVY)
 		_bloom(WWBoard.TIER_COLORS[tier], 0.16)
 
 
@@ -452,6 +533,8 @@ func start_match(diff: String, bots: int = 1) -> void:
 	recent_stamps.clear()
 	score_pops.clear()
 	power_pops.clear()
+	tracers.clear()
+	_clear_hitstop()
 	score_shown = 0.0
 	score_kick = 0.0
 	chars_typed = 0
@@ -833,6 +916,7 @@ func _play_word(attacker: SideState, word: String) -> void:
 
 	if out_tier >= 0:
 		_send_block(defender, word, out_tier, DROP_DELAY)
+		_throw(attacker, defender, out_tier, word.substr(maxi(0, word.length() - 3)))
 
 	earned += _fire_powers(attacker, defender, word, powers, out_tier, intercepted)
 	_note_best(attacker, word, earned)
@@ -865,6 +949,66 @@ func _send_block(defender: SideState, word: String, tier: int, delay: float) -> 
 	defender.flash = 1.0
 
 
+## Throw a visible attack from one board to another. Cosmetic only — the rules
+## resolved the instant the word was fired — so it can be lobbed and take its
+## time getting there.
+func _throw(from_side: SideState, to_side: SideState, tier: int, text: String) -> void:
+	if from_side == null or to_side == null or from_side == to_side:
+		return
+	if not from_side.in_match or not to_side.in_match:
+		return
+	var tr := Tracer.new()
+	var muzzle := _board_rect(from_side)
+	tr.from = Vector2(muzzle.get_center().x, muzzle.end.y - 10.0)
+	tr.to = _board_rect(to_side).get_center()
+	# Lobbed rather than fired flat: an arc reads as a distance crossed, where a
+	# straight line between two panels just looks like a UI divider.
+	tr.arc = (tr.from + tr.to) * 0.5 - Vector2(0.0, TRACER_ARC + 26.0 * tier)
+	tr.color = from_side.accent
+	tr.text = text.to_upper()
+	tr.width = 3.2 + tier * 1.2
+	tr.span = TRACER_SPAN + 0.035 * tier
+	tr.at_me = to_side == player
+	tr.target = to_side
+	tracers.append(tr)
+	# A salvo throws ten at once; past this the screen is a smear anyway.
+	if tracers.size() > 28:
+		tracers.pop_front()
+
+
+## The moment a thrown attack reaches the board it was aimed at. The debris is
+## thrown on the target board itself, in its own coordinates, so a hit on a
+## shrunken rival panel scatters at that panel's scale.
+func _tracer_impact(tr: Tracer) -> void:
+	var side: SideState = tr.target as SideState
+	if side != null and side.in_match:
+		var force: float = clampf((tr.width - 3.0) / 6.0, 0.1, 1.0)
+		side.board.splash(
+			Vector2(WWBoard.COLS * WWBoard.CELL * 0.5, WWBoard.ROWS * WWBoard.CELL * 0.5),
+			tr.color, force)
+	if tr.at_me:
+		shake = maxf(shake, 0.10 + tr.width * 0.02)
+		_bloom(tr.color, 0.10)
+		Sfx.play("zap", 0.7, -6.0)
+	else:
+		Sfx.play("zap", 1.4, -12.0)
+
+
+## Freeze the world for a moment. This is the cheapest juice there is and the
+## most effective, but it scales the whole engine — including the clock the
+## netcode runs on — so a networked match does without rather than risk the two
+## machines disagreeing about how much time has passed.
+func _hitstop(ms: int) -> void:
+	if net_active():
+		return
+	_hitstop_until = maxi(_hitstop_until, Time.get_ticks_msec() + ms)
+
+
+func _clear_hitstop() -> void:
+	_hitstop_until = 0
+	Engine.time_scale = 1.0
+
+
 ## Pay out whatever the word triggered, and say so. Everyone can earn these —
 ## they are rules, not a player perk — but only your own get a banner, for the
 ## same reason only your own score is drawn.
@@ -884,10 +1028,12 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 				# pay out more than was aimed at you in the first place.
 				for i in intercepted:
 					_send_block(defender, word, 0, DROP_DELAY + 0.25 + i * 0.12)
+					_throw(attacker, defender, 0, "")
 			"COMBO":
 				attacker.tier_bonus = 1
 			"PERFECT":
 				_send_block(defender, word, out_tier, DROP_DELAY + 0.4)
+				_throw(attacker, defender, out_tier, "")
 			"CLUTCH":
 				attacker.slowdown = CLUTCH_TIME
 
@@ -901,6 +1047,7 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 		if attacker == player:
 			_pop_power(name, bonus, tint)
 			score_kick = 1.0
+			_hitstop(HITSTOP_POWER)
 	return paid
 
 
@@ -1002,6 +1149,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 			p.cells = 1
 			p.timer = DROP_DELAY + i * 0.10
 			defender.pending.append(p)
+			_throw(attacker, defender, 0, "")
 		if power > 0:
 			defender.flash = 1.0
 
@@ -1026,6 +1174,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 		_say("SALVO — %d blocks away, chain spent" % power, Color("#ffd166"))
 		shake = maxf(shake, 0.5)
 		_bloom(Color("#ffd166"), 0.30)
+		_hitstop(HITSTOP_SALVO)
 
 
 func _report(attacker: SideState, word: String, cleared: int, intercepted: int,
@@ -1134,6 +1283,20 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
+	# Measured against the wall clock, not `delta` — `delta` is the thing being
+	# slowed, so a freeze timed with it would never end.
+	if Time.get_ticks_msec() < _hitstop_until:
+		Engine.time_scale = HITSTOP_SCALE
+	elif Engine.time_scale != 1.0:
+		Engine.time_scale = 1.0
+
+	for i in range(tracers.size() - 1, -1, -1):
+		var tr: Tracer = tracers[i]
+		tr.t += delta / tr.span
+		if tr.t >= 1.0:
+			_tracer_impact(tr)
+			tracers.remove_at(i)
+
 	for s: SideState in sides:
 		var w := _typing_of(s)
 		s.board.highlight_word = w
@@ -1447,6 +1610,8 @@ func _lose_life(side: SideState) -> void:
 
 func _end_match(loser: SideState) -> void:
 	phase = Phase.OVER
+	_clear_hitstop()
+	tracers.clear()
 	var standing := _living()
 	if standing.size() == 1:
 		winner = "YOU" if standing[0] == player else standing[0].label
@@ -1505,6 +1670,44 @@ func _draw() -> void:
 	if phase != Phase.COUNTDOWN and phase != Phase.OVER:
 		_draw_center_hud(size)
 	_draw_player_input(size)
+	# Last, so an attack crossing the screen passes over the boards rather than
+	# under them, and on the world canvas so it moves with the shake.
+	_draw_tracers()
+
+
+## A comet on a curve with a tapering tail sampled back along the same curve, and
+## for your own attacks the letters it is carrying riding the head — so you can
+## watch the stamp you just minted travel to the board it is about to brand.
+func _draw_tracers() -> void:
+	const STEPS := 12
+	const STEP := 0.035
+	for tr: Tracer in tracers:
+		var u := clampf(tr.t, 0.0, 1.0)
+		var head := tr.at(u)
+		# Two passes: a wide soft one for the glow, a narrow bright one for the
+		# filament inside it. One line at one width reads as a UI stroke; the
+		# pair reads as something hot going past.
+		for pass_i in 2:
+			var wide := pass_i == 0
+			for i in STEPS:
+				var back: float = u - float(i + 1) * STEP
+				if back < 0.0:
+					break
+				var fade: float = 1.0 - float(i) / float(STEPS)
+				var col := Color(tr.color, 0.16 * fade) if wide \
+					else Color(1.0, 1.0, 1.0, 0.55 * fade * fade).lerp(
+						Color(tr.color, 0.8 * fade), 0.55)
+				draw_line(tr.at(back), tr.at(u - float(i) * STEP), col,
+					tr.width * fade * (3.2 if wide else 1.0), true)
+		draw_circle(head, tr.width * 3.0, Color(tr.color, 0.22))
+		draw_circle(head, tr.width * 1.6, Color(tr.color, 0.7))
+		draw_circle(head, tr.width * 0.7, Color(1.0, 1.0, 1.0, 0.95))
+		# The stamp rides the shot. Everyone's is shown, not just yours: watching
+		# ING cross the screen towards you is a second of warning about what you
+		# are going to have to answer.
+		if tr.text != "":
+			_text_centered(_font_bold, head - Vector2(0.0, 22.0), tr.text, 16,
+				Color(1.0, 1.0, 1.0, 0.9 * (1.0 - u * 0.45)))
 
 
 func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
@@ -1800,8 +2003,42 @@ func _draw_rival_panel(s: SideState) -> void:
 
 # ------------------------------------------------------------------- overlays
 
+## Grain and a vignette, both sitting just at the edge of noticing.
+## Turn any of them up and the game starts looking like a filter rather than a
+## game — the job is to stop the flat panels reading as a spreadsheet.
+##
+## The vignette does double duty. It frames the picture, and it is where the
+## board's danger is *felt* rather than read: past halfway to the ceiling it
+## reddens and starts beating, faster the closer you get. The screen itself gets
+## nervous, which is a thing you notice without having to look at anything.
+func _draw_screen_texture(size: Vector2) -> void:
+	if _vignette == null:
+		return
+	var full := Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0)
+
+	var tint := Color(0.0, 0.0, 0.0)
+	var amount := VIGNETTE
+	if phase == Phase.PLAY and player.alive and not paused:
+		var peril := _peril(player)
+		if peril > 0.45:
+			var heat: float = (peril - 0.45) / 0.55
+			var beat: float = 0.5 + 0.5 * sin(
+				Time.get_ticks_msec() / (280.0 - 150.0 * heat))
+			tint = Color(0.62, 0.04, 0.07) * (0.3 + 0.7 * beat)
+			amount += heat * (0.20 + 0.18 * beat)
+	_overlay.draw_texture_rect(_vignette, full, false,
+		Color(tint.r, tint.g, tint.b, amount))
+
+	# Re-offset every frame, or a static tile reads as a smudge on the monitor.
+	var jog := Vector2(randi() % 96, randi() % 96)
+	_overlay.draw_texture_rect(_grain, Rect2(full.position - jog, full.size + jog),
+		true, Color(1.0, 1.0, 1.0, GRAIN))
+
+
 func _draw_overlay() -> void:
 	var size := get_viewport_rect().size
+	_draw_screen_texture(size)
 	if flash > 0.0:
 		_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 			size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),

@@ -444,6 +444,26 @@ func _impact(b: Blk, impact: float) -> void:
 	block_landed.emit(b.tier, mid, impact)
 
 
+## A hit arriving from outside — an attack reaching this board rather than a
+## block breaking on it. Debris only; nothing about the grid changes. Without
+## this an attack that crossed the whole screen simply stops when it arrives,
+## and the last thing it does is the one thing it does not sell.
+func splash(at: Vector2, col: Color, force: float) -> void:
+	for i in int(7.0 + 15.0 * force):
+		var p := _spawn(SPARK, at, randf_range(0.18, 0.44))
+		var dir := Vector2.RIGHT.rotated(randf_range(0.0, TAU))
+		p.vel = dir * randf_range(140.0, 460.0) * (0.5 + force)
+		p.size = Vector2(randf_range(1.5, 3.4), 0)
+		p.color = Color.WHITE.lerp(col, randf_range(0.2, 0.8))
+		_add_bit(p)
+
+	var ring := _spawn(RING, at, 0.34)
+	ring.size = Vector2(26.0 + 46.0 * force, 0)
+	ring.color = col
+	_add_bit(ring)
+	shake = maxf(shake, 0.22 + 0.40 * force)
+
+
 func _step_bits(delta: float) -> void:
 	for i in range(bits.size() - 1, -1, -1):
 		var p: Bit = bits[i]
