@@ -40,6 +40,17 @@ if ! grep -q "mastery holds up" <<<"$MASTERY"; then
 	exit 1
 fi
 
+# Two ways for a filter to be wrong, and the second is the one that would be
+# noticed: refusing to print `classic` in a game about the letters inside words.
+echo "==> Censor check"
+CENSOR=$("$(command -v godot)" --headless --script tools/censortest.gd 2>&1 || true)
+if ! grep -q "censor behaves" <<<"$CENSOR"; then
+	echo "FAILED: the profanity filter is not behaving." >&2
+	grep -E "FAILED" <<<"$CENSOR" >&2 || true
+	echo "        Run: godot --headless --script tools/censortest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"

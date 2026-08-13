@@ -173,6 +173,9 @@ func _weighted_stamp(pool: Array, avoid: Dictionary) -> String:
 	return pool[pool.size() - 1]["s"]
 
 
+## Last resort when nothing else was answerable. Single letters cannot be rude,
+## so there is nothing to filter here — but the caller may have handed us a word
+## whose every fragment was refused, and one letter is always something.
 func _easiest_letter(w: String) -> String:
 	var best := w.right(1)
 	for i in w.length():
@@ -189,7 +192,15 @@ const SINGLE_LETTER_MIN_COMMON := 30
 
 ## A stamp is fair only if enough words exist to answer it AND enough of those
 ## are words a person would actually reach for.
+##
+## A rude fragment is never fair, and that holds whether or not the player has
+## the profanity filter on. Masking a stamp would be worse than showing it: the
+## stamp is the thing you have to type, and you cannot answer what you cannot
+## read. So it is refused at the source and the search moves on to the next
+## candidate, which it was going to do anyway for a dozen other reasons.
 func is_answerable(stamp: String, min_valid: int, min_common: int) -> bool:
+	if Censor.is_profane(stamp):
+		return false
 	if valid_prefix_count(stamp) < min_valid:
 		return false
 	var floor_common := min_common

@@ -49,6 +49,7 @@ const PREF_DEFAULTS := {
 	"sfx": 0.8,
 	"texture": true,     ## film grain and vignette
 	"hitstop": true,     ## the freeze-frame on heavy hits
+	"censor": true,      ## mask profanity wherever a word is echoed back
 	"fullscreen": false,
 	## Rival seats for a single-player match. "" is an empty seat, "?" is a
 	## random personality rolled at the start of each match, anything else names

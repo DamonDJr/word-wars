@@ -638,6 +638,44 @@ The volume sliders are a trim on top of the existing mix rather than a
 replacement for it. The relative loudness of a keystroke against a block landing
 is a design decision, and a slider should not be able to flatten it.
 
+## The profanity filter
+
+The dictionary is 350k words and does not omit the rude ones, so anything the
+game echoes back at you can be masked. Two rules keep it from becoming a
+nuisance.
+
+**It never changes what a word does.** A rude word is still a real word: it
+still clears blocks, still scores, still counts toward your record. Only the
+display is masked. A filter that silently made some words stop working would
+arrive as a bug report about the dictionary rather than as a filter.
+
+**It matches whole words only.** Substring matching is how you end up refusing
+to print `classic`, `assassin`, `shuttlecock` and `Scunthorpe` — and in a game
+whose entire subject is the letters inside words, that failure mode would fire
+constantly. Inflections come from expanding a stem list at load time rather than
+from stemming at match time, so everything caught is something somebody wrote
+down deliberately. `tools/censortest.gd` checks both directions, and the
+Scunthorpe half of it is the longer list.
+
+Masking happens inside `_say` and `_log` rather than at their call sites, because
+there are dozens of those and a new one must not be able to forget.
+
+Two things are handled differently:
+
+- **Stamps are never minted rude in the first place**, filter or no filter.
+  Masking a stamp would be worse than showing one — the stamp is the thing you
+  have to type, and you cannot answer what you cannot read. `WordBank` refuses
+  the fragment and the search moves on, which it was going to do for a dozen
+  other reasons anyway.
+- **Names get their own pass.** They are the only free text in the game —
+  everything else has to be a dictionary word, and the typing input only accepts
+  `a` to `z` — so `S.H.I.T` is possible there and nowhere else. A name is one
+  token however it was punctuated. A log line cannot be treated that way, since
+  collapsing a sentence across its punctuation would join words that were never
+  one word.
+
+Off in Settings for anyone who would rather not have it.
+
 ## Opponents
 
 Seven of them, and speed is only one axis. The interesting one is that this game

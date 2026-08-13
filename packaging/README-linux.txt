@@ -82,6 +82,9 @@ Controls
   ESC                   pause menu / leave match
   H   (title screen)    full rules
   1-4 (title screen)    single player / multiplayer / mastery / settings
+
+Rude words still play normally — they are just masked on screen. Turn that
+off in Settings if you would rather not have it.
   R   (after a match)   rematch
   F1                    mute
 

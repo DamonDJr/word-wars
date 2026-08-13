@@ -308,6 +308,7 @@ var _hitstop_until := 0
 ## and every heavy hit respectively.
 var fx_texture := true
 var fx_hitstop := true
+var fx_censor := true
 
 var _grain: Texture2D
 var _vignette: Texture2D
@@ -1784,14 +1785,27 @@ func _wpm() -> float:
 	return (float(chars_typed) / 5.0) / (match_time / 60.0)
 
 
+## Everything the game echoes back at the player passes through here. Your own
+## line as you type it does not — you have to be able to see what you are
+## entering — but the moment it is repeated anywhere, it is masked.
+func _show(text: String) -> String:
+	return Censor.clean(text) if fx_censor else text
+
+
+## For names, which are the one piece of free text in the game and therefore the
+## one place somebody can punctuate their way around a word list.
+func _show_name(text: String) -> String:
+	return Censor.clean_name(text) if fx_censor else text
+
+
 func _say(text: String, color: Color) -> void:
-	message = text
+	message = _show(text)
 	message_color = color
 	message_life = 2.2
 
 
 func _log(text: String, color: Color) -> void:
-	events.push_front({"text": text, "color": color, "life": 1.0})
+	events.push_front({"text": _show(text), "color": color, "life": 1.0})
 	if events.size() > 7:
 		events.resize(7)
 
@@ -1923,7 +1937,8 @@ func _draw_tracer_styled(tr: Tracer, style: String, u: float, head: Vector2) -> 
 func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var center_x := board_pos.x + bw * 0.5
-	_text_centered(_font_bold, Vector2(center_x, BOARD_TOP - 44.0), side.label, 26, side.accent)
+	_text_centered(_font_bold, Vector2(center_x, BOARD_TOP - 44.0), _show(side.label), 26,
+		side.accent)
 
 	# Score leads: in a four-way it is the only quick answer to "am I winning".
 	var sub := "%s · %d words" % [_commas(side.score), side.words_played]
@@ -2077,7 +2092,8 @@ func _draw_center_hud(size: Vector2) -> void:
 	if slots_in_play > 2 and player.alive:
 		var mark: SideState = sides[player.target]
 		_text_centered(_font, Vector2(cx, BOARD_TOP + 118.0), "AIMING AT", 10, Color("#5d6a92"))
-		_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 136.0), mark.label, 17, mark.accent)
+		_text_centered(_font_bold, Vector2(cx, BOARD_TOP + 136.0), _show(mark.label), 17,
+			mark.accent)
 
 
 	# Kept inside the free band so it never draws over anybody's playfield.
@@ -2244,7 +2260,7 @@ func _draw_rival_panel(s: SideState) -> void:
 			Color(s.accent, 0.6 + 0.4 * pulse))
 
 	var name_col: Color = s.accent if not out else Color("#4d5878")
-	var title := "%d · %s" % [s.slot, s.label] if slots_in_play > 2 else s.label
+	var title := _show("%d · %s" % [s.slot, s.label] if slots_in_play > 2 else s.label)
 	_text_centered(_font_bold, Vector2(cx, r.position.y - 54.0), title,
 		26 if slots_in_play <= 2 else 16, name_col)
 	if slots_in_play <= 2:
@@ -2274,7 +2290,7 @@ func _draw_rival_panel(s: SideState) -> void:
 		return
 
 	# What they are mid-way through typing.
-	var shown := _typing_of(s).to_upper()
+	var shown := _show(_typing_of(s).to_upper())
 	_text_fit(_font_bold, Vector2(cx, r.end.y + 18.0),
 		shown if shown != "" else "…", 18, r.size.x + 30.0,
 		Color(s.accent, 0.9) if shown != "" else Color("#3d4666"))
@@ -2436,7 +2452,8 @@ func _draw_countdown(size: Vector2) -> void:
 	var pop: float = 1.0 + (1.0 - frac) * 0.35
 	_otext(_font_bold, Vector2(cx, cy), label, int(96 * pop), Color(tint, 0.5 + 0.5 * frac))
 	_otext(_font, Vector2(cx, cy + 96.0),
-		"versus %s" % (ai_side.label if net_active() else difficulty), 16, Color("#8d99bd"))
+		"versus %s" % _show(ai_side.label if net_active() else difficulty), 16,
+		Color("#8d99bd"))
 
 
 ## The key art, laid out the way the engine's boot splash lays it out — same fit,
@@ -2644,6 +2661,8 @@ func _settings_rows() -> Array:
 			bool(Profile.pref("texture"))],
 		["hitstop", "toggle", "Impact freeze", "the pause on a heavy hit",
 			bool(Profile.pref("hitstop"))],
+		["censor", "toggle", "Profanity filter", "masks rude words on screen",
+			bool(Profile.pref("censor"))],
 		["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))],
 		["name", "text", "Your name", "shown to other players",
@@ -2653,7 +2672,7 @@ func _settings_rows() -> Array:
 	for i in defs.size():
 		var d: Array = defs[i]
 		out.append({
-			"rect": Rect2(cx - 360.0, 136.0 + i * 72.0, 720.0, 60.0),
+			"rect": Rect2(cx - 360.0, 124.0 + i * 66.0, 720.0, 54.0),
 			"action": "set:" + String(d[0]),
 			"kind": String(d[1]), "label": String(d[2]), "note": String(d[3]),
 			"value": d[4],
@@ -2670,7 +2689,7 @@ func _change_setting(key: String) -> void:
 		settings_editing = not settings_editing
 		Sfx.play("key", 1.2)
 		return
-	if key == "texture" or key == "hitstop" or key == "fullscreen":
+	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor":
 		Profile.set_pref(key, not bool(Profile.pref(key)))
 		_apply_prefs()
 		Sfx.play("count", 1.3 if bool(Profile.pref(key)) else 0.9)
@@ -2697,6 +2716,7 @@ func _apply_prefs() -> void:
 	Sfx.set_gain(float(Profile.pref("sfx")))
 	fx_texture = bool(Profile.pref("texture"))
 	fx_hitstop = bool(Profile.pref("hitstop"))
+	fx_censor = bool(Profile.pref("censor"))
 	if not fx_hitstop:
 		_clear_hitstop()
 	var full := bool(Profile.pref("fullscreen"))
@@ -2890,7 +2910,8 @@ func _draw_mastery(size: Vector2) -> void:
 		["BEST CHAIN", "x%d" % Profile.best_chain],
 		["MULTI-CLEARS", str(Profile.multi_clears)],
 		["SALVOS", str(Profile.salvos)],
-		["LONGEST", Profile.longest_word.to_upper() if Profile.longest_word != "" else "—"],
+		["LONGEST", _show(Profile.longest_word.to_upper())
+			if Profile.longest_word != "" else "—"],
 	]
 	var tw := 138.0
 	var span := stats.size() * tw + (stats.size() - 1) * 8.0
@@ -3123,7 +3144,7 @@ func _draw_room(cx: float) -> void:
 	for i in count:
 		var mine := i == 0
 		var is_bot := i > ids.size()
-		var who: String = Link.my_name if mine else (
+		var who: String = _show_name(Link.my_name) if mine else _show_name(
 			"CPU %d" % (i - ids.size()) if is_bot else String(Link.roster[ids[i - 1]]["name"]))
 		var set_up: bool = true if is_bot else (
 			Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"]))
@@ -3144,7 +3165,7 @@ func _draw_room(cx: float) -> void:
 		var waiting: Array = []
 		for id in ids:
 			if not Link.roster[id]["ready"]:
-				waiting.append(String(Link.roster[id]["name"]).to_upper())
+				waiting.append(_show_name(String(Link.roster[id]["name"]).to_upper()))
 		note = "waiting for %s" % ", ".join(waiting) if not waiting.is_empty() else "starting"
 	_otext(_font, Vector2(cx, 392.0), note, 14, Color("#8d99bd"))
 	_otext(_font, Vector2(cx, 414.0),
@@ -3315,7 +3336,7 @@ func _draw_gameover(size: Vector2) -> void:
 	_otext(_font_bold, Vector2(cx, 248), _commas(player.score), 62, Color("#ffd166"))
 	if player.best_word != "":
 		_otext(_font, Vector2(cx, 288),
-			"best word — %s for %s" % [player.best_word.to_upper(),
+			"best word — %s for %s" % [_show(player.best_word.to_upper()),
 				_commas(player.best_word_score)], 14, Color("#8d99bd"))
 
 	# Stat tiles read far better than one long sentence of numbers.
@@ -3637,7 +3658,7 @@ func _menu_buttons() -> Array:
 			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.SETTINGS:
 		out.append({
-			"rect": Rect2(cx - 90.0, 600.0, 180.0, 42.0), "key": "ESC",
+			"rect": Rect2(cx - 90.0, 598.0, 180.0, 40.0), "key": "ESC",
 			"label": "Back", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.MASTERY:
