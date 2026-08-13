@@ -44,6 +44,10 @@ them — the game names them when they happen:
   PERFECT   break three WITHOUT losing your run  a whole extra attack
   CLUTCH    break one with a single row left     the garbage nearly stops
 
+New? Press 1 on the title screen for PRACTICE, then 1 again for the tutorial.
+Seven steps, no opponent, nothing to lose. TRAINING next door is free practice
+at whatever pace you like — neither earns XP, so neither can be farmed.
+
 SPECIAL BLOCKS can be switched on before a match — bombs that clear their
 neighbours, armour that needs two words, blocks that go off if you ignore them,
 blocks that split, freeze, or change their own letters. All off unless you turn
@@ -88,7 +92,7 @@ Controls
   CTRL+BACKSPACE       clear the line
   ESC                   pause menu / leave match
   H   (title screen)    full rules
-  1-4 (title screen)    single player / multiplayer / mastery / settings
+  1-5 (title screen)    practice / single player / multiplayer / mastery / settings
 
 Rude words still play normally — they are just masked on screen. Turn that
 off in Settings if you would rather not have it.

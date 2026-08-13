@@ -61,6 +61,17 @@ if ! grep -q "blocks behave" <<<"$BLOCKS"; then
 	exit 1
 fi
 
+# Practice makes two promises — you cannot lose it and it cannot be farmed —
+# and both are easy to break later with a mode flag missed in one branch.
+echo "==> Practice check"
+PRACTICE=$("$(command -v godot)" --headless --script tools/practicetest.gd 2>&1 || true)
+if ! grep -q "practice behaves" <<<"$PRACTICE"; then
+	echo "FAILED: the tutorial or training mode is not behaving." >&2
+	grep -E "FAILED" <<<"$PRACTICE" >&2 || true
+	echo "        Run: godot --headless --script tools/practicetest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"

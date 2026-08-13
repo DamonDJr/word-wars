@@ -188,7 +188,15 @@ const HITSTOP_SALVO := 220    ## the whole chain cashing in
 const GRAIN := 0.05
 const VIGNETTE := 0.40
 
-enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, COUNTDOWN, PLAY, OVER }
+enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
+	COUNTDOWN, PLAY, OVER }
+
+## What a match is for. A tutorial and a training run use the whole machine —
+## real board, real typing, real rules — and differ only in what is switched off
+## around them. Neither can be lost, and neither banks anything: a mode with no
+## opponent and no death would be an XP farm, and the level has to keep meaning
+## matches played through.
+enum Mode { NORMAL, TUTORIAL, TRAINING }
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -349,6 +357,25 @@ var flash_color := Color.WHITE
 var show_rules := false
 ## Which cosmetic category the mastery screen is showing.
 var mastery_slot := 0
+var mode := Mode.NORMAL
+## Where the tutorial has got to, and how long the current step has been up.
+var lesson := 0
+var lesson_age := 0.0
+var lesson_done := false
+## The last word the player fired, so the lesson can brand a block with their
+## own tail rather than with an example.
+var _lesson_word := ""
+## Training pace, as an index into TRAINING_PACE.
+var train_pace := 1
+
+## How often ambient garbage arrives in training, and what to call it. Practice
+## is worthless if it is not at a speed you would actually meet.
+const TRAINING_PACE := [
+	{"name": "Calm", "note": "room to think", "every": 9.0},
+	{"name": "Steady", "note": "about a real match", "every": 5.5},
+	{"name": "Relentless", "note": "faster than anyone plays", "every": 2.8},
+]
+
 ## Which special block kinds are switched on. Empty is the default and the base
 ## game; the lobby fills it.
 var block_kinds: Array = []
@@ -570,8 +597,18 @@ func _bloom(color: Color, amount: float) -> void:
 ## `lineup` names each CPU outright — that is what single-player setup passes.
 ## Left empty, the roster picks for you, which is what the networked path and a
 ## rematch off an old save still do.
-func start_match(diff: String, bots: int = 1, lineup: Array = []) -> void:
+func start_match(diff: String, bots: int = 1, lineup: Array = [],
+		how: int = Mode.NORMAL) -> void:
+	mode = how
+	lesson = 0
+	lesson_age = 0.0
+	lesson_done = false
 	difficulty = diff
+	# A lesson and a practice run are played alone. There is nobody to lose to
+	# and nothing to be distracted by, which is the entire point of both.
+	if mode != Mode.NORMAL:
+		bots = 0
+		lineup = []
 	slots_in_play = clampi(1 + bots, 2, SLOTS)
 	if lineup.is_empty():
 		lineup = _bot_lineup(diff, slots_in_play - 1)
@@ -621,6 +658,14 @@ func start_match(diff: String, bots: int = 1, lineup: Array = []) -> void:
 		s.in_danger = false
 		s.flash = 0.0
 		s.target = 0
+	if mode != Mode.NORMAL:
+		# The second board is left in the match so every layout and every draw
+		# routine still has the two sides they were written for, but nobody is
+		# home: no bot, no attacks, nothing to answer.
+		for s2: SideState in sides:
+			if s2.slot > 0:
+				s2.bot = null
+				s2.label = "PRACTICE" if mode == Mode.TRAINING else "LESSON"
 	_aim_everyone()
 	typed = ""
 	message = ""
@@ -638,6 +683,11 @@ func start_match(diff: String, bots: int = 1, lineup: Array = []) -> void:
 	match_time = 0.0
 	pressure_interval = PRESSURE_START
 	pressure_timer = PRESSURE_START
+	if mode == Mode.TRAINING:
+		# Set after the generic reset, not before it, or the reset wins and the
+		# first block takes twenty-two seconds to turn up.
+		pressure_interval = float(TRAINING_PACE[train_pace]["every"])
+		pressure_timer = pressure_interval
 	winner = ""
 	shake = 0.0
 	flash = 0.0
@@ -645,6 +695,8 @@ func start_match(diff: String, bots: int = 1, lineup: Array = []) -> void:
 	position = Vector2.ZERO
 	_overlay.position = Vector2.ZERO
 	earned = {}
+	if mode == Mode.TUTORIAL:
+		_lesson_begin()
 	countdown = COUNTDOWN_TIME
 	paused = false
 	_last_count_beep = -1
@@ -791,6 +843,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		Sfx.play("back", 1.4)
 		return
 
+	if phase == Phase.PRACTICE:
+		match k.keycode:
+			KEY_1: _activate("tutorial")
+			KEY_2: _activate("training")
+			KEY_ESCAPE: _activate("title")
+		return
+
 	if phase == Phase.SOLO:
 		match k.keycode:
 			KEY_ENTER, KEY_KP_ENTER: _activate("solo_start")
@@ -871,10 +930,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	if phase == Phase.TITLE or phase == Phase.OVER:
 		match k.keycode:
-			KEY_1: _activate("solo")
-			KEY_2: _activate("versus")
-			KEY_3: _activate("mastery")
-			KEY_4: _activate("settings")
+			KEY_1: _activate("practice")
+			KEY_2: _activate("solo")
+			KEY_3: _activate("versus")
+			KEY_4: _activate("mastery")
+			KEY_5: _activate("settings")
 			KEY_V: _activate("versus")
 			KEY_P: _activate("mastery")
 			KEY_R: _activate("rematch")
@@ -906,7 +966,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			# Deliberately not a resume key: you arrive at this menu with your
 			# hands on SPACE, and unpausing by reflex is the same trap ENTER was.
-			if not paused:
+			if paused:
+				pass
+			elif mode == Mode.TUTORIAL and typed.is_empty() and (lesson_done
+					or String(Tutorial.step(lesson).get("id", "")) == "done"):
+				# The same key that fires a word. A lesson that needed its own
+				# button would be teaching the button as well as the game.
+				_lesson_next()
+			else:
 				_submit_player()
 		KEY_TAB:
 			if not paused and player.alive:
@@ -979,6 +1046,8 @@ func _play_word(attacker: SideState, word: String) -> void:
 		_aim(attacker, defender)
 	attacker.used[word] = true
 	attacker.words_played += 1
+	if attacker == player:
+		_lesson_word = word
 	if word.length() > attacker.longest_word.length():
 		attacker.longest_word = word
 
@@ -1140,6 +1209,11 @@ func _throw(from_side: SideState, to_side: SideState, tier: int, text: String) -
 	if from_side == null or to_side == null or from_side == to_side:
 		return
 	if not from_side.in_match or not to_side.in_match:
+		return
+	# Nothing to watch an attack arrive at in a lesson or a practice run, so
+	# nothing is thrown — a tracer sailing off to an invisible board reads as a
+	# rendering fault.
+	if not to_side.board.visible:
 		return
 	var tr := Tracer.new()
 	var muzzle := _board_rect(from_side)
@@ -1541,9 +1615,14 @@ func _process(delta: float) -> void:
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
 		and phase != Phase.LOBBY and phase != Phase.MASTERY \
-		and phase != Phase.SOLO and phase != Phase.SETTINGS
+		and phase != Phase.SOLO and phase != Phase.SETTINGS \
+		and phase != Phase.PRACTICE
 	for s: SideState in sides:
-		s.board.visible = showing_boards and s.in_match
+		# There is no rival in a lesson or a practice run, so its board is not
+		# drawn at all — an empty playfield sitting there reads as an opponent
+		# who is somehow doing nothing.
+		s.board.visible = showing_boards and s.in_match \
+			and (mode == Mode.NORMAL or s.slot == 0)
 	if phase != Phase.PLAY:
 		_step_decor(delta)
 
@@ -1577,6 +1656,8 @@ func _process(delta: float) -> void:
 					if s == player and s.chain >= 2:
 						Sfx.play("lapse")
 					s.chain = 0
+		if mode == Mode.TUTORIAL:
+			_lesson_tick(delta)
 		_tick_danger(player)
 		_tick_pending(player, delta)
 		_tick_pressure(delta)
@@ -1610,7 +1691,8 @@ func _tick_music(delta: float) -> void:
 
 	var want := "menu"
 	match phase:
-		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS:
+		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS, \
+				Phase.PRACTICE:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -1680,11 +1762,19 @@ func _tick_pending(side: SideState, delta: float) -> void:
 
 
 func _tick_pressure(delta: float) -> void:
+	# The lesson decides when anything arrives. A clock ticking underneath a
+	# step that is waiting for the player would undo the step.
+	if mode == Mode.TUTORIAL:
+		return
 	pressure_timer -= delta
 	if pressure_timer > 0.0:
 		return
-	pressure_interval = maxf(PRESSURE_MIN, pressure_interval - PRESSURE_STEP)
-	pressure_timer = pressure_interval
+	if mode == Mode.TRAINING:
+		# A fixed pace, because the point is to practise at a speed you chose.
+		pressure_timer = float(TRAINING_PACE[train_pace]["every"])
+	else:
+		pressure_interval = maxf(PRESSURE_MIN, pressure_interval - PRESSURE_STEP)
+		pressure_timer = pressure_interval
 
 	# Both peers run the clock so both HUDs agree, but only the host decides when
 	# it actually fires — otherwise the two boards drift apart.
@@ -1767,6 +1857,109 @@ func _on_volatile_blew(_at: Vector2, side: SideState) -> void:
 	_log("%s: a volatile block went off" % side.label, Color("#f94144"))
 
 
+# ------------------------------------------------------------------- the lesson
+#
+# Nothing here advances on a timer. Every step ends because the player did the
+# thing, so nobody is ever carried past a rule they have not got yet — and being
+# slow costs a first-time player nothing.
+
+## Set up whatever situation the current step needs. Called once when the step
+## arrives; `lesson_age` is how long it has been up, which is only used to let a
+## board settle before checking anything.
+func _lesson_begin() -> void:
+	lesson_age = 0.0
+	lesson_done = false
+	var step: Dictionary = Tutorial.step(lesson)
+	if step.is_empty():
+		return
+	player.pending.clear()
+
+	match String(step["id"]):
+		"tail":
+			# The block they are about to see is branded with the tail of the
+			# word they just played. That is the rule, demonstrated on their own
+			# word rather than on an example.
+			var tail := _lesson_word.substr(maxi(0, _lesson_word.length() - 3))
+			player.board.add_garbage(tail if tail != "" else "sh", 1, 2, 1)
+		"answer":
+			player.board.reset()
+			player.board.add_garbage("ship", 2, 2, 2)
+		"reach":
+			player.board.reset()
+			for i in 3:
+				player.board.add_garbage("al", 1, 1, 1)
+		"chain":
+			player.board.reset()
+			player.chain = 0
+			player.chain_timer = 0.0
+		"danger":
+			player.board.reset()
+			# Two rows short of the ceiling: alarming, survivable, and every
+			# block answerable by a word somebody will already know.
+			for w in ["st", "co", "re", "in", "de", "pr", "ma", "tr", "un", "ca",
+					"pl", "sh", "gr", "br"]:
+				player.board.add_garbage(w, 0, 1, 1)
+		_:
+			pass
+
+
+## Has the current step been satisfied? Read every frame; the answer is allowed
+## to be "not yet" forever.
+func _lesson_check() -> bool:
+	var step: Dictionary = Tutorial.step(lesson)
+	if step.is_empty():
+		return false
+	match String(step["id"]):
+		"fire":
+			return player.words_played >= 1
+		"tail":
+			# Purely something to look at, so a beat of reading time and one
+			# more word moves it on.
+			return lesson_age > 1.2 and player.words_played >= 2
+		"answer":
+			return player.board.blocks.is_empty()
+		"reach":
+			return player.board.blocks.is_empty()
+		"chain":
+			return player.chain >= 4
+		"danger":
+			return player.board.stack_top() >= WWBoard.ROWS - 3
+		"done":
+			return false     # ends on the key, not on a condition
+	return false
+
+
+func _lesson_tick(delta: float) -> void:
+	lesson_age += delta
+	if lesson_done:
+		return
+	if not _lesson_check():
+		return
+	lesson_done = true
+	Sfx.play("power", 1.2)
+	_bloom(Color("#7bdff2"), 0.16)
+
+
+## Move on. Called from the same key that fires a word, so the lesson never
+## needs a control of its own.
+func _lesson_next() -> void:
+	if lesson >= Tutorial.count() - 1:
+		_finish_lesson()
+		return
+	lesson += 1
+	_lesson_begin()
+	Sfx.play("count", 1.2)
+
+
+func _finish_lesson() -> void:
+	Sfx.play("win")
+	_say("lesson complete", Color("#ffd166"))
+	phase = Phase.PRACTICE
+	mode = Mode.NORMAL
+	_hover_action = ""
+	Profile.set_pref("taught", true)
+
+
 ## How close a board is to topping out — 0 calm, 1 drowning. The bots read this
 ## so a personality stays a tendency rather than a suicide note: the ones that
 ## never defend still start defending when the stack reaches the ceiling.
@@ -1781,6 +1974,19 @@ func _peril(s: SideState) -> float:
 ## point: you get a clean board back, but the pressure clock never rewinds, so
 ## the third life is played under conditions the first never saw.
 func _lose_life(side: SideState) -> void:
+	# Practice you can fail is not practice. The board still comes apart — that
+	# is the feedback — but nothing is spent and the run carries on.
+	if mode != Mode.NORMAL:
+		side.chain = 0
+		side.chain_timer = 0.0
+		side.pending.clear()
+		side.respite = RESPITE
+		side.life_flash = 1.0
+		side.in_danger = false
+		side.board.detonate()
+		shake = maxf(shake, 0.7)
+		_say("topped out — board cleared, carry on", Color("#ffd166"))
+		return
 	side.lives -= 1
 	side.chain = 0
 	side.chain_timer = 0.0
@@ -1834,7 +2040,8 @@ func _end_match(loser: SideState) -> void:
 	loser.board.shake = 1.0
 	Sfx.play("win" if winner == "YOU" else "lose")
 	_log("%s wins" % winner, Color("#ffd166"))
-	_record_mastery()
+	if mode == Mode.NORMAL:
+		_record_mastery()
 
 
 ## Fold the finished match into the lifetime record, and keep what it earned so
@@ -1936,11 +2143,11 @@ func _draw() -> void:
 	_draw_chain_meter(player)
 	_draw_pending(player, false)
 	for s: SideState in sides:
-		if s.slot > 0 and s.in_match:
+		if s.slot > 0 and s.in_match and mode == Mode.NORMAL:
 			_draw_rival_panel(s)
 	# The summary covers the same ground and sits in the same column, so leaving
 	# the live readout underneath it just prints two scores on top of each other.
-	if phase != Phase.COUNTDOWN and phase != Phase.OVER:
+	if phase != Phase.COUNTDOWN and phase != Phase.OVER and mode == Mode.NORMAL:
 		_draw_center_hud(size)
 	_draw_player_input(size)
 	# Last, so an attack crossing the screen passes over the boards rather than
@@ -2461,6 +2668,11 @@ func _draw_overlay() -> void:
 	if phase == Phase.PLAY:
 		_draw_score_pops()
 		_draw_power_pops()
+		# Drawn here rather than in `_draw`, because everything it uses paints on
+		# this canvas item and `draw_*` outside its own draw pass silently does
+		# nothing at all.
+		if mode != Mode.NORMAL:
+			_draw_coaching(size)
 		if paused:
 			_draw_pause(size)
 		elif not player.alive:
@@ -2476,6 +2688,8 @@ func _draw_overlay() -> void:
 		_draw_title(size)
 	elif phase == Phase.SOLO:
 		_draw_solo(size)
+	elif phase == Phase.PRACTICE:
+		_draw_practice(size)
 	elif phase == Phase.MASTERY:
 		_draw_mastery(size)
 	elif phase == Phase.LOBBY:
@@ -2630,7 +2844,7 @@ func _draw_title(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 578), "click, or press 1 – 4", 13, Color("#5d6a92"))
+	_otext(_font, Vector2(cx, 578), "click, or press 1 – 5", 13, Color("#5d6a92"))
 	_otext(_font, Vector2(cx, 674),
 		"H — full rules      F1 — %s      ESC — quit" % [
 			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
@@ -2845,6 +3059,97 @@ func _apply_prefs() -> void:
 		else DisplayServer.WINDOW_MODE_WINDOWED
 	if DisplayServer.window_get_mode() != want:
 		DisplayServer.window_set_mode(want)
+
+
+## Learn it or drill it. Two doors, and a pace for the second one.
+func _draw_practice(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.93), true)
+	_draw_decor()
+
+	_otext(_font_bold, Vector2(cx, 78.0), "PRACTICE", 32, Color("#e6ecff"))
+	if not bool(Profile.pref("taught")):
+		var pulse := 0.6 + 0.4 * sin(Time.get_ticks_msec() / 420.0)
+		_otext(_font_bold, Vector2(cx, 118.0), "START WITH THE TUTORIAL", 14,
+			Color("#90be6d") * Color(1, 1, 1, pulse))
+	else:
+		_otext(_font, Vector2(cx, 118.0),
+			"nothing here is scored, and nothing here can be lost", 13,
+			Color("#8d99bd"))
+
+	_otext(_font_bold, Vector2(cx, 372.0), "TRAINING PACE", 13, Color("#7c88ad"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	_otext(_font, Vector2(cx, 500.0),
+		"training has no opponent, no lives and no end — ESC when you are done",
+		13, Color("#5d6a92"))
+	# Said plainly, because somebody will otherwise practise for an hour and
+	# wonder where their level went.
+	_otext(_font, Vector2(cx, 522.0),
+		"neither mode earns XP, so neither can be farmed", 12, Color("#4d5878"))
+
+
+## The lesson card, and the live readout a practice run is for. Both sit in the
+## centre column, which is empty in these modes because there is no rival.
+func _draw_coaching(size: Vector2) -> void:
+	var band := _center_band()
+	var cx := (band.x + band.y) * 0.5
+	var wide := maxf(300.0, band.y - band.x - 20.0)
+
+	if mode == Mode.TRAINING:
+		_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", 16, Color("#7bdff2"))
+		var rows := [
+			["CLEARED", str(player.blocks_cleared)],
+			["BEST CHAIN", "x%d" % player.best_chain],
+			["WPM", str(int(round(_wpm())))],
+			["PACE", String(TRAINING_PACE[train_pace]["name"]).to_upper()],
+		]
+		var y := 332.0
+		for r: Array in rows:
+			_otext(_font, Vector2(cx - 70.0, y), r[0], 11, Color("#5d6a92"))
+			_otext(_font_bold, Vector2(cx + 60.0, y), r[1], 16, Color("#e6ecff"))
+			y += 28.0
+		_otext(_font, Vector2(cx, y + 14.0), "ESC to stop", 11, Color("#4d5878"))
+		return
+
+	var step: Dictionary = Tutorial.step(lesson)
+	if step.is_empty():
+		return
+
+	# The card is placed where the rival board would be, because that is the one
+	# part of the screen a lesson can occupy without hiding anything that matters.
+	var r := Rect2(cx - wide * 0.5, 236.0, wide, 214.0)
+	_panel(r, Color("#111730"), Color("#90be6d", 0.4), 12.0, 2.0)
+	_otext(_font, Vector2(cx, 262.0), "STEP %d OF %d" % [lesson + 1, Tutorial.count()],
+		11, Color("#5d6a92"))
+	_text_fit_overlay(_font_bold, Vector2(cx, 290.0), String(step["title"]), 21,
+		wide - 40.0, Color("#e6ecff"))
+
+	var y := 326.0
+	for line: String in String(step["body"]).split("\n"):
+		_text_fit_overlay(_font, Vector2(cx, y), line, 14, wide - 36.0,
+			Color("#aab4d4"))
+		y += 22.0
+
+	if lesson_done or String(step["id"]) == "done":
+		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 200.0)
+		_otext(_font_bold, Vector2(cx, r.end.y - 26.0), "SPACE TO CONTINUE", 15,
+			Color("#90be6d") * Color(1, 1, 1, pulse))
+	else:
+		_otext(_font, Vector2(cx, r.end.y - 26.0), String(step["hint"]), 12,
+			Color("#7c88ad"))
+
+	# A row of pips, so seven steps reads as a short thing with an end to it.
+	var pip := 10.0
+	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * 6.0
+	for i in Tutorial.count():
+		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + 6.0), r.end.y + 14.0,
+			pip, 4.0),
+			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
 
 
 ## Who you are lining up against. Deliberately shaped like the versus lobby:
@@ -3838,14 +4143,20 @@ func _menu_buttons() -> Array:
 		# which meant the first thing anybody saw was fourteen choices at once.
 		# Choosing an opponent is a decision that belongs *inside* single player,
 		# not in front of it.
+		# Practice sits first for anyone who has not been taught yet, because a
+		# first-time player opening Single Player and being buried by a Duelist
+		# is a player who does not come back.
+		var green: bool = not bool(Profile.pref("taught"))
 		var doors := [
-			["1", "Single player", "you against the machines", "solo", Color("#7bdff2")],
-			["2", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
-			["3", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
-			["4", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
+			["1", "Practice", "learn it, or drill it", "practice",
+				Color("#90be6d") if green else Color("#8d99bd")],
+			["2", "Single player", "you against the machines", "solo", Color("#7bdff2")],
+			["3", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
+			["4", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
+			["5", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
 		]
-		var w := 262.0
-		var gap := 14.0
+		var w := 240.0
+		var gap := 12.0
 		var span := doors.size() * w + (doors.size() - 1) * gap
 		for i in doors.size():
 			var d: Array = doors[i]
@@ -3903,6 +4214,27 @@ func _menu_buttons() -> Array:
 				"rect": Rect2(cx - 90.0, 530.0, 180.0, 44.0), "key": "ESC",
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.PRACTICE:
+		out.append({
+			"rect": Rect2(cx - 330.0, 214.0, 320.0, 104.0), "key": "1",
+			"label": "Tutorial", "sub": "seven steps, no opponent", "note": "",
+			"rating": 0, "accent": Color("#90be6d"), "action": "tutorial"})
+		out.append({
+			"rect": Rect2(cx + 10.0, 214.0, 320.0, 104.0), "key": "2",
+			"label": "Training", "sub": "drill it at your own pace", "note": "",
+			"rating": 0, "accent": Color("#7bdff2"), "action": "training"})
+		for i in TRAINING_PACE.size():
+			var pace: Dictionary = TRAINING_PACE[i]
+			out.append({
+				"rect": Rect2(cx - 330.0 + i * 226.0, 402.0, 214.0, 62.0),
+				"key": "", "label": String(pace["name"]),
+				"sub": String(pace["note"]), "note": "", "rating": 0,
+				"accent": Color("#ffd166") if train_pace == i else Color("#4d5878"),
+				"action": "pace:%d" % i})
+		out.append({
+			"rect": Rect2(cx - 90.0, 560.0, 180.0, 40.0), "key": "ESC",
+			"label": "Back", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.SETTINGS:
 		out.append({
 			"rect": Rect2(cx - 90.0, 598.0, 180.0, 40.0), "key": "ESC",
@@ -3946,10 +4278,15 @@ func _draw_menu_button(b: Dictionary) -> void:
 		Color(accent, 0.9 if hot else 0.26), 12.0, 3.0 if hot else 2.0)
 
 	var key: String = b["key"]
+	# An empty key means the button is click-only, and a badge with nothing in it
+	# would promise a shortcut that does not exist.
 	var badge := Rect2(r.position.x + 14.0, r.position.y + 14.0,
 		18.0 + 9.0 * key.length(), 22.0)
-	_panel(badge, Color(accent, 0.35 if hot else 0.18), Color(accent, 0.55), 6.0, 1.0)
-	_otext(_font_bold, badge.get_center(), key, 12, accent)
+	if key != "":
+		_panel(badge, Color(accent, 0.35 if hot else 0.18), Color(accent, 0.55), 6.0, 1.0)
+		_otext(_font_bold, badge.get_center(), key, 12, accent)
+	else:
+		badge = Rect2(r.position.x + 8.0, r.position.y, 0.0, 0.0)
 
 	var cx := r.get_center().x
 	var rating: int = b["rating"]
@@ -4226,6 +4563,19 @@ func _activate(action: String) -> void:
 		phase = Phase.SOLO
 		_hover_action = ""
 		Sfx.play("count", 1.1)
+	elif action == "practice":
+		phase = Phase.PRACTICE
+		_hover_action = ""
+		Sfx.play("count", 1.1)
+	elif action == "tutorial":
+		Link.leave()
+		start_match("Rookie", 0, [], Mode.TUTORIAL)
+	elif action == "training":
+		Link.leave()
+		start_match("Rookie", 0, [], Mode.TRAINING)
+	elif action.begins_with("pace:"):
+		train_pace = clampi(int(action.substr(5)), 0, TRAINING_PACE.size() - 1)
+		Sfx.play("key", 1.2)
 	elif action == "settings":
 		phase = Phase.SETTINGS
 		settings_editing = false

@@ -57,6 +57,8 @@ const PREF_DEFAULTS := {
 	"solo": ["Duelist", "", ""],
 	## Special block kinds switched on. Empty is the base game.
 	"kinds": [],
+	## Set once the tutorial has been finished, so the game only nags once.
+	"taught": false,
 }
 
 

@@ -740,6 +740,50 @@ without a second packet.
 Tune all of it in `AiOpponent.DIFFICULTIES`. Adding an entry there and to
 `ROSTER` puts it on the menu; the picker builds itself from the roster.
 
+## Learning it
+
+Word Wars has one rule that has to land before anything else makes sense — *your
+endings become their beginnings* — and it is a rule that reads as nonsense
+written down and as obvious the first time it happens to you. So the tutorial
+does not explain it. It sets up the exact situation, says the one sentence that
+names what is about to happen, and waits.
+
+**Nothing advances on a timer.** Every step ends because the player did the
+thing, so nobody is carried past a rule they have not got yet, and being slow
+costs a first-time player nothing. Seven steps: fire a word, watch your own tail
+become a stamp, answer one, learn that longer words reach further, build a
+chain, survive a near top-out, done.
+
+Two details that matter more than they look:
+
+- **Step two brands a block with the tail of the word the player just typed**,
+  not with an example. The rule is demonstrated on their word.
+- **It advances on the same key that fires a word.** A lesson with its own
+  button would be teaching the button as well as the game.
+
+Steps live in `tutorial.gd` as data rather than closures, so the whole lesson
+reads in one screenful and can be reordered without touching the machinery.
+
+## Training
+
+No opponent, no lives, no end. Garbage arrives at a pace you choose — calm,
+steady or relentless — and the centre column carries a live readout of clears,
+best chain and WPM instead of a rival.
+
+Both modes run the whole machine: real board, real rules, real typing. They
+differ only in what is switched off around them, which is why neither needs its
+own copy of anything.
+
+**Neither banks XP.** A mode with no opponent and no death would be a farm, and
+the level has to keep meaning matches played through. `tools/practicetest.gd`
+checks exactly that, along with the other promise — that topping out six times
+in a row costs nothing — and checks that neither guard has leaked into ordinary
+play, where a life still costs a life.
+
+The practice door sits **first** on the title screen for anyone who has not
+finished the tutorial, because a first-time player who opens Single Player and
+gets buried by a Duelist is a player who does not come back.
+
 ## Special blocks
 
 Six kinds of garbage that do more than sit there. **All off by default** — the
