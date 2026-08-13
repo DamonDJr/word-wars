@@ -915,14 +915,41 @@ taunt rather than a target.
   has to keep reading as a rival's shot, or the one thing tracers were added to
   make clear — who is hitting whom — goes back to being a guess.
 
-### Failure modes worth knowing about
+### Not losing it
 
-The profile is somebody's entire history with the game, so `masterytest`
-checks the parts that would cost them it: that a save survives a round trip to
-disk, that equipping refuses anything unearned, and that a profile carrying a
-cosmetic it *no longer qualifies for* falls back to the default rather than
-showing a locked item. `tools/build.sh` will not produce a build if any of that
-fails.
+The profile is somebody's entire history with the game, and the failure that
+actually costs them it is not *"the save was lost"* — it is **"the save was lost
+and then written over"**.
+
+`ConfigFile.save` is not atomic. A crash, a power cut or a kill signal partway
+through a write leaves a truncated file, and a truncated file does not parse.
+The first version of this returned quietly when a load failed, leaving every
+field at its default — and the next autosave then replaced a profile it had
+merely failed to *read* with a blank one. That turns a recoverable problem into
+a permanent one, and it is the shape of nearly every "my save reset" bug.
+
+Four things now stand between a bad write and a lost history:
+
+- **Saves are written whole and moved into place.** A new file is written
+  alongside, and only then does anything existing get touched.
+- **The previous save is kept as `.bak`**, and a failed load falls back to it.
+  You lose the last match rather than the last month.
+- **Parsing is not treated as validating.** ConfigFile shrugs at lines it does
+  not recognise, so a file full of rubbish "loads" and then every field falls
+  back to its default — the silent reset again, wearing a different hat. A file
+  that parses but has no `record/matches` key is treated as damaged.
+- **If nothing readable is found, saving is switched off for the session.** A
+  profile that cannot be parsed may still be one that can be rescued by hand,
+  and the game will not overwrite something it did not understand. The settings
+  screen says so in red rather than letting you play on unaware.
+
+Settings also prints the profile's full path, so it can be backed up or carried
+to another machine without anyone having to guess at Godot's user directory.
+
+`masterytest` covers all of it — a round trip, a truncated main file recovering
+from the backup, both files damaged leaving the disk untouched, and a missing
+file still being treated as a new player rather than a failure. `tools/build.sh`
+will not produce a build if any of that fails.
 
 Matches are banked at the end, not as they run, so a match abandoned halfway
 earns nothing — the level has to mean matches played through.

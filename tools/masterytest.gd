@@ -24,8 +24,9 @@ func _init() -> void:
 	_unlocks(p)
 	_equipping(p)
 	_round_trip(p)
+	_survives_damage(p)
 
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(SCRATCH))
+	_erase(SCRATCH)
 	print("--- %s ---" % ("mastery holds up" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
 
@@ -82,7 +83,7 @@ func _pacing() -> void:
 				"powers": {"COMBO": 2, "COUNTER": 1}})
 		print("      %4d matches -> level %-3d (%d xp)" % [n, q.level(), q.xp_total()])
 	_wipe(q)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(q.save_path))
+	_erase(q.save_path)
 	q.save_path = save
 
 
@@ -165,6 +166,65 @@ func _round_trip(p) -> void:
 	_expect("flawless wins survive", p.flawless == int(before["flawless"]))
 	_expect("power tallies survive",
 		int(p.powers.get("PERFECT", 0)) == int((before["powers"] as Dictionary)["PERFECT"]))
+
+
+## The failure that actually costs somebody their history is not losing the
+## save, it is losing the save and then writing over it. These check that a
+## damaged file is recovered where possible and left completely alone where not.
+func _survives_damage(p) -> void:
+	print("--- damaged saves ---")
+	_wipe(p)
+	p.record_match({"won": true, "words": 40, "wpm": 60.0, "chain": 8,
+		"combo": 4, "salvos": 3, "longest": "shipments", "powers": {}})
+	p.save()
+	var good: int = p.xp_total()
+	# A second save, so there is a backup of the first behind it.
+	p.record_match({"words": 5, "powers": {}})
+	var newer: int = p.xp_total()
+
+	# Truncate the main file the way a crash mid-write would.
+	var f := FileAccess.open(p.save_path, FileAccess.WRITE)
+	f.store_string("[record]\nmatches=")
+	f.close()
+
+	_wipe(p)
+	p.load_profile()
+	_expect("a truncated save falls back to the backup", p.xp_total() == good)
+	_expect("and saving is still allowed", not p.read_failed)
+
+	# Now damage both. There is nothing left to recover, and the only correct
+	# move is to touch neither of them.
+	for path in [p.save_path, p.backup_path()]:
+		var g := FileAccess.open(path, FileAccess.WRITE)
+		g.store_string("not a config file at all {{{")
+		g.close()
+
+	_wipe(p)
+	p.load_profile()
+	_expect("two damaged files stop the profile saving", p.read_failed)
+	var before := FileAccess.get_file_as_string(p.save_path)
+	p.record_match({"words": 99, "powers": {}})
+	p.set_pref("music", 0.1)
+	var after := FileAccess.get_file_as_string(p.save_path)
+	_expect("and nothing overwrites what is there", before == after)
+
+	# A fresh start must still be allowed once the damaged files are gone.
+	_erase(p.save_path)
+	_wipe(p)
+	p.load_profile()
+	_expect("a missing file is a new player, not a failure", not p.read_failed)
+	p.record_match({"words": 7, "powers": {}})
+	_expect("and writes normally again",
+		FileAccess.file_exists(p.save_path))
+	print("    (recovered %d xp; the newer %d was the one lost to the crash)" % [
+		good, newer])
+
+
+## A save leaves a backup and may leave a temp file behind it, so a test that
+## only removes the main one leaves litter in a real user directory.
+func _erase(path: String) -> void:
+	for suffix in ["", ".bak", ".tmp"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 func _wipe(p) -> void:

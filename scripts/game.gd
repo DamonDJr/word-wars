@@ -2647,6 +2647,19 @@ func _draw_settings(size: Vector2) -> void:
 		"click a slider or switch · click your name to change it · ESC back", 12,
 		Color("#5d6a92"))
 
+	# Where the record lives, so it can be backed up or moved between machines
+	# without anyone having to guess at Godot's user directory. Loud and red if
+	# something is wrong with it, because the one thing worse than losing a
+	# profile is not being told until it is too late to rescue.
+	if Profile.read_failed:
+		_otext(_font_bold, Vector2(cx, 676.0),
+			"YOUR PROFILE COULD NOT BE READ — NOTHING IS BEING SAVED THIS SESSION",
+			13, Color("#ff6b6b"))
+	else:
+		_text_fit_overlay(_font, Vector2(cx, 676.0),
+			ProjectSettings.globalize_path(Profile.save_path), 11, size.x - 80.0,
+			Color("#3d4666"), 9)
+
 
 ## One table for drawing and hit-testing both, so a control that is on screen is
 ## always a control that responds.

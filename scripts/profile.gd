@@ -326,15 +326,75 @@ func record_match(r: Dictionary) -> void:
 
 
 # ------------------------------------------------------------------------ disk
+#
+# This file is somebody's entire history with the game, so the writing is more
+# careful than the amount of data would suggest.
+#
+# The failure that matters is not "the save was lost", it is "the save was lost
+# and then written over". `ConfigFile.save` is not atomic: a crash, a power cut
+# or a kill signal partway through leaves a truncated file, and a truncated file
+# does not parse. The old code returned quietly when a load failed, leaving every
+# field at its default — and the next autosave then replaced a profile we had
+# merely failed to *read* with a blank one. That turns a recoverable problem into
+# a permanent one.
+#
+# So: writes go to a temp file and are moved into place, the previous file is
+# kept as a backup, a failed load falls back to that backup, and if both are
+# unreadable the profile refuses to save at all for the rest of the session
+# rather than overwrite something it did not understand.
+
+## Bumped only when the on-disk shape changes in a way that needs migrating.
+## Stored so a future version can convert an old file instead of ignoring it.
+const SCHEMA := 1
+
+## True when something is on disk that we could not read. Saving stays off while
+## this is set, because a profile that cannot be parsed might still be one that
+## can be rescued by hand.
+var read_failed := false
+
 
 func _ready() -> void:
 	load_profile()
 
 
+func backup_path() -> String:
+	return save_path + ".bak"
+
+
 func load_profile() -> void:
-	var cfg := ConfigFile.new()
-	if cfg.load(save_path) != OK:
+	read_failed = false
+	var main := _read(save_path)
+	if main == OK:
 		return
+
+	# The backup exists for exactly this: a half-written main file.
+	if _read(backup_path()) == OK:
+		push_warning("Profile: %s was unreadable; recovered from the backup" % save_path)
+		save()
+		return
+
+	if main == ERR_FILE_NOT_FOUND:
+		return  # A new player. Defaults are correct, and saving is safe.
+
+	read_failed = true
+	push_error(("Profile: %s exists but could not be read (%d), and neither could "
+		+ "the backup. Saving is disabled this session so the file is left alone "
+		+ "— move it somewhere safe if you want it looked at.") % [save_path, main])
+
+
+## Reads a file into this object. Returns OK, ERR_FILE_NOT_FOUND for a new
+## player, or whatever went wrong.
+func _read(path: String) -> Error:
+	var cfg := ConfigFile.new()
+	var err := cfg.load(path)
+	if err != OK:
+		return err
+	# Parsing is not the same as being a profile. ConfigFile shrugs at lines it
+	# does not recognise, so a file full of rubbish loads "successfully" and then
+	# every field falls back to its default — which is the silent reset again,
+	# wearing a different hat. A real profile has always written this key.
+	if not cfg.has_section_key("record", "matches"):
+		return ERR_INVALID_DATA
 	matches = int(cfg.get_value("record", "matches", 0))
 	wins = int(cfg.get_value("record", "wins", 0))
 	flawless = int(cfg.get_value("record", "flawless", 0))
@@ -350,10 +410,15 @@ func load_profile() -> void:
 	powers = cfg.get_value("record", "powers", {})
 	equipped = cfg.get_value("worn", "equipped", {})
 	prefs = cfg.get_value("worn", "prefs", {})
+	return OK
 
 
 func save() -> void:
+	if read_failed:
+		return
+
 	var cfg := ConfigFile.new()
+	cfg.set_value("meta", "schema", SCHEMA)
 	cfg.set_value("record", "matches", matches)
 	cfg.set_value("record", "wins", wins)
 	cfg.set_value("record", "flawless", flawless)
@@ -369,7 +434,22 @@ func save() -> void:
 	cfg.set_value("record", "powers", powers)
 	cfg.set_value("worn", "equipped", equipped)
 	cfg.set_value("worn", "prefs", prefs)
-	cfg.save(save_path)
+
+	# Written whole, somewhere else, before anything existing is touched.
+	var tmp := save_path + ".tmp"
+	if cfg.save(tmp) != OK:
+		push_error("Profile: could not write %s — leaving the old save alone" % tmp)
+		return
+
+	var dir := DirAccess.open(save_path.get_base_dir())
+	if dir == null:
+		return
+	var main := save_path.get_file()
+	var back := backup_path().get_file()
+	if dir.file_exists(main):
+		dir.remove(back)
+		dir.rename(main, back)
+	dir.rename(tmp.get_file(), main)
 
 
 ## The name to show alongside yours, or "" if none is worn.
