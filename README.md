@@ -740,6 +740,52 @@ without a second packet.
 Tune all of it in `AiOpponent.DIFFICULTIES`. Adding an entry there and to
 `ROSTER` puts it on the menu; the picker builds itself from the roster.
 
+## Special blocks
+
+Six kinds of garbage that do more than sit there. **All off by default** — the
+base game stays the base game — and switched on per match in the lobby, in
+single player and in the versus room alike. Roughly three blocks in ten are
+special when anything is enabled, which is often enough to matter and rare
+enough to stay an event.
+
+| | What it does | The decision it forces |
+|:--|:--|:--|
+| **Bomb** | clears everything it touches, and chains into other bombs | worth setting off, but its stamp is longer than anything else on the board |
+| **Armoured** | eats a matching word without dying; the second one takes it | two words for one block, and the first still costs you reach |
+| **Volatile** | drops a fresh block on you when its fuse runs out | it does *not* clear itself — ignoring it costs you |
+| **Split** | breaks into two smaller blocks instead of vanishing | one big problem or two small ones, and you choose when |
+| **Frozen** | cannot be answered at all until something else breaks | it is not a stamp problem, so it is excluded from matching entirely |
+| **Cursed** | re-brands itself every few seconds | answer it now, or wait for a stamp you can actually use |
+
+Every one is readable off the block itself — a lit fuse, plating with a rivet
+per hit remaining, a countdown ring that flashes in its last seconds, a seam
+with arrows, ice, a moving scribble. There is no legend, because a rule you have
+to look up is a rule that is not carrying its weight.
+
+A few decisions worth knowing:
+
+- **Bomb chains are capped.** Uncapped, one lucky arrangement clears an entire
+  board off a three-letter word.
+- **A frozen block is not a match**, rather than a match that is refused. That
+  has to be true at the point the board is *queried*, or the highlight lights it
+  up and promises a clear that cannot happen.
+- **Armour still costs reach.** Otherwise it is free to chip at, and "needs two
+  words" quietly becomes "needs one word and a spare letter".
+- **Volatile blocks do not clear themselves.** Detonating into a free clear
+  would reward ignoring them, which is the opposite of the point.
+- **The board mints nothing.** It has the blocks; `game.gd` has the dictionary.
+  Curses re-brand and split children get stamped through a `mint` callable
+  handed in at startup, rather than a signal round-trip per letter.
+- **Over a network, everybody plays the host's rules.** They are pushed when
+  they change, again when somebody joins, and carried in the seating so the
+  countdown is the last possible moment for two machines to disagree — and they
+  do not. Each board still rolls its own blocks, which is safe because every
+  board is simulated by exactly one machine.
+
+`tools/blocktest.gd` builds the exact board each rule needs and checks it does
+that and only that — including that nothing special appears at all with the
+switches off, since the base game has to stay the base game.
+
 ## Power words
 
 Four situations the rules already allowed and the game never bothered to notice.

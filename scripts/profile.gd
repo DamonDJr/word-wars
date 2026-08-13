@@ -55,6 +55,8 @@ const PREF_DEFAULTS := {
 	## random personality rolled at the start of each match, anything else names
 	## one from the roster.
 	"solo": ["Duelist", "", ""],
+	## Special block kinds switched on. Empty is the base game.
+	"kinds": [],
 }
 
 

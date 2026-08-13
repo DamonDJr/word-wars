@@ -42,6 +42,11 @@ them — the game names them when they happen:
   PERFECT   break three WITHOUT losing your run  a whole extra attack
   CLUTCH    break one with a single row left     the garbage nearly stops
 
+SPECIAL BLOCKS can be switched on before a match — bombs that clear their
+neighbours, armour that needs two words, blocks that go off if you ignore them,
+blocks that split, freeze, or change their own letters. All off unless you turn
+them on.
+
 Press H on the title screen for the full rules.
 
 

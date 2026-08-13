@@ -51,6 +51,16 @@ if ! grep -q "censor behaves" <<<"$CENSOR"; then
 	exit 1
 fi
 
+# Six kinds, six rules, and each rule has exactly one way of being wrong.
+echo "==> Block check"
+BLOCKS=$("$(command -v godot)" --headless --script tools/blocktest.gd 2>&1 || true)
+if ! grep -q "blocks behave" <<<"$BLOCKS"; then
+	echo "FAILED: the special block kinds are not behaving." >&2
+	grep -E "FAILED" <<<"$BLOCKS" >&2 || true
+	echo "        Run: godot --headless --script tools/blocktest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"

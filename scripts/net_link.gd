@@ -63,6 +63,10 @@ var my_ready := false
 var roster: Dictionary = {}
 ## How many CPUs the host is adding to fill the room out.
 var bot_count := 0
+## Special block kinds the host has switched on. Everyone plays the host's
+## rules — a match where two people disagree about whether armour exists is not
+## one match — so this is pushed out and clients only ever read it.
+var kinds: Array = []
 ## Agreed seating for the current match: [{"id": int, "name": String}, ...].
 var seating: Array = []
 
@@ -305,6 +309,7 @@ func leave() -> void:
 	roster.clear()
 	seating.clear()
 	bot_count = 0
+	kinds.clear()
 	room_code = ""
 	_host_code = ""
 	_relay_tried = false
@@ -330,10 +335,28 @@ func net_bots(n: int) -> void:
 	room_changed.emit()
 
 
+## The host decides which special blocks are in play and tells the room. Sent on
+## change and again in the seating, so a peer that joined late still arrives at
+## the countdown holding the same rules as everybody else.
+func set_kinds(list: Array) -> void:
+	if not is_host:
+		return
+	kinds = list.duplicate()
+	net_kinds.rpc(kinds)
+	room_changed.emit()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func net_kinds(list: Array) -> void:
+	kinds = list.duplicate()
+	room_changed.emit()
+
+
 ## The host lays out who sits where, once, and tells everyone. Clients cannot
 ## work this out for themselves any more: bots have no peer id to sort by.
 func _build_seating() -> Array:
-	var out: Array = [{"id": multiplayer.get_unique_id(), "name": my_name}]
+	var out: Array = [{"id": multiplayer.get_unique_id(), "name": my_name,
+		"kinds": kinds}]
 	for id in peer_ids():
 		out.append({"id": id, "name": String(roster[id]["name"])})
 	# CPUs are named for the personality they will play as, and the host decides
@@ -367,6 +390,9 @@ func _on_peer_connected(id: int) -> void:
 	roster[id] = {"name": "…", "ready": false}
 	status = "%d in the room" % (roster.size() + 1)
 	net_hello.rpc(my_name)
+	# Whoever just arrived does not know the house rules yet.
+	if is_host:
+		net_kinds.rpc_id(id, kinds)
 	peer_joined.emit()
 	room_changed.emit()
 

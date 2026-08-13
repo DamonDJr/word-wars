@@ -84,6 +84,35 @@ const RESPITE := 2.5
 ## celebration that fires on every third word stops reading as a celebration.
 const BIG_SCORE := 600
 
+## Special garbage. All off by default — the base game is the base game, and
+## these are switched on in the lobby by people who already know the rules they
+## are complicating. Each is roughly as likely as the others when enabled, and
+## the chance is low enough that a special block is an event rather than the
+## texture of every board.
+const KIND_CHANCE := 0.30
+const KIND_NAMES := {
+	"bomb": WWBoard.Kind.BOMB,
+	"armored": WWBoard.Kind.ARMORED,
+	"volatile": WWBoard.Kind.VOLATILE,
+	"split": WWBoard.Kind.SPLIT,
+	"frozen": WWBoard.Kind.FROZEN,
+	"curse": WWBoard.Kind.CURSE,
+}
+## Order they appear in the lobby, and the words that explain them there.
+const KIND_ORDER := ["bomb", "armored", "volatile", "split", "frozen", "curse"]
+## Kept short enough to sit on a switch card without being shrunk to nothing.
+## The full explanation lives on the rules screen.
+const KIND_BLURB := {
+	"bomb": ["Bomb", "clears its neighbours"],
+	"armored": ["Armoured", "needs two words"],
+	"volatile": ["Volatile", "goes off if ignored"],
+	"split": ["Split", "breaks into two"],
+	"frozen": ["Frozen", "locked until something breaks"],
+	"curse": ["Cursed", "changes its own stamp"],
+}
+## A bomb is worth more than the block it sits on, so it asks a harder question.
+const BOMB_STAMP_WANT := 5
+
 ## Power words. None of these ask anything new of you — they are all things the
 ## rules already let you do, that the game never bothered to notice. That is the
 ## point: they teach the deep play by rewarding it the first time it happens by
@@ -182,6 +211,7 @@ class Pending extends RefCounted:
 	var prefix := ""
 	var cells := 1
 	var timer := 0.0
+	var kind := 0
 
 
 ## An attack in flight. Purely cosmetic — the rules already resolved the moment
@@ -319,6 +349,10 @@ var flash_color := Color.WHITE
 var show_rules := false
 ## Which cosmetic category the mastery screen is showing.
 var mastery_slot := 0
+## Which special block kinds are switched on. Empty is the default and the base
+## game; the lobby fills it.
+var block_kinds: Array = []
+
 ## Single-player setup: the three rival seats, and which one the roster fills.
 var solo_seats: Array = ["Duelist", "", ""]
 var solo_pick := 0
@@ -378,6 +412,11 @@ func _ready() -> void:
 		s.accent = SLOT_ACCENTS[i]
 		s.board = WWBoard.new()
 		s.board.block_landed.connect(_on_block_landed)
+		# Curses re-brand themselves and split children need branding, both from
+		# inside the board. It has the blocks; we have the dictionary.
+		s.board.mint = func() -> String:
+			return _mint_stamp(WordBank.random_common(), STAMP_WANT, s)
+		s.board.volatile_blew.connect(_on_volatile_blew.bind(s))
 		add_child(s.board)
 		s.board.set_accent(s.accent)
 		sides.append(s)
@@ -402,6 +441,7 @@ func _ready() -> void:
 	var saved: Array = Profile.pref("solo")
 	if saved.size() == solo_seats.size():
 		solo_seats = saved.duplicate()
+	block_kinds = (Profile.pref("kinds") as Array).duplicate()
 
 	_net_setup()
 
@@ -953,8 +993,11 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var budget := _reach(word)
 
 	var cleared := attacker.board.clear_matching(word, budget)
+	var extras: Dictionary = attacker.board.last_report
 	attacker.blocks_cleared += cleared
-	budget -= cleared
+	# Armour swallowed the word without dying. It still cost reach — that is what
+	# makes it two words rather than one — so it comes off the budget too.
+	budget -= cleared + int(extras["cracked"])
 
 	var intercepted := 0
 	if budget > 0:
@@ -1019,6 +1062,37 @@ func _play_word(attacker: SideState, word: String) -> void:
 	_note_best(attacker, word, earned)
 	_voice_attack(attacker, cleared, intercepted, out_tier)
 	_report(attacker, word, cleared, intercepted, out_tier, spent)
+	_report_kinds(attacker, extras)
+
+
+## The specials a word set off, said out loud. Without this a bomb reads as the
+## clear inexplicably counting four, and armour reads as the word simply not
+## working.
+func _report_kinds(attacker: SideState, extras: Dictionary) -> void:
+	var bits: Array = []
+	if int(extras["cracked"]) > 0:
+		bits.append("cracked %d armour" % int(extras["cracked"]))
+	if int(extras["bombed"]) > 0:
+		bits.append("bomb took %d more" % int(extras["bombed"]))
+	if int(extras["split"]) > 0:
+		bits.append("%d split" % int(extras["split"]))
+	if int(extras["thawed"]) > 0:
+		bits.append("thawed %d" % int(extras["thawed"]))
+	if bits.is_empty():
+		return
+	_log("%s: %s" % [attacker.label, ", ".join(bits)], Color("#7bdff2"))
+	if attacker == player:
+		if int(extras["bombed"]) > 0:
+			shake = maxf(shake, 0.28)
+			_bloom(Color("#f8961e"), 0.16)
+		if int(extras["cracked"]) > 0 and cleared_nothing(extras):
+			_say("armour holds — one more word", Color("#8d99bd"))
+
+
+## True when a word only cracked armour and destroyed nothing, which is the one
+## case a player is likely to read as the game ignoring them.
+func cleared_nothing(extras: Dictionary) -> bool:
+	return int(extras["bombed"]) == 0 and int(extras["split"]) == 0
 
 
 ## The best word of the match is what that word was worth all in — its own score
@@ -1039,11 +1113,24 @@ func _send_block(defender: SideState, word: String, tier: int, delay: float) -> 
 		return
 	var p := Pending.new()
 	p.tier = tier
-	p.prefix = _mint_stamp(word, STAMP_WANT, defender)
+	p.kind = _roll_kind()
+	# A bomb clears its neighbours, so it has to be worth the trouble of setting
+	# off — it asks for a longer stamp than anything else on the board.
+	p.prefix = _mint_stamp(word,
+		BOMB_STAMP_WANT if p.kind == WWBoard.Kind.BOMB else STAMP_WANT, defender)
 	p.cells = _cells(tier)
 	p.timer = delay
 	defender.pending.append(p)
 	defender.flash = 1.0
+
+
+## Which special this block is, if any. Rolled per block on the machine that
+## owns the board, which is safe over a network because each board is simulated
+## by exactly one machine and the enabled set is agreed before the match starts.
+func _roll_kind() -> int:
+	if block_kinds.is_empty() or randf() >= KIND_CHANCE:
+		return WWBoard.Kind.PLAIN
+	return int(KIND_NAMES[block_kinds.pick_random()])
 
 
 ## Throw a visible attack from one board to another. Cosmetic only — the rules
@@ -1581,7 +1668,8 @@ func _tick_pending(side: SideState, delta: float) -> void:
 		if p.timer <= 0.0:
 			side.pending.remove_at(i)
 			var spec: Dictionary = TIERS[p.tier]
-			var fit: bool = side.board.add_garbage(p.prefix, p.tier, spec["w"], spec["h"])
+			var fit: bool = side.board.add_garbage(p.prefix, p.tier, spec["w"], spec["h"],
+				p.kind)
 			side.board.shake = maxf(side.board.shake, 0.5)
 			# Bigger blocks land lower and louder.
 			Sfx.play("land", 1.15 - 0.09 * p.tier,
@@ -1659,6 +1747,24 @@ func _tick_bots(delta: float) -> void:
 			s.chain_timer = 0.0
 		if word != "":
 			_play_word(s, word)
+
+
+## A volatile block reached the end of its fuse. It does not clear itself — it
+## drops a fresh block on the board that left it there, which is the whole
+## bargain: answer it, or answer it and one more.
+func _on_volatile_blew(_at: Vector2, side: SideState) -> void:
+	var p := Pending.new()
+	p.tier = 0
+	p.prefix = _mint_stamp(WordBank.random_common(), STAMP_WANT, side)
+	p.cells = 1
+	p.timer = 0.9
+	side.pending.append(p)
+	side.flash = 1.0
+	if side == player:
+		shake = maxf(shake, 0.3)
+		_bloom(Color("#f94144"), 0.14)
+		_say("a volatile block went off", Color("#f94144"))
+	_log("%s: a volatile block went off" % side.label, Color("#f94144"))
 
 
 ## How close a board is to topping out — 0 calm, 1 drowning. The bots read this
@@ -2372,6 +2478,8 @@ func _draw_overlay() -> void:
 		_draw_solo(size)
 	elif phase == Phase.MASTERY:
 		_draw_mastery(size)
+	elif phase == Phase.LOBBY:
+		_draw_lobby(size)
 	elif phase == Phase.SETTINGS:
 		_draw_settings(size)
 	elif phase == Phase.LOBBY:
@@ -2810,11 +2918,67 @@ func _draw_solo(size: Vector2) -> void:
 		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 48.0),
 			String(c["note"]), 11, r.size.x - 14.0, Color("#8d99bd"), 9)
 
+	_draw_kind_cards(410.0, true)
+
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 566.0),
+	_otext(_font, Vector2(cx, 686.0),
 		"1 / 2 / 3 select a seat · ENTER starts · ESC back", 12, Color("#5d6a92"))
+
+
+## The special-block switches. The same row of cards serves single-player setup
+## and the versus room, so the two can never drift apart or explain themselves
+## differently.
+func _kind_cards(top: float) -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var out: Array = []
+	var per_row := 3
+	var cw := 254.0
+	var ch := 56.0
+	for i in KIND_ORDER.size():
+		var id: String = KIND_ORDER[i]
+		var row := i / per_row
+		var col := i % per_row
+		var span := per_row * cw + (per_row - 1) * 10.0
+		out.append({
+			"rect": Rect2(cx - span * 0.5 + col * (cw + 10.0), top + row * (ch + 8.0),
+				cw, ch),
+			"id": id,
+			"name": String(KIND_BLURB[id][0]),
+			"note": String(KIND_BLURB[id][1]),
+			"action": "kind:" + id,
+		})
+	return out
+
+
+## Draws them, and reports how tall the block was so the caller can lay out
+## underneath it without guessing.
+func _draw_kind_cards(top: float, editable: bool) -> float:
+	var cx := get_viewport_rect().size.x * 0.5
+	_otext(_font_bold, Vector2(cx, top - 16.0), "SPECIAL BLOCKS", 13, Color("#7c88ad"))
+	var bottom := top
+	for c: Dictionary in _kind_cards(top):
+		var r: Rect2 = c["rect"]
+		var on: bool = block_kinds.has(String(c["id"]))
+		var hot: bool = editable and _hover_action == String(c["action"])
+		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
+			Color("#ffd166") if on else Color(PLAYER_ACCENT, 0.5 if hot else 0.14),
+			10.0, 2.0 if on else 1.0)
+		_otext(_font_bold, Vector2(r.position.x + 96.0, r.get_center().y - 8.0),
+			String(c["name"]).to_upper(), 14,
+			Color("#e6ecff") if on else Color("#5d6a92"))
+		_text_fit_overlay(_font, Vector2(r.position.x + 96.0, r.get_center().y + 11.0),
+			String(c["note"]), 10, 170.0, Color("#7c88ad") if on else Color("#3d4666"), 8)
+		# A switch rather than a tick: these are settings, and a tick reads as
+		# "done" where a switch reads as "on".
+		var sw := Rect2(r.end.x - 62.0, r.get_center().y - 11.0, 46.0, 22.0)
+		_panel(sw, Color("#1f8a70") if on else Color("#2a3355"),
+			Color(PLAYER_ACCENT if on else Color("#4d5878"), 0.7), 11.0, 1.0)
+		_overlay.draw_circle(Vector2(sw.position.x + (33.0 if on else 13.0),
+			sw.get_center().y), 8.0, Color("#e6ecff"))
+		bottom = maxf(bottom, r.end.y)
+	return bottom
 
 
 func _solo_seat_rects() -> Array:
@@ -3076,6 +3240,16 @@ func _draw_lobby(size: Vector2) -> void:
 	else:
 		_draw_lobby_setup(cx)
 
+	if Link.connected:
+		# Everyone sees the house rules, but only the host can change them: a
+		# switch a client could flip would be a lie about the match they are
+		# about to play.
+		if not Link.is_host:
+			block_kinds = Link.kinds.duplicate()
+			_otext(_font, Vector2(cx, 540.0), "the host sets these", 11,
+				Color("#5d6a92"))
+		_draw_kind_cards(556.0, Link.is_host)
+
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
@@ -3086,7 +3260,7 @@ func _draw_lobby(size: Vector2) -> void:
 				or Link.status.contains("not installed") or Link.status.contains("not wired"):
 			tint = Color("#ff6b6b")
 		var dots := ".".repeat(1 + int(Time.get_ticks_msec() / 400.0) % 3) if waiting else ""
-		_otext(_font_bold, Vector2(cx, 620.0), Link.status + dots, 14, tint)
+		_otext(_font_bold, Vector2(cx, 692.0), Link.status + dots, 14, tint)
 
 
 ## Before anyone has connected: who you are, where they are, which backend.
@@ -3274,6 +3448,19 @@ func _draw_rules_panel(size: Vector2) -> void:
 	for l: String in lines:
 		_otext(_font, Vector2(cx, y), l, 14, Color("#aab4d4"))
 		y += 25.0
+
+	# Special blocks only appear in the list when they are switched on. A rules
+	# screen listing rules that are not in play is worse than one that is short.
+	if not block_kinds.is_empty():
+		y += 6.0
+		var on: Array = []
+		for id: String in KIND_ORDER:
+			if block_kinds.has(id):
+				on.append("%s — %s" % [String(KIND_BLURB[id][0]).to_upper(),
+					String(KIND_BLURB[id][1])])
+		_text_fit_overlay(_font, Vector2(cx, y), "SPECIAL BLOCKS IN PLAY: "
+			+ "  ·  ".join(on), 12, 800.0, Color("#ffd166"), 9)
+		y += 19.0
 
 	# Power words are worth spelling out here, but they are meant to be met in
 	# play first: the game announces one the first time you manage it by
@@ -3465,6 +3652,12 @@ func _on_net_match_begin() -> void:
 		if int(seat["id"]) != me:
 			others.append(seat)
 
+	# Everyone plays the host's rules. The seating carries them, so this is the
+	# last chance for the two machines to disagree — and they do not.
+	for seat: Dictionary in plan:
+		if seat.has("kinds"):
+			block_kinds = (seat["kinds"] as Array).duplicate()
+			break
 	start_match("Versus", others.size())
 	for i in others.size():
 		if i + 1 >= SLOTS:
@@ -3597,7 +3790,8 @@ func _push_state(delta: float) -> void:
 func _state_of(who: SideState, own: int) -> Dictionary:
 	var block_specs: Array = []
 	for b in who.board.blocks:
-		block_specs.append([b.gx, b.gy, b.w, b.h, b.tier, b.prefix])
+		block_specs.append([b.gx, b.gy, b.w, b.h, b.tier, b.prefix, b.kind, b.hits,
+			b.fuse])
 	var pend_specs: Array = []
 	for p: Pending in who.pending:
 		pend_specs.append([p.tier, p.prefix, p.timer])
@@ -3662,13 +3856,53 @@ func _menu_buttons() -> Array:
 			})
 	elif phase == Phase.SOLO:
 		out.append({
-			"rect": Rect2(cx - 150.0, 428.0, 300.0, 54.0), "key": "ENTER",
+			"rect": Rect2(cx - 150.0, 596.0, 300.0, 46.0), "key": "ENTER",
 			"label": "Start", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#7bdff2"), "action": "solo_start"})
 		out.append({
-			"rect": Rect2(cx - 150.0, 494.0, 300.0, 38.0), "key": "ESC",
+			"rect": Rect2(cx - 150.0, 648.0, 300.0, 32.0), "key": "ESC",
 			"label": "Back", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.LOBBY:
+		# Restored. A slice-replacement while splitting the title screen into
+		# four doors took this whole branch out with it, which left every button
+		# in the versus lobby drawn nowhere and clickable nowhere — Host, Join,
+		# Ready up, Leave, Add CPU. The keyboard shortcuts still worked, which is
+		# exactly why it survived the network testing that came after.
+		if Link.connected:
+			if Link.is_host and Link.free_seats() > 0:
+				out.append({
+					"rect": Rect2(cx + 186.0, 408.0, 150.0, 66.0), "key": "+",
+					"label": "Add CPU", "sub": "", "note": "", "rating": 0,
+					"accent": Color("#ffd166"), "action": "addbot"})
+			if Link.is_host and Link.bot_count > 0:
+				out.append({
+					"rect": Rect2(cx - 336.0, 408.0, 150.0, 66.0), "key": "-",
+					"label": "Drop CPU", "sub": "", "note": "", "rating": 0,
+					"accent": Color("#8d99bd"), "action": "dropbot"})
+			out.append({
+				"rect": Rect2(cx - 170.0, 408.0, 340.0, 66.0), "key": "ENTER",
+				"label": "Not ready" if Link.my_ready else "Ready up",
+				"sub": "", "note": "", "rating": 0,
+				"accent": Color("#ffd166") if Link.my_ready else PLAYER_ACCENT,
+				"action": "ready"})
+			out.append({
+				"rect": Rect2(cx - 90.0, 484.0, 180.0, 38.0), "key": "ESC",
+				"label": "Leave", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "leave"})
+		else:
+			out.append({
+				"rect": Rect2(cx - 330.0, 448.0, 320.0, 66.0), "key": "CTRL+H",
+				"label": "Host", "sub": "", "note": "", "rating": 0,
+				"accent": PLAYER_ACCENT, "action": "host"})
+			out.append({
+				"rect": Rect2(cx + 10.0, 448.0, 320.0, 66.0), "key": "ENTER",
+				"label": "Join", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#c77dff"), "action": "join"})
+			out.append({
+				"rect": Rect2(cx - 90.0, 530.0, 180.0, 44.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.SETTINGS:
 		out.append({
 			"rect": Rect2(cx - 90.0, 598.0, 180.0, 40.0), "key": "ESC",
@@ -3899,6 +4133,13 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _solo_cards():
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
+		for c: Dictionary in _kind_cards(410.0):
+			if (c["rect"] as Rect2).has_point(p):
+				return String(c["action"])
+	if phase == Phase.LOBBY and Link.connected and Link.is_host:
+		for c: Dictionary in _kind_cards(556.0):
+			if (c["rect"] as Rect2).has_point(p):
+				return String(c["action"])
 	if phase == Phase.SETTINGS:
 		for row: Dictionary in _settings_rows():
 			if (row["rect"] as Rect2).has_point(p):
@@ -3950,6 +4191,7 @@ func _activate(action: String) -> void:
 		Sfx.play("back", 1.2)
 	elif action == "host":
 		Link.host(lobby_backend)
+		Link.set_kinds(block_kinds)
 		Sfx.play("count")
 	elif action == "join":
 		Link.join(lobby_backend, join_ip)
@@ -4008,6 +4250,17 @@ func _activate(action: String) -> void:
 					break
 		Profile.set_pref("solo", solo_seats.duplicate())
 		Sfx.play("count", 1.25)
+	elif action.begins_with("kind:"):
+		var id := action.substr(5)
+		if block_kinds.has(id):
+			block_kinds.erase(id)
+			Sfx.play("back")
+		else:
+			block_kinds.append(id)
+			Sfx.play("count", 1.3)
+		Profile.set_pref("kinds", block_kinds.duplicate())
+		if Link.is_host and Link.connected:
+			Link.set_kinds(block_kinds)
 	elif action.begins_with("set:"):
 		_change_setting(action.substr(4))
 	elif action == "mastery":
