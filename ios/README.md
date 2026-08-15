@@ -26,18 +26,49 @@ Worth being clear about what is *not* the problem:
   iOS 16.
 - **Not signing.** That was already solved for Kinetica and LegendFood.
 
-### The way round it
+### The way round it: build in CI, install with xtool
 
-Build on a hosted macOS runner. `.github/workflows/ios.yml` does the whole
-thing: installs Godot and the templates, exports the Xcode project, builds it
-**unsigned** with `CODE_SIGNING_ALLOWED=NO`, and zips a `Payload/` folder into an
-IPA — the same trick `tools/build-ipa.sh` uses in the other two projects.
+Split the two jobs apart. Nothing then needs the Mac at all.
 
-The Mac is then only ever asked to run Sideloadly, which Big Sur does fine.
+**Build** on a hosted macOS runner. `.github/workflows/ios.yml` installs Godot
+and the templates, exports the Xcode project, builds it **unsigned** with
+`CODE_SIGNING_ALLOWED=NO`, and zips a `Payload/` folder into an IPA — the same
+trick `tools/build-ipa.sh` uses in the other two projects.
 
-Run it from the Actions tab, download the artifact, sideload it. Expect the
-first run to need a fix or two: it has never been run, because there is no Mac
-here to run it on.
+**Install** with [xtool](https://github.com/xtool-org/xtool), from Linux:
+
+```bash
+xtool devices
+xtool install WordWars.ipa
+```
+
+That replaces Sideloadly, and it replaces the Mac with it. From the source
+rather than the docs, which do not spell this out:
+
+- `IntegratedInstaller.install(app:)` accepts a `.ipa`, unpacks it, finds the
+  `.app` inside `Payload/`, calls **`signInPlace`**, repacks and installs. It
+  signs what you give it — it does not need an already-signed build.
+- `DeveloperServicesProvisioningOperation` runs
+  `DeveloperServicesAddDeviceOperation`, so it **registers the device with
+  Apple** itself. That is precisely the circle Xcode 13.2.1 could not square.
+- `DeveloperServicesTeam` carries an `isFree` flag, so a free Apple ID is a
+  handled case rather than an accident that happens to work.
+
+It is also engine-agnostic: it operates on the built `.app`, so nothing about it
+cares that Godot produced it.
+
+**What xtool cannot do here is the build.** It builds *SwiftPM packages*, and
+Godot emits an Xcode project full of prebuilt static libraries and Objective-C++
+— not a Swift package. So the macOS runner stays. xtool is the deployment half,
+and it is the half the Mac was doing.
+
+Expect setup friction rather than build friction: xtool needs `usbmuxd` for the
+USB link and Apple's anisette libraries for authentication, which is the fiddly
+part of every Linux sideload. The free-ID limits are the ones already lived with
+— seven-day certificates, three apps, re-install weekly.
+
+Expect the workflow itself to need a fix or two on its first run: it has never
+been run, because there is no Mac here to run it on.
 
 One trap it is already carrying: `include_filter="data/*.txt"` in the iOS
 preset. The word lists are plain text rather than imported resources, so without
