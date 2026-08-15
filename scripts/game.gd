@@ -12,11 +12,23 @@ extends Node2D
 ## it only earns you more time for the next link. Stamp length is independent of
 ## block size, so a 4x3 can perfectly well say A.
 
+## The two design spaces. One build serves both: the window is measured and the
+## content scale swapped, rather than a separate mobile project that would have
+## to be kept in step with this one forever.
+##
+## Portrait is 720x1440 — a clean 1:2 that sits within a couple of percent of
+## every modern phone, so the letterboxing is a few pixels rather than a band.
+const LANDSCAPE_SIZE := Vector2i(1280, 720)
+const PORTRAIT_SIZE := Vector2i(720, 1440)
+
 ## Up to four boards at once: yours full size on the left, the rest shrunk into a
 ## row on the right. Their boards are scaled by the node transform rather than by
 ## a second set of drawing code, so everything on them keeps working.
 const SLOTS := 4
 const BOARD_MARGIN_X := 120.0
+## Portrait puts the rival strip and the clock above the board, and the keyboard
+## below it. This is the one number the whole phone layout hangs off.
+const PORTRAIT_BOARD_TOP := 208.0
 const BOARD_TOP := 130.0
 const RIVAL_SCALE := 0.55
 const RIVAL_TOP := 196.0
@@ -357,6 +369,11 @@ var flash_color := Color.WHITE
 var show_rules := false
 ## Which cosmetic category the mastery screen is showing.
 var mastery_slot := 0
+## True while the window is taller than it is wide. Every layout branches on
+## this rather than on a platform, so the phone screen is testable by dragging a
+## desktop window narrow — which is the only reason it got built at all.
+var portrait := false
+
 var mode := Mode.NORMAL
 ## Where the tutorial has got to, and how long the current step has been up.
 var lesson := 0
@@ -462,6 +479,8 @@ func _ready() -> void:
 	_overlay.draw.connect(_draw_overlay)
 	_build_screen_texture()
 
+	_apply_orientation()
+	get_tree().get_root().size_changed.connect(_apply_orientation)
 	_apply_theme()
 	_apply_prefs()
 	Profile.changed.connect(_apply_theme)
@@ -471,6 +490,24 @@ func _ready() -> void:
 	block_kinds = (Profile.pref("kinds") as Array).duplicate()
 
 	_net_setup()
+
+
+## Measure the window and pick a design space to match it. Called on boot and on
+## every resize, so rotating a phone — or dragging a desktop window narrow — lands
+## in the other layout immediately.
+func _apply_orientation() -> void:
+	var win := DisplayServer.window_get_size()
+	var want_portrait: bool = win.y > win.x
+	var want: Vector2i = PORTRAIT_SIZE if want_portrait else LANDSCAPE_SIZE
+	if get_window().content_scale_size == want and portrait == want_portrait:
+		return
+	portrait = want_portrait
+	get_window().content_scale_size = want
+	_layout_boards()
+	# Force the key hints to be recomputed: the keyboard has moved.
+	_key_cache_word = " "
+	queue_redraw()
+	_overlay.queue_redraw()
 
 
 ## Push the equipped board theme and block style out to everything that paints.
@@ -529,6 +566,19 @@ func _layout_boards() -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var duel := slots_in_play <= 2
 
+	if portrait:
+		# One board, sized by what is left after the keyboard has taken its
+		# share. There is no room for a second playfield on a phone and no point
+		# shrinking the one that matters to make space for it — rivals become
+		# chips along the top instead.
+		var bh := WWBoard.ROWS * WWBoard.CELL
+		var room := _portrait_board_bottom() - PORTRAIT_BOARD_TOP
+		var scale: float = clampf(minf(room / bh, (size.x - 72.0) / bw), 0.7, 1.6)
+		for s2: SideState in sides:
+			s2.board.scale = Vector2(scale, scale)
+			s2.board.position = Vector2((size.x - bw * scale) * 0.5, PORTRAIT_BOARD_TOP)
+		return
+
 	for s: SideState in sides:
 		if s.slot == 0:
 			s.board.position = Vector2(BOARD_MARGIN_X, BOARD_TOP)
@@ -542,10 +592,105 @@ func _layout_boards() -> void:
 			s.board.scale = Vector2(RIVAL_SCALE, RIVAL_SCALE)
 
 
+## The whole match HUD for a phone, in the strip above the board and the one
+## below it. Not a squeezed version of the landscape HUD — that has a centre
+## column and three rival playfields, neither of which exists here.
+##
+## Rivals are reduced to chips. You cannot read four boards on a phone and
+## pretending otherwise costs the one board you can read; a name, lives and how
+## much is falling on them is the part you actually act on.
+func _draw_portrait_hud(size: Vector2) -> void:
+	var cx := size.x * 0.5
+
+	_text_centered(_font_bold, Vector2(cx - 96.0, 34.0),
+		"%d:%02d" % [int(match_time) / 60, int(match_time) % 60], 26, Color("#e6ecff"))
+	var kick := score_kick * score_kick
+	_text_centered(_font_bold, Vector2(cx + 62.0, 34.0), _commas(int(round(score_shown))),
+		int(26 + 8.0 * kick), Color("#ffd166").lerp(Color.WHITE, kick * 0.7))
+	_text_centered(_font, Vector2(cx, 60.0),
+		"pressure in %ds" % int(ceil(pressure_timer)), 11, Color("#5d6a92"))
+
+	# Your lives, as the same pips the landscape header uses.
+	for i in LIVES:
+		var lit: bool = i < player.lives
+		draw_rect(Rect2(cx - 30.0 + i * 22.0, 76.0, 15.0, 9.0),
+			player.accent if lit else Color("#2a3355"), true)
+
+	var rivals := []
+	for s: SideState in sides:
+		if s.slot > 0 and s.in_match:
+			rivals.append(s)
+	if not rivals.is_empty():
+		var cw: float = minf(196.0, (size.x - 24.0) / float(rivals.size()) - 8.0)
+		var span: float = float(rivals.size()) * cw + float(rivals.size() - 1) * 8.0
+		for i in rivals.size():
+			var s2: SideState = rivals[i]
+			var r := Rect2(cx - span * 0.5 + float(i) * (cw + 8.0), 100.0, cw, 62.0)
+			var aimed: bool = player.target == s2.slot
+			_panel(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
+				2.0 if aimed else 1.0)
+			_text_fit(_font_bold, Vector2(r.get_center().x, r.position.y + 17.0),
+				_show(s2.label), 14, cw - 12.0, s2.accent if s2.alive else Color("#4d5878"))
+			for k in LIVES:
+				draw_rect(Rect2(r.get_center().x - 20.0 + k * 14.0, r.position.y + 28.0,
+					9.0, 6.0), s2.accent if k < s2.lives else Color("#2a3355"), true)
+			var inbound := s2.pending_cells()
+			_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
+				("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
+				Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
+
+	# Everything below the board: what is falling on you, the run you are on,
+	# and the line you are typing, stacked into the gap above the keyboard.
+	var below := _portrait_board_bottom()
+	var mine := player.pending_cells()
+	if mine > 0:
+		_text_centered(_font_bold, Vector2(cx, below + 16.0),
+			"%d incoming" % mine, 14, Color("#ff6b6b"))
+
+	var bw := WWBoard.COLS * WWBoard.CELL * player.board.scale.x
+	var meter := Rect2(cx - bw * 0.5, below + 30.0, bw, 6.0)
+	draw_rect(meter, Color("#141b33"), true)
+	if player.chain > 0:
+		var frac: float = clampf(player.chain_timer / maxf(player.chain_window, 0.01),
+			0.0, 1.0)
+		draw_rect(Rect2(meter.position, Vector2(meter.size.x * frac, meter.size.y)),
+			WWBoard.TIER_COLORS[_chain_tier(player.chain)], true)
+
+	var hits := _preview_hits(player, typed)
+	var col := PLAYER_ACCENT
+	if typed.length() >= MIN_WORD_LEN:
+		if hits > 0:
+			col = Color("#ffd166")
+		elif not WordBank.is_valid(typed):
+			col = Color("#7c88ad")
+	_text_fit(_font_bold, Vector2(cx, below + 66.0), typed.to_upper(), 34,
+		size.x - 40.0, col)
+
+	var note := ""
+	if hits > 0:
+		note = "takes out %d block%s" % [hits, "" if hits == 1 else "s"]
+	elif player.chain + 1 >= SALVO_AT:
+		note = "NEXT HIT IS A SALVO"
+	elif player.chain >= 2:
+		note = "chain x%d" % player.chain
+	elif message_life > 0.0:
+		note = message
+	if note != "":
+		_text_fit(_font, Vector2(cx, below + 90.0), note, 12, size.x - 40.0,
+			Color("#ffd166") if hits > 0 else Color("#8d99bd"))
+
+
+## Where the board has to stop, so the typed line and the keyboard both fit.
+func _portrait_board_bottom() -> float:
+	return get_viewport_rect().size.y - Keyboard.height() - 18.0 - 92.0
+
+
 ## The free space between your board and the rivals. The centre column has to
 ## live here, or it draws straight through somebody's playfield.
 func _center_band() -> Vector2:
 	var size := get_viewport_rect().size
+	if portrait:
+		return Vector2(16.0, size.x - 16.0)
 	var left := BOARD_MARGIN_X + WWBoard.COLS * WWBoard.CELL + 16.0
 	var right := size.x - BOARD_MARGIN_X - WWBoard.COLS * WWBoard.CELL - 16.0
 	if slots_in_play > 2:
@@ -1622,7 +1767,8 @@ func _process(delta: float) -> void:
 		# drawn at all — an empty playfield sitting there reads as an opponent
 		# who is somehow doing nothing.
 		s.board.visible = showing_boards and s.in_match \
-			and (mode == Mode.NORMAL or s.slot == 0)
+			and (mode == Mode.NORMAL or s.slot == 0) \
+			and (not portrait or s.slot == 0)
 	if phase != Phase.PLAY:
 		_step_decor(delta)
 
@@ -2139,20 +2285,160 @@ func _draw() -> void:
 	if phase != Phase.COUNTDOWN and phase != Phase.PLAY and phase != Phase.OVER:
 		return
 
-	_draw_side_header(player, player.board.position)
-	_draw_chain_meter(player)
-	_draw_pending(player, false)
-	for s: SideState in sides:
-		if s.slot > 0 and s.in_match and mode == Mode.NORMAL:
-			_draw_rival_panel(s)
+	if portrait:
+		_draw_portrait_hud(size)
+	else:
+		_draw_side_header(player, player.board.position)
+		_draw_chain_meter(player)
+		_draw_pending(player, false)
+		for s: SideState in sides:
+			if s.slot > 0 and s.in_match and mode == Mode.NORMAL:
+				_draw_rival_panel(s)
 	# The summary covers the same ground and sits in the same column, so leaving
 	# the live readout underneath it just prints two scores on top of each other.
-	if phase != Phase.COUNTDOWN and phase != Phase.OVER and mode == Mode.NORMAL:
+	if phase != Phase.COUNTDOWN and phase != Phase.OVER and mode == Mode.NORMAL \
+			and not portrait:
 		_draw_center_hud(size)
-	_draw_player_input(size)
+	if not portrait:
+		_draw_player_input(size)
 	# Last, so an attack crossing the screen passes over the boards rather than
 	# under them, and on the world canvas so it moves with the shake.
 	_draw_tracers()
+
+
+# --------------------------------------------------------------- the keyboard
+#
+# A drawn keyboard rather than the system one. Everything in this game is
+# already custom `_draw`, so this is the same kind of code as the rest of it —
+# and it buys three things the iOS keyboard cannot give: no autocorrect fighting
+# a 350k-word dictionary, a layout that cannot shove the board about as it
+# appears, and keys that know what is on your board.
+#
+# That last one is the point. On glass you type at a third the speed you manage
+# on keys, so the game has to give some of that back somewhere, and the honest
+# place is information rather than easier rules.
+
+## Recomputed only when the typed line changes — 26 dictionary probes per frame
+## would be silly, and the answer cannot change between keystrokes.
+var _key_dead: Dictionary = {}
+var _key_hot: Dictionary = {}
+var _key_cache_word := " "
+## Which key is held down, for the pressed look. Cleared on release, so a
+## finger slid off a key does not leave it looking stuck.
+var _key_down := ""
+
+
+func _refresh_key_hints() -> void:
+	# Stamps you could still be answering. While the line is empty that is all
+	# of them; once you have typed something it is only the ones you are still
+	# on course for, which is what makes the hint narrow as you go.
+	var wanted: Array = []
+	for st: String in player.board.prefixes():
+		wanted.append(st)
+	for p: Pending in player.pending:
+		if p.prefix != "":
+			wanted.append(p.prefix)
+
+	# The cache key has to include the board, not just the line. Keying on the
+	# typed word alone meant the hints were computed once on an empty board
+	# during the countdown and then never again, because nothing you had typed
+	# had changed — blocks landed behind them and the highlights stayed wrong.
+	var key := typed + "|" + "-".join(wanted)
+	if _key_cache_word == key:
+		return
+	_key_cache_word = key
+	_key_dead.clear()
+	_key_hot.clear()
+
+	for code in range(97, 123):
+		var ch := String.chr(code)
+		var next := typed + ch
+		# Dead: no word in the dictionary begins with this. Worth showing,
+		# because a wrong letter costs a whole word on a phone.
+		if WordBank.valid_prefix_count(next) <= 0:
+			_key_dead[ch] = true
+			continue
+		for st: String in wanted:
+			# Hot either while still spelling the stamp out, or once the line has
+			# already cleared it and any continuation still answers it.
+			if st.begins_with(next) or next.begins_with(st):
+				_key_hot[ch] = true
+				break
+
+
+## The keys, positioned against the current screen. One source for drawing and
+## for hit-testing, the same rule the menus follow.
+func _keyboard() -> Array:
+	return Keyboard.keys(get_viewport_rect().size, get_viewport_rect().size.y - 18.0)
+
+
+func _draw_keyboard() -> void:
+	_refresh_key_hints()
+	var accent := PLAYER_ACCENT
+	for k: Dictionary in _keyboard():
+		var r: Rect2 = k["rect"]
+		var id: String = k["id"]
+		var down: bool = _key_down == id
+		if down:
+			r = Rect2(r.position + Vector2(0, 3), r.size - Vector2(0, 3))
+
+		var bg := Color("#141b33")
+		var edge := Color(accent, 0.18)
+		var ink := Color("#e6ecff")
+		match id:
+			"fire":
+				bg = Color("#1b2f4a") if not down else Color("#27456b")
+				edge = Color(accent, 0.75)
+			"back":
+				bg = Color("#241626") if not down else Color("#33203a")
+				edge = Color("#c77dff", 0.5)
+			_:
+				if _key_dead.has(id):
+					# Not disabled — you can still press it. Just told that
+					# nothing in the dictionary starts that way.
+					ink = Color("#3d4666")
+					edge = Color(accent, 0.07)
+					bg = Color("#0f1428")
+				elif _key_hot.has(id):
+					bg = Color("#22344f") if not down else Color("#2c4466")
+					edge = Color("#ffd166", 0.9)
+					ink = Color("#ffd166")
+		if down:
+			bg = bg.lightened(0.12)
+		_panel(r, bg, edge, 9.0, 2.0)
+		_otext(_font_bold, r.get_center(), String(k["label"]),
+			26 if id.length() == 1 else 19, ink)
+
+
+## Which key is under a point, or "" for none.
+func _key_at(p: Vector2) -> String:
+	for k: Dictionary in _keyboard():
+		if (k["rect"] as Rect2).grow(2.0).has_point(p):
+			return String(k["id"])
+	return ""
+
+
+## A tap on a key does exactly what the matching physical key does, so there is
+## one set of rules about what typing means and the keyboard is only an input
+## device rather than a second implementation of the game.
+func _press_key(id: String) -> void:
+	if id == "":
+		return
+	_key_down = id
+	if id == "fire":
+		_submit_player()
+		return
+	if id == "back":
+		if player.alive and not paused:
+			typed = typed.substr(0, maxi(0, typed.length() - 1))
+			Sfx.play("back", randf_range(0.94, 1.06))
+		return
+	if paused or not player.alive or typed.length() >= 20:
+		return
+	typed += id
+	chars_typed += 1
+	_fleck(id)
+	Sfx.play("key", randf_range(0.92, 1.10))
 
 
 ## A comet on a curve with a tapering tail sampled back along the same curve, and
@@ -2666,6 +2952,8 @@ func _draw_overlay() -> void:
 			size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
 			Color(flash_color, flash * 0.5), true)
 	if phase == Phase.PLAY:
+		if portrait:
+			_draw_keyboard()
 		_draw_score_pops()
 		_draw_power_pops()
 		# Drawn here rather than in `_draw`, because everything it uses paints on
@@ -2840,12 +3128,14 @@ func _draw_title(size: Vector2) -> void:
 			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 		return
 
-	_draw_how_cards(cx)
+	if not portrait:
+		_draw_how_cards(cx)
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 578), "click, or press 1 – 5", 13, Color("#5d6a92"))
-	_otext(_font, Vector2(cx, 674),
+	_otext(_font, Vector2(cx, 578 if not portrait else 1160), "click, or press 1 – 5",
+		13, Color("#5d6a92"))
+	_otext(_font, Vector2(cx, 674 if not portrait else 1196),
 		"H — full rules      F1 — %s      ESC — quit" % [
 			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 
@@ -3054,11 +3344,16 @@ func _apply_prefs() -> void:
 	fx_censor = bool(Profile.pref("censor"))
 	if not fx_hitstop:
 		_clear_hitstop()
-	var full := bool(Profile.pref("fullscreen"))
-	var want := DisplayServer.WINDOW_MODE_FULLSCREEN if full \
-		else DisplayServer.WINDOW_MODE_WINDOWED
-	if DisplayServer.window_get_mode() != want:
-		DisplayServer.window_set_mode(want)
+	# Deliberately not applied in portrait. A phone window is already the whole
+	# screen, and forcing a mode there resizes the window, which re-runs the
+	# orientation check against the size the resize just produced — the two ended
+	# up flipping each other back and forth.
+	if not portrait:
+		var full := bool(Profile.pref("fullscreen"))
+		var want := DisplayServer.WINDOW_MODE_FULLSCREEN if full \
+			else DisplayServer.WINDOW_MODE_WINDOWED
+		if DisplayServer.window_get_mode() != want:
+			DisplayServer.window_set_mode(want)
 
 
 ## Learn it or drill it. Two doors, and a pace for the second one.
@@ -4155,6 +4450,20 @@ func _menu_buttons() -> Array:
 			["4", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
 			["5", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
 		]
+		# Five across needs 1248px and a phone has 720, so portrait stacks them.
+		# The rest of the menus are still laid out for landscape and are the next
+		# piece of work; the title at least has to be reachable, or nothing else
+		# on a phone can be got at in the first place.
+		if portrait:
+			var pw := get_viewport_rect().size.x - 72.0
+			for i in doors.size():
+				var d2: Array = doors[i]
+				out.append({
+					"rect": Rect2(cx - pw * 0.5, 620.0 + i * 104.0, pw, 92.0),
+					"key": String(d2[0]), "label": String(d2[1]), "sub": String(d2[2]),
+					"note": "", "rating": 0, "accent": d2[4], "action": String(d2[3]),
+				})
+			return out
 		var w := 240.0
 		var gap := 12.0
 		var span := doors.size() * w + (doors.size() - 1) * gap
@@ -4427,6 +4736,20 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The drawn keyboard takes priority over everything else a click could mean
+	# while it is up, because it covers the bottom third of the screen.
+	if portrait and phase == Phase.PLAY and not paused and player.alive:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_LEFT:
+				var hit := _key_at(get_viewport().get_mouse_position())
+				if mb.pressed:
+					if hit != "":
+						_press_key(hit)
+						return
+				elif _key_down != "":
+					_key_down = ""
+					return
 	if phase == Phase.SPLASH:
 		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 			_skip_splash()

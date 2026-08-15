@@ -94,6 +94,42 @@ Wordsmith.
 **The mastery system inherits the same problem.** `Speed Demon` wants 65 wpm.
 On glass that is not a stretch goal, it is a wall.
 
+### What is built so far
+
+The layout half is done and testable today — drag a desktop window narrow and
+the game changes shape, because the orientation is decided by measuring the
+window rather than by asking what platform this is. That is the only reason any
+of it could be built without an iPhone in the room.
+
+- **A portrait design space of 720x1440**, swapped in at runtime via
+  `content_scale_size`. A clean 1:2 that sits within a couple of percent of
+  every modern phone, so the letterboxing is a few pixels rather than a band.
+- **A portrait match layout**: one board sized from the room left over after the
+  keyboard takes its share, rivals reduced to chips along the top. You cannot
+  read four boards on a phone, and pretending otherwise costs the one board you
+  can read.
+- **A drawn keyboard** — three rows, QWERTY, plus DEL and FIRE. Alphabetical
+  looks tidier and is slower for everyone who has ever used a phone.
+
+The keyboard earns its keep by knowing the board:
+
+- **Letters that cannot begin any word in the dictionary are dimmed.** On glass
+  a wrong letter costs a whole word, and this is one binary search per key,
+  recomputed only when something changes.
+- **Letters that open a stamp you are facing are lit**, including stamps still
+  in the air. That is the compensation for typing at a third the speed — given
+  back as information rather than as easier rules.
+
+### Still to do
+
+- **The menus are still laid out for landscape.** The title screen stacks its
+  five doors in portrait so the game is reachable at all, but single-player
+  setup, mastery and the lobbies are all card grids sized for 1280px and they
+  run off a 720px screen. That is the next piece of work and it is mostly
+  mechanical: the grids already compute their columns, so they need to compute
+  them from the width available rather than from a constant.
+- **The balance pass.** Nothing below has been touched yet.
+
 ### What a mobile version would actually be
 
 - **Portrait, one board.** Free-for-all does not survive a phone screen; a duel
