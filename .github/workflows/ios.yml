@@ -1,0 +1,96 @@
+# Builds an unsigned WordWars.ipa on a macOS runner.
+#
+# This exists because the Mac in the room runs Big Sur, whose newest Xcode is
+# 13.2.1 (iOS 15.2 SDK) — and Godot 4.7's iOS export templates are compiled
+# against the iOS 26.1 SDK. That is a five-generation gap and it is not a
+# configuration problem; the toolchain simply is not there. A hosted runner has
+# a current Xcode, so the Mac only has to run Sideloadly, which it does fine.
+#
+# Unsigned on purpose, exactly like Kinetica and LegendFood: a free Apple ID
+# cannot be issued a profile for a device Xcode has never registered, so
+# Sideloadly signs the app and registers the device instead.
+#
+# Run it from the Actions tab. The IPA comes out as a build artifact.
+name: iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      godot:
+        description: Godot version
+        default: "4.7"
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode on the runner
+        run: |
+          # The templates want a recent SDK; whatever is newest here will do,
+          # and pinning a version would rot the moment the image is updated.
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install Godot and its export templates
+        env:
+          V: ${{ inputs.godot }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${V}-stable"
+          curl -fL -o godot.zip "${base}/Godot_v${V}-stable_macos.universal.zip"
+          curl -fL -o templates.zip "${base}/Godot_v${V}-stable_export_templates.tpz"
+          unzip -q godot.zip
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates"
+          unzip -q templates.zip
+          mv templates "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
+          echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+
+      - name: Import the project
+        run: |
+          # Two passes. A cold import does not always finish resolving every
+          # dependency in one go, and an incomplete import exports a game with
+          # missing resources rather than failing loudly.
+          "$GODOT" --headless --import . || true
+          "$GODOT" --headless --import .
+
+      - name: Export the Xcode project
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios
+          "$GODOT" --headless --export-release "iOS" build/ios/WordWars.ipa
+          find build/ios -maxdepth 2 -name "*.xcodeproj" -print
+
+      - name: Build unsigned
+        run: |
+          set -euo pipefail
+          proj="$(find build/ios -maxdepth 2 -name '*.xcodeproj' | head -1)"
+          scheme="$(basename "$proj" .xcodeproj)"
+          xcodebuild \
+            -project "$proj" \
+            -scheme "$scheme" \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package the ipa
+        run: |
+          set -euo pipefail
+          app="$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          # An .ipa is a zip with the app inside a folder called Payload —
+          # the same trick tools/build-ipa.sh uses in the other two projects.
+          rm -rf Payload && mkdir Payload
+          cp -R "$app" Payload/
+          zip -qry WordWars.ipa Payload
+          ls -lh WordWars.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WordWars-ios-unsigned
+          path: WordWars.ipa
