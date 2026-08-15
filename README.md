@@ -35,6 +35,20 @@ fire with `Space` or `Enter`. `Backspace` deletes, `Ctrl+Backspace` or `Esc`
 clears the line. `H` on the title screen shows the full rules, `R` rematches after a game. `F1` mutes — it is
 not a letter key, because every letter is spoken for.
 
+## Why the export presets use `;` comments
+
+Because `#` ones silently destroy the file.
+
+Godot's `ConfigFile` comments with a semicolon. A `#` comment is not ignored —
+it **stops the parse**, and every preset defined after it disappears without a
+word of complaint. The iOS preset was written with a `#` header block and never
+loaded once; the failure looked exactly like "Godot on Linux cannot register the
+iOS platform", which is a much more plausible story and a completely wrong one.
+
+It only surfaced because macOS *is* registered on Linux, so a preset that should
+obviously have worked did not, and the difference between the two theories
+became testable. Every comment in `export_presets.cfg` is now a `;`.
+
 ## Building for other people
 
 ```bash

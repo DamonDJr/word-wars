@@ -101,11 +101,35 @@ if grep -qE "Music: missing track|splash art missing|title font missing" <<<"$BO
 	exit 1
 fi
 
+# macOS. Exported straight from here — unlike iOS, Godot ships a finished
+# universal binary for this platform rather than an Xcode project, so no Mac and
+# no Xcode are involved in making it.
+echo "==> macOS"
+mkdir -p "$OUT/macos"
+godot --headless --export-release "macOS" "$PWD/$OUT/macos/WordWars.zip" >/dev/null
+
+# The dictionary check has to be done differently here. There is no booting a
+# Mach-O binary on Linux, and macOS keeps the pck beside the executable rather
+# than inside it — so the pck is opened directly and the word lists looked for by
+# name. Without this the app would start with an empty dictionary and reject
+# every word, exactly as on every other platform, with nothing to catch it.
+if ! unzip -p "$OUT/macos/WordWars.zip" "*.pck" 2>/dev/null | grep -aq "data/words.txt"; then
+	echo "FAILED: the macOS build has no dictionary." >&2
+	echo "        Check include_filter in the macOS preset." >&2
+	exit 1
+fi
+
 cp packaging/README-linux.txt "$OUT/linux/README.txt"
 cp packaging/README-windows.txt "$OUT/windows/README.txt"
 
 ( cd "$OUT" && zip -q -j WordWars-linux-x86_64.zip linux/WordWars.x86_64 linux/README.txt )
 ( cd "$OUT" && zip -q -j WordWars-windows-x86_64.zip windows/WordWars.exe windows/README.txt )
+
+# The macOS zip already contains the .app, so the readme is added to it rather
+# than a second archive being wrapped around the first.
+cp packaging/README-macos.txt "$OUT/macos/README.txt"
+( cd "$OUT/macos" && zip -q WordWars.zip README.txt && rm README.txt )
+mv "$OUT/macos/WordWars.zip" "$OUT/WordWars-macos-universal.zip"
 
 # The launcher is a separate project on purpose: nothing can overwrite a running
 # executable on Windows, so the updater must not be the thing being updated.
