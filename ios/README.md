@@ -211,6 +211,22 @@ The information was real and the distraction was worse. Removed.
 - **Nothing claims a key the phone does not have.** Key badges (ESC, ENTER,
   CTRL+H) are suppressed in portrait, the fullscreen switch is gone, and the
   rules say "the FIRE key" where they said SPACE or ENTER.
+- **Attack rails down both gutters.** A phone board is one column of playfield
+  with a hand's width of nothing either side, and what used to be in that space
+  was the words "3 incoming". Now the desktop chips live there: left is what is
+  falling on you, with prefixes, tier pips and fuses, and the white border that
+  says the word you are typing will catch it. Right is your target's queue —
+  your own attacks still in the air, which `_on_net_state` already mirrors at
+  15 Hz, so the rail is live against a person and not only against a CPU.
+- **Haptics**, in `scripts/haptics.gd`, as a named vocabulary rather than
+  durations sprinkled through the match code. Godot's iOS build drives
+  `vibrate_handheld` through Core Haptics — the template carries
+  `CHHapticEngine`, `CHHapticPattern` and the intensity parameter — so duration
+  and strength are both real dials. Two rules run it: nothing may drown out
+  anything (a weaker event landing inside 45ms of a stronger one is dropped
+  rather than queued, because the hand cannot separate them), and typing is the
+  floor (a keystroke is 9ms at 0.22 and is the first thing suppressed).
+  There is a switch in settings, portrait only.
 
 ### Still to do
 

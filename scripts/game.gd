@@ -684,12 +684,9 @@ func _draw_portrait_hud(size: Vector2) -> void:
 
 	# Everything below the board: what is falling on you, the run you are on,
 	# and the line you are typing, stacked into the gap above the keyboard.
-	var below := _portrait_board_bottom()
-	var mine := player.pending_cells()
-	if mine > 0:
-		_text_centered(_font_bold, Vector2(cx, below + 16.0),
-			"%d incoming" % mine, 14, Color("#ff6b6b"))
+	_draw_portrait_rails()
 
+	var below := _portrait_board_bottom()
 	var bw := WWBoard.COLS * WWBoard.CELL * player.board.scale.x
 	var meter := Rect2(cx - bw * 0.5, below + 30.0, bw, 6.0)
 	draw_rect(meter, Color("#141b33"), true)
@@ -721,6 +718,87 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	if note != "":
 		_text_fit(_font, Vector2(cx, below + 90.0), note, 12, size.x - 40.0,
 			Color("#ffd166") if hits > 0 else Color("#8d99bd"))
+
+
+## The two columns either side of the board in portrait.
+##
+## A phone board is one column of playfield in the middle of a screen with a
+## hand's width of nothing down each side, and what used to be in that space was
+## the words "3 incoming" under the board. A count is the least useful thing you
+## can say about a queue of attacks: it will not tell you which one lands first,
+## what letters answer it, or whether the word you are halfway through typing is
+## going to catch any of them.
+##
+## So the same chips the desktop draws go in the gutters, and the two sides carry
+## opposite halves of the fight — left is what is falling on you, right is what
+## you have put in the air. That is worth more than symmetry for its own sake:
+## seeing your own salvo still in flight is what makes sending one feel like a
+## thing you did rather than a number that went up.
+func _draw_portrait_rails() -> void:
+	var r := _board_rect(player)
+	var gutter: float = r.position.x - 10.0
+	if gutter < 54.0:
+		return
+	var cw: float = minf(150.0, gutter - 12.0)
+	var ch := 34.0
+
+	_draw_rail(Rect2(r.position.x - 10.0 - cw, r.position.y, cw, r.size.y),
+		player.pending, "INCOMING", Color("#ff6b6b"), _typing_of(player), true)
+
+	# The right rail follows whoever you are aiming at, so switching target
+	# switches what you are watching — the two are the same decision.
+	var mark := _target_side()
+	if mark != null and mark != player:
+		_draw_rail(Rect2(r.end.x + 10.0, r.position.y, cw, r.size.y),
+			mark.pending, "SENT", mark.accent, "", false)
+
+
+## One column of attack chips, newest at the bottom, clipped to the board's own
+## height so a long queue cannot run off into the keyboard.
+func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
+		aiming: String, incoming: bool) -> void:
+	_text_centered(_font_bold, Vector2(box.get_center().x, box.position.y - 12.0),
+		label, 9, Color(tint, 0.55 if queue.is_empty() else 0.95))
+	if queue.is_empty():
+		return
+
+	# Only the reach a word has left after it has finished with the board can
+	# touch something still in the air, which is the whole of why intercepting is
+	# a decision rather than a freebie.
+	var budget := 0
+	if incoming and aiming.length() >= MIN_WORD_LEN:
+		budget = _reach(aiming) - player.board.would_clear(aiming, _reach(aiming))
+
+	var y := box.position.y
+	for p: Pending in queue:
+		if y + CHIP_H > box.end.y:
+			# Whatever did not fit, said as a number rather than not said at all.
+			_text_centered(_font, Vector2(box.get_center().x, y + 10.0),
+				"+%d more" % (queue.size() - int((y - box.position.y) / (CHIP_H + CHIP_GAP))),
+				10, Color(tint, 0.8))
+			return
+		var rect := Rect2(box.position.x, y, box.size.x, CHIP_H)
+		var locked: bool = budget > 0 and p.prefix != "" and aiming.begins_with(p.prefix)
+		if locked:
+			budget -= 1
+
+		_chip_sb.bg_color = Color(WWBoard.TIER_COLORS[p.tier], 0.92)
+		_chip_sb.border_color = Color.WHITE if locked else Color(0, 0, 0, 0.35)
+		_chip_sb.set_border_width_all(3 if locked else 1)
+		draw_style_box(_chip_sb, rect)
+
+		_text_fit(_font_bold, Vector2(rect.position.x + rect.size.x * 0.38,
+			rect.get_center().y - 2.0), p.prefix.to_upper(), 16,
+			rect.size.x * 0.6, Color("#0b1020"), 8)
+		_draw_shape_pip(Vector2(rect.end.x - 20.0, rect.get_center().y - 2.0), p.tier)
+
+		# The fuse is the only part of a chip that is worth watching second to
+		# second, so it gets the full width of the chip rather than a corner.
+		var fuse := 1.0 - clampf(p.timer / DROP_DELAY, 0.0, 1.0)
+		draw_rect(Rect2(rect.position.x + 4.0, rect.end.y - 7.0,
+			(rect.size.x - 8.0) * fuse, 3.0), Color("#0b1020"), true)
+
+		y += CHIP_H + CHIP_GAP
 
 
 ## Where the board has to stop, so the typed line and the keyboard both fit.
@@ -989,6 +1067,14 @@ func _aim(shooter: SideState, mark: SideState) -> void:
 
 
 ## Step your aim to the next living rival. What Tab does.
+## Whoever you are aiming at, or null if that slot is gone.
+func _target_side() -> SideState:
+	if player.target < 0 or player.target >= sides.size():
+		return null
+	var mark: SideState = sides[player.target]
+	return mark if mark.in_match else null
+
+
 func _cycle_target(step: int) -> void:
 	var rivals := _living_rivals()
 	if rivals.is_empty():
@@ -1236,6 +1322,10 @@ func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 	player.chain = 0
 	player.chain_timer = 0.0
 	Sfx.play("reject", pitch)
+	# Harder the more it cost. A rejection that broke a nine-word run and one
+	# that broke nothing are the same event to the rules and nothing like the
+	# same event to the player.
+	Haptics.fire("reject", 1.0 + 0.08 * float(mini(lost, 6)))
 	if lost >= 2:
 		Sfx.play("lapse", 0.9)
 		_say("%s — chain x%d broken" % [reason, lost], Color("#ff6b6b"))
@@ -1556,6 +1646,7 @@ func _pop_power(name: String, bonus: int, tint: Color) -> void:
 	if power_pops.size() > 4:
 		power_pops.pop_front()
 	Sfx.play("power", 0.9 + 0.12 * POWER_ORDER.find(name))
+	Haptics.fire("power")
 	shake = maxf(shake, 0.16)
 	_bloom(tint, 0.12)
 
@@ -1596,6 +1687,14 @@ func _voice_attack(attacker: SideState, cleared: int, intercepted: int, out_tier
 	if mine and out_tier >= 3:
 		# A heavy hit going out deserves some weight behind it.
 		Sfx.play("land", 0.8 - 0.05 * out_tier, -4.0)
+
+	# Only your own turns are felt. A CPU acting is mixed nine decibels down
+	# because it is not your doing, and a buzz has no volume to be mixed down —
+	# it would land in the hand exactly as hard as your own hit.
+	if mine and combo > 0:
+		# Scaled by the size of the break, so a triple is felt as a triple.
+		Haptics.fire("combo" if combo >= 3 else "clear",
+			1.0 + 0.16 * float(combo - 1))
 
 
 ## The payoff for a maxed chain: not one enormous block but a scatter of single
@@ -1638,6 +1737,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	var mine := attacker == player
 	Sfx.play("salvo", 1.0, 0.0 if mine else -8.0)
 	if mine:
+		Haptics.fire("salvo")
 		_say("SALVO — %d blocks away, chain spent" % power, Color("#ffd166"))
 		shake = maxf(shake, 0.5)
 		_bloom(Color("#ffd166"), 0.30)
@@ -1939,6 +2039,8 @@ func _tick_danger(side: SideState) -> void:
 	var danger := side.board.stack_top() <= 3
 	if danger and not side.in_danger:
 		Sfx.play("danger")
+		if side == player:
+			Haptics.fire("danger")
 	side.in_danger = danger
 
 
@@ -1964,6 +2066,8 @@ func _tick_pending(side: SideState, delta: float) -> void:
 			# Bigger blocks land lower and louder.
 			Sfx.play("land", 1.15 - 0.09 * p.tier,
 				(-1.0 if side == player else -7.0) + p.tier * 0.6)
+			if side == player:
+				Haptics.fire("land", 0.7 + 0.12 * float(p.tier))
 			if not fit:
 				_lose_life(side)
 				return
@@ -2228,6 +2332,7 @@ func _lose_life(side: SideState) -> void:
 	var mine := side == player
 	Sfx.play("lose" if mine else "land", 1.0 if mine else 0.7, 0.0 if mine else -6.0)
 	if mine:
+		Haptics.fire("life")
 		_bloom(Color("#ff6b6b"), 0.35)
 		_say("BOARD LOST — %d %s left" % [side.lives, "life" if side.lives == 1 else "lives"],
 			Color("#ff6b6b"))
@@ -2247,6 +2352,7 @@ func _end_match(loser: SideState) -> void:
 			ai_side.label if net_active() else "CPU")
 	loser.board.shake = 1.0
 	Sfx.play("win" if winner == "YOU" else "lose")
+	Haptics.fire("win" if winner == "YOU" else "lose")
 	_log("%s wins" % winner, Color("#ffd166"))
 	if mode == Mode.NORMAL:
 		_record_mastery()
@@ -2296,6 +2402,7 @@ func _record_mastery() -> void:
 	}
 	if not fresh.is_empty() or Profile.level() > was_level:
 		Sfx.play("salvo", 1.15)
+		Haptics.fire("level")
 
 
 ## Gross words per minute, the way a typing test counts it: every five characters
@@ -2529,6 +2636,7 @@ func _press_back() -> void:
 		Sfx.play("back")
 		return
 	if act == "pause":
+		Haptics.fire("tap")
 		_toggle_pause()
 		return
 	# Everything else routes through `_activate`, which owns its own sound.
@@ -2622,11 +2730,13 @@ func _press_key(id: String) -> void:
 		if player.alive and not paused:
 			typed = typed.substr(0, maxi(0, typed.length() - 1))
 			Sfx.play("back", randf_range(0.94, 1.06))
+			Haptics.fire("back")
 		return
 	if paused or not player.alive or typed.length() >= 20:
 		return
 	typed += id
 	chars_typed += 1
+	Haptics.fire("key")
 	_fleck(id)
 	Sfx.play("key", randf_range(0.92, 1.10))
 
@@ -3507,7 +3617,11 @@ func _settings_rows() -> Array:
 	]
 	# A phone is already fullscreen and has no window to make one of, so the
 	# switch would be a control that does nothing whichever way it was thrown.
-	if not portrait:
+	# The reverse is true of haptics: no desktop has the hardware.
+	if portrait:
+		defs.append(["haptics", "toggle", "Haptics", "the buzz on hits and keys",
+			bool(Profile.pref("haptics"))])
+	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))])
 	defs.append(["name", "text", "Your name", "shown to other players",
@@ -3548,10 +3662,15 @@ func _change_setting(key: String) -> void:
 			_hide_keyboard()
 		Sfx.play("key", 1.2)
 		return
-	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor":
+	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
+			or key == "haptics":
 		Profile.set_pref(key, not bool(Profile.pref(key)))
 		_apply_prefs()
 		Sfx.play("count", 1.3 if bool(Profile.pref(key)) else 0.9)
+		# Switching it on demonstrates itself. There is no other way to find out
+		# what the setting does than to feel it.
+		if key == "haptics" and bool(Profile.pref(key)):
+			Haptics.fire("power")
 		return
 
 	for row: Dictionary in _settings_rows():
@@ -5317,6 +5436,10 @@ func _activate(action: String) -> void:
 	# action cannot forget to, and leave a phone with a keyboard up over a match.
 	if not action.begins_with("field:") and action != "set:name":
 		_hide_keyboard()
+	# Every menu action is a tap, so it is acknowledged here rather than in
+	# thirty branches. The weighting means a heavier event fired in the same
+	# breath — a match ending, a level going up — swallows it.
+	Haptics.fire("tap")
 	if action.begins_with("diff:"):
 		Link.leave()
 		start_match(action.substr(5), 1)

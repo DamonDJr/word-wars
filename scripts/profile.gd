@@ -51,6 +51,7 @@ const PREF_DEFAULTS := {
 	"hitstop": true,     ## the freeze-frame on heavy hits
 	"censor": true,      ## mask profanity wherever a word is echoed back
 	"fullscreen": false,
+	"haptics": true,     ## the taptic engine; no-op on anything without one
 	## Rival seats for a single-player match. "" is an empty seat, "?" is a
 	## random personality rolled at the start of each match, anything else names
 	## one from the roster.

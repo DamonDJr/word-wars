@@ -72,6 +72,18 @@ if ! grep -q "practice behaves" <<<"$PRACTICE"; then
 	exit 1
 fi
 
+# Haptics fail silently by construction: there is no taptic engine on this
+# machine, so a call naming an event that does not exist does exactly what a
+# correct one does here — nothing. Nobody would find out until a phone did.
+echo "==> Haptics check"
+HAPTIC=$("$(command -v godot)" --headless --script tools/haptictest.gd 2>&1 || true)
+if ! grep -q "haptics behave" <<<"$HAPTIC"; then
+	echo "FAILED: the haptics are not behaving." >&2
+	grep -E "FAILED|unknown:" <<<"$HAPTIC" >&2 || true
+	echo "        Run: godot --headless --script tools/haptictest.gd" >&2
+	exit 1
+fi
+
 # Q was untypeable on every desktop build for several releases, because `match`
 # does not fall through and the arm that owned Q only did anything while paused.
 # Any shortcut added to the play phase can do the same to its letter, and the
