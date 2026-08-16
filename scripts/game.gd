@@ -313,6 +313,9 @@ class SideState extends RefCounted:
 
 var phase: int = Phase.SPLASH
 var splash_time := 0.0
+## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
+var safe_top := 0.0
+var safe_bottom := 0.0
 ## Every board in the match. `sides[0]` is always yours; the rest are rivals,
 ## living or knocked out. `player` and `ai_side` are kept as names for slot 0 and
 ## the first rival so the one-on-one code paths still read naturally.
@@ -503,11 +506,47 @@ func _apply_orientation() -> void:
 		return
 	portrait = want_portrait
 	get_window().content_scale_size = want
+	_measure_safe_area(want)
 	_layout_boards()
-	# Force the key hints to be recomputed: the keyboard has moved.
-	_key_cache_word = " "
 	queue_redraw()
 	_overlay.queue_redraw()
+
+
+## How much of the screen the phone's own furniture is sitting on, in the design
+## space the game draws in. Filling the screen means the top of the board is now
+## under the Dynamic Island and the keyboard's bottom row is under the home
+## indicator, so everything that touches an edge is inset by these instead.
+##
+## Zero on desktop, where the safe area is the whole screen — so the same code
+## runs everywhere and there is no platform branch to get wrong.
+func _measure_safe_area(base: Vector2i) -> void:
+	safe_top = 0.0
+	safe_bottom = 0.0
+	var win := DisplayServer.window_get_size()
+	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
+		return
+	var screen := DisplayServer.screen_get_size(DisplayServer.window_get_current_screen())
+	var safe := DisplayServer.get_display_safe_area()
+	if screen.y <= 0:
+		return
+	# Both are screen pixels; the game's units are the design space, and with
+	# `expand` the factor between them is whichever axis the screen ran out of.
+	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
+	if k <= 0.0:
+		return
+	safe_top = maxf(0.0, float(safe.position.y)) / k
+	safe_bottom = maxf(0.0, float(screen.y - safe.end.y)) / k
+
+	# `godot -- --safe=104,40` forces the insets, so a notch can be laid out from
+	# a desktop window. Same reasoning as deciding the orientation by measuring
+	# the window: the only way any of this got built without a phone in the room
+	# is that none of it asks what platform it is on.
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--safe="):
+			var parts := a.substr(7).split(",")
+			if parts.size() == 2:
+				safe_top = maxf(0.0, parts[0].to_float())
+				safe_bottom = maxf(0.0, parts[1].to_float())
 
 
 ## Push the equipped board theme and block style out to everything that paints.
@@ -572,11 +611,12 @@ func _layout_boards() -> void:
 		# shrinking the one that matters to make space for it — rivals become
 		# chips along the top instead.
 		var bh := WWBoard.ROWS * WWBoard.CELL
-		var room := _portrait_board_bottom() - PORTRAIT_BOARD_TOP
+		var top := _portrait_board_top()
+		var room := _portrait_board_bottom() - top
 		var scale: float = clampf(minf(room / bh, (size.x - 72.0) / bw), 0.7, 1.6)
 		for s2: SideState in sides:
 			s2.board.scale = Vector2(scale, scale)
-			s2.board.position = Vector2((size.x - bw * scale) * 0.5, PORTRAIT_BOARD_TOP)
+			s2.board.position = Vector2((size.x - bw * scale) * 0.5, top)
 		return
 
 	for s: SideState in sides:
@@ -601,19 +641,22 @@ func _layout_boards() -> void:
 ## much is falling on them is the part you actually act on.
 func _draw_portrait_hud(size: Vector2) -> void:
 	var cx := size.x * 0.5
+	# The header hangs off the top of the safe area rather than the top of the
+	# screen, so the clock does not sit behind the Dynamic Island.
+	var top := safe_top
 
-	_text_centered(_font_bold, Vector2(cx - 96.0, 34.0),
+	_text_centered(_font_bold, Vector2(cx - 96.0, top + 34.0),
 		"%d:%02d" % [int(match_time) / 60, int(match_time) % 60], 26, Color("#e6ecff"))
 	var kick := score_kick * score_kick
-	_text_centered(_font_bold, Vector2(cx + 62.0, 34.0), _commas(int(round(score_shown))),
+	_text_centered(_font_bold, Vector2(cx + 62.0, top + 34.0), _commas(int(round(score_shown))),
 		int(26 + 8.0 * kick), Color("#ffd166").lerp(Color.WHITE, kick * 0.7))
-	_text_centered(_font, Vector2(cx, 60.0),
+	_text_centered(_font, Vector2(cx, top + 60.0),
 		"pressure in %ds" % int(ceil(pressure_timer)), 11, Color("#5d6a92"))
 
 	# Your lives, as the same pips the landscape header uses.
 	for i in LIVES:
 		var lit: bool = i < player.lives
-		draw_rect(Rect2(cx - 30.0 + i * 22.0, 76.0, 15.0, 9.0),
+		draw_rect(Rect2(cx - 30.0 + i * 22.0, top + 76.0, 15.0, 9.0),
 			player.accent if lit else Color("#2a3355"), true)
 
 	var rivals := []
@@ -625,7 +668,7 @@ func _draw_portrait_hud(size: Vector2) -> void:
 		var span: float = float(rivals.size()) * cw + float(rivals.size() - 1) * 8.0
 		for i in rivals.size():
 			var s2: SideState = rivals[i]
-			var r := Rect2(cx - span * 0.5 + float(i) * (cw + 8.0), 100.0, cw, 62.0)
+			var r := Rect2(cx - span * 0.5 + float(i) * (cw + 8.0), top + 100.0, cw, 62.0)
 			var aimed: bool = player.target == s2.slot
 			_panel(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
 				2.0 if aimed else 1.0)
@@ -682,7 +725,19 @@ func _draw_portrait_hud(size: Vector2) -> void:
 
 ## Where the board has to stop, so the typed line and the keyboard both fit.
 func _portrait_board_bottom() -> float:
-	return get_viewport_rect().size.y - Keyboard.height() - 18.0 - 92.0
+	return _keyboard_bottom() - Keyboard.height() - 92.0
+
+
+## Where the board starts, below the status header and whatever the phone has
+## parked at the top of the screen.
+func _portrait_board_top() -> float:
+	return PORTRAIT_BOARD_TOP + safe_top
+
+
+## The baseline the keyboard's last row sits on. Held off the very bottom edge
+## by the home indicator, which otherwise takes swipes meant for the FIRE key.
+func _keyboard_bottom() -> float:
+	return get_viewport_rect().size.y - 18.0 - safe_bottom
 
 
 ## The free space between your board and the rivals. The centre column has to
@@ -2310,70 +2365,127 @@ func _draw() -> void:
 #
 # A drawn keyboard rather than the system one. Everything in this game is
 # already custom `_draw`, so this is the same kind of code as the rest of it —
-# and it buys three things the iOS keyboard cannot give: no autocorrect fighting
-# a 350k-word dictionary, a layout that cannot shove the board about as it
-# appears, and keys that know what is on your board.
+# and it buys two things the iOS keyboard cannot give: no autocorrect fighting a
+# 350k-word dictionary, and a layout that cannot shove the board about as it
+# appears.
 #
-# That last one is the point. On glass you type at a third the speed you manage
-# on keys, so the game has to give some of that back somewhere, and the honest
-# place is information rather than easier rules.
+# It used to buy a third. Keys were dimmed when no word began that way and lit
+# when they opened a stamp you were facing, on the theory that typing at a third
+# your desktop speed should be paid back in information. Played on a phone it
+# reads as the keyboard flickering under your thumbs while you are trying to
+# read the board — twenty-six keys changing colour on every keystroke is motion
+# in the exact part of the screen you are not looking at. The information was
+# real and the distraction was worse, so the keys are plain now.
 
-## Recomputed only when the typed line changes — 26 dictionary probes per frame
-## would be silly, and the answer cannot change between keystrokes.
-var _key_dead: Dictionary = {}
-var _key_hot: Dictionary = {}
-var _key_cache_word := " "
 ## Which key is held down, for the pressed look. Cleared on release, so a
 ## finger slid off a key does not leave it looking stuck.
 var _key_down := ""
 
 
-func _refresh_key_hints() -> void:
-	# Stamps you could still be answering. While the line is empty that is all
-	# of them; once you have typed something it is only the ones you are still
-	# on course for, which is what makes the hint narrow as you go.
-	var wanted: Array = []
-	for st: String in player.board.prefixes():
-		wanted.append(st)
-	for p: Pending in player.pending:
-		if p.prefix != "":
-			wanted.append(p.prefix)
+# -------------------------------------------------------------- the back key
+#
+# A phone has no Escape. Every screen in this game was reachable only by
+# pressing it, which on desktop is so obvious it is not worth a button and on
+# glass means the first menu you open is the last one you ever see. So portrait
+# grows one control the keyboard version does not need.
+#
+# It is deliberately the same button everywhere rather than a "leave lobby" here
+# and a "back to menu" there: one corner, one meaning, learned once. What it
+# does is whatever Escape does on the screen you are looking at, read off the
+# same phase table, so the two cannot drift apart.
+#
+# There is no quit. iOS apps are not supposed to have one — you leave with the
+# home gesture — so on the title screen, where Escape quits on desktop, the
+# button simply is not drawn.
 
-	# The cache key has to include the board, not just the line. Keying on the
-	# typed word alone meant the hints were computed once on an empty board
-	# during the countdown and then never again, because nothing you had typed
-	# had changed — blocks landed behind them and the highlights stayed wrong.
-	var key := typed + "|" + "-".join(wanted)
-	if _key_cache_word == key:
+## What the back button would do here, or "" if this screen has no way back.
+func _back_action() -> String:
+	if phase == Phase.PLAY:
+		return "" if paused else "pause"
+	# The rules cover the title screen whole, and on a phone H is not a key you
+	# have — so without this the only door in is a door with no way out.
+	if phase == Phase.TITLE and show_rules:
+		return "rules"
+	match phase:
+		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER:
+			return "title"
+		Phase.LOBBY:
+			return "leave" if Link.connected else "title"
+	return ""
+
+
+## Top-left, below the notch, and 64 across — Apple's own floor for a touch
+## target is 44 and this one is pressed in a hurry.
+func _back_rect() -> Rect2:
+	return Rect2(16.0, safe_top + 14.0, 64.0, 64.0)
+
+
+## The pitch and height of one stacked title door, and where the stack starts.
+const PORTRAIT_DOOR_PITCH := 104.0
+const PORTRAIT_DOOR_H := 92.0
+
+## Centred between the wordmark and the bottom of the safe area rather than
+## fixed at 620. Once the viewport expands to the real screen instead of a 1:2
+## design space, a constant that sat right on one phone leaves a void on the
+## next — a Pro Max is 124 units taller than the base, and all of it was
+## collecting under the last door.
+func _portrait_menu_top(doors: int) -> float:
+	var stack := float(doors) * PORTRAIT_DOOR_PITCH - (PORTRAIT_DOOR_PITCH - PORTRAIT_DOOR_H)
+	# The stack plus the two hint lines under it, which travel with it.
+	# The stack, the "tap to choose" line and the rules door under it, which all
+	# travel together.
+	var block := stack + 120.0
+	var head := 210.0 + safe_top
+	var avail: float = (get_viewport_rect().size.y - safe_bottom - 24.0) - head
+	return head + maxf(0.0, (avail - block) * 0.5)
+
+
+func _draw_back_button() -> void:
+	var act := _back_action()
+	if act == "":
 		return
-	_key_cache_word = key
-	_key_dead.clear()
-	_key_hot.clear()
+	var r := _back_rect()
+	var accent := Color("#8892b0") if act != "pause" else PLAYER_ACCENT
+	_panel(r, Color("#141b33"), Color(accent, 0.45), 10.0, 1.5)
+	var c := r.get_center()
+	if act == "pause":
+		# Two bars. Drawn rather than typed, because a glyph for this is not
+		# something either font can be relied on to have.
+		_overlay.draw_rect(Rect2(c.x - 9.0, c.y - 11.0, 6.0, 22.0), accent, true)
+		_overlay.draw_rect(Rect2(c.x + 3.0, c.y - 11.0, 6.0, 22.0), accent, true)
+	else:
+		var w := 8.0
+		var h := 11.0
+		_overlay.draw_line(c + Vector2(w * 0.5, -h), c + Vector2(-w * 0.5, 0.0), accent, 3.0)
+		_overlay.draw_line(c + Vector2(-w * 0.5, 0.0), c + Vector2(w * 0.5, h), accent, 3.0)
 
-	for code in range(97, 123):
-		var ch := String.chr(code)
-		var next := typed + ch
-		# Dead: no word in the dictionary begins with this. Worth showing,
-		# because a wrong letter costs a whole word on a phone.
-		if WordBank.valid_prefix_count(next) <= 0:
-			_key_dead[ch] = true
-			continue
-		for st: String in wanted:
-			# Hot either while still spelling the stamp out, or once the line has
-			# already cleared it and any continuation still answers it.
-			if st.begins_with(next) or next.begins_with(st):
-				_key_hot[ch] = true
-				break
+
+## Runs the back button. Kept apart from `_activate` because two of the things
+## it does — closing the name field, pausing — are not menu actions at all.
+func _press_back() -> void:
+	var act := _back_action()
+	if act == "":
+		return
+	if phase == Phase.SETTINGS and settings_editing:
+		# The name field has the keyboard; back closes that before it closes the
+		# screen, or a rename is thrown away by the gesture that confirms it.
+		settings_editing = false
+		Sfx.play("back")
+		return
+	if act == "pause":
+		_toggle_pause()
+		return
+	# Everything else routes through `_activate`, which owns its own sound.
+	_activate(act)
 
 
 ## The keys, positioned against the current screen. One source for drawing and
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
-	return Keyboard.keys(get_viewport_rect().size, get_viewport_rect().size.y - 18.0)
+	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom())
 
 
 func _draw_keyboard() -> void:
-	_refresh_key_hints()
 	var accent := PLAYER_ACCENT
 	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
@@ -2392,17 +2504,6 @@ func _draw_keyboard() -> void:
 			"back":
 				bg = Color("#241626") if not down else Color("#33203a")
 				edge = Color("#c77dff", 0.5)
-			_:
-				if _key_dead.has(id):
-					# Not disabled — you can still press it. Just told that
-					# nothing in the dictionary starts that way.
-					ink = Color("#3d4666")
-					edge = Color(accent, 0.07)
-					bg = Color("#0f1428")
-				elif _key_hot.has(id):
-					bg = Color("#22344f") if not down else Color("#2c4466")
-					edge = Color("#ffd166", 0.9)
-					ink = Color("#ffd166")
 		if down:
 			bg = bg.lightened(0.12)
 		_panel(r, bg, edge, 9.0, 2.0)
@@ -2954,6 +3055,7 @@ func _draw_overlay() -> void:
 	if phase == Phase.PLAY:
 		if portrait:
 			_draw_keyboard()
+			_draw_back_button()
 		_draw_score_pops()
 		_draw_power_pops()
 		# Drawn here rather than in `_draw`, because everything it uses paints on
@@ -2990,6 +3092,11 @@ func _draw_overlay() -> void:
 		_draw_countdown(size)
 	elif phase == Phase.OVER:
 		_draw_gameover(size)
+
+	# Last, so it sits over whatever the screen drew — several of these paint a
+	# full-width header straight through the corner it lives in.
+	if portrait:
+		_draw_back_button()
 
 
 ## The numbers you just earned, rising off the bottom of your own board and
@@ -3102,12 +3209,17 @@ func _draw_title(size: Vector2) -> void:
 	while title_size > 40 and _font_title.get_string_size(
 			"WORD WARS", HORIZONTAL_ALIGNMENT_LEFT, -1, title_size).x > size.x - 140.0:
 		title_size -= 2
-	_otext(_font_title, Vector2(cx, 96), "WORD WARS", title_size, Color("#e6ecff"))
+	# The whole header hangs off the safe area. A Dynamic Island is about 104
+	# units deep in this design space, and the wordmark sits at 96 — so without
+	# this the first thing on the screen is behind the notch.
+	var hy := safe_top
+	_otext(_font_title, Vector2(cx, hy + 96), "WORD WARS", title_size, Color("#e6ecff"))
 	var wm := _font_title.get_string_size("WORD WARS", HORIZONTAL_ALIGNMENT_LEFT,
 		-1, title_size)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 96.0 + wm.y * 0.5 - 8.0, wm.x, 3),
+	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, hy + 96.0 + wm.y * 0.5 - 8.0, wm.x, 3),
 		Color(PLAYER_ACCENT, 0.25 + 0.35 * pulse), true)
-	_otext(_font, Vector2(cx, 162), "your endings become their beginnings", 17, Color("#8d99bd"))
+	_otext(_font, Vector2(cx, hy + 162), "your endings become their beginnings",
+		17, Color("#8d99bd"))
 
 	# Who you are, above the door. This is the entire payoff for the mastery
 	# system, so it goes where the eye already is rather than behind a menu.
@@ -3115,7 +3227,7 @@ func _draw_title(size: Vector2) -> void:
 	var badge := "LEVEL %d" % Profile.level()
 	if who != "":
 		badge += "  ·  " + who.to_upper()
-	_otext(_font_bold, Vector2(cx, 186), badge, 13, Color("#ffd166"))
+	_otext(_font_bold, Vector2(cx, hy + 186), badge, 13, Color("#ffd166"))
 
 	# The full rules take the whole screen, opponent cards included. There is
 	# nowhere to put the power words otherwise, and somebody reading the rules is
@@ -3123,9 +3235,13 @@ func _draw_title(size: Vector2) -> void:
 	# while this is up, so what is drawn and what is clickable still agree.
 	if show_rules:
 		_draw_rules_panel(size)
-		_otext(_font, Vector2(cx, 646), "H — back to the menu", 14, Color("#5d6a92"))
-		_otext(_font, Vector2(cx, 674), "F1 — %s      ESC — quit" % [
-			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
+		# In portrait the way out is the chevron in the corner, which is sitting
+		# right there and needs no caption. Printing three keys that the phone
+		# does not have would only be telling somebody to press what they cannot.
+		if not portrait:
+			_otext(_font, Vector2(cx, 646), "H — back to the menu", 14, Color("#5d6a92"))
+			_otext(_font, Vector2(cx, 674), "F1 — %s      ESC — quit" % [
+				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 		return
 
 	if not portrait:
@@ -3133,11 +3249,19 @@ func _draw_title(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 578 if not portrait else 1160), "click, or press 1 – 5",
-		13, Color("#5d6a92"))
-	_otext(_font, Vector2(cx, 674 if not portrait else 1196),
-		"H — full rules      F1 — %s      ESC — quit" % [
-			"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
+	if portrait:
+		# None of the keyboard hints mean anything here — there are no number
+		# keys, no F1 and no Escape, and on iOS you leave with the home gesture
+		# rather than by quitting. What the line has to say instead is that the
+		# doors are tappable, which is the one thing a stack of panels does not
+		# make obvious on its own.
+		_otext(_font, Vector2(cx, _portrait_menu_top(5) + 540.0), "tap to choose",
+			13, Color("#5d6a92"))
+	else:
+		_otext(_font, Vector2(cx, 578), "click, or press 1 – 5", 13, Color("#5d6a92"))
+		_otext(_font, Vector2(cx, 674),
+			"H — full rules      F1 — %s      ESC — quit" % [
+				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 
 
 ## Three worked examples instead of a wall of instructions. Each one shows the
@@ -4456,13 +4580,24 @@ func _menu_buttons() -> Array:
 		# on a phone can be got at in the first place.
 		if portrait:
 			var pw := get_viewport_rect().size.x - 72.0
+			var ptop := _portrait_menu_top(doors.size())
 			for i in doors.size():
 				var d2: Array = doors[i]
 				out.append({
-					"rect": Rect2(cx - pw * 0.5, 620.0 + i * 104.0, pw, 92.0),
+					"rect": Rect2(cx - pw * 0.5, ptop + i * PORTRAIT_DOOR_PITCH,
+						pw, PORTRAIT_DOOR_H),
 					"key": String(d2[0]), "label": String(d2[1]), "sub": String(d2[2]),
 					"note": "", "rating": 0, "accent": d2[4], "action": String(d2[3]),
 				})
+			# The rules were on H and nothing else, so on a phone — where the
+			# title screen has no keyboard drawn at all — they could not be
+			# opened. A door of their own is the only way in.
+			var stack := doors.size() * PORTRAIT_DOOR_PITCH \
+				- (PORTRAIT_DOOR_PITCH - PORTRAIT_DOOR_H)
+			out.append({
+				"rect": Rect2(cx - 120.0, ptop + stack + 62.0, 240.0, 46.0),
+				"key": "", "label": "Full rules", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#5d6a92"), "action": "rules"})
 			return out
 		var w := 240.0
 		var gap := 12.0
@@ -4736,6 +4871,17 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Before anything else, and before the splash swallows input: the back button
+	# is the only way off most of these screens on a phone, so nothing else is
+	# allowed to sit on top of it.
+	if portrait and event is InputEventMouseButton:
+		var back := event as InputEventMouseButton
+		if back.pressed and back.button_index == MOUSE_BUTTON_LEFT \
+				and _back_action() != "" \
+				and _back_rect().grow(6.0).has_point(get_viewport().get_mouse_position()):
+			_press_back()
+			return
+
 	# The drawn keyboard takes priority over everything else a click could mean
 	# while it is up, because it covers the bottom third of the screen.
 	if portrait and phase == Phase.PLAY and not paused and player.alive:
@@ -4904,6 +5050,10 @@ func _activate(action: String) -> void:
 		settings_editing = false
 		_hover_action = ""
 		Sfx.play("count", 1.1)
+	elif action == "rules":
+		show_rules = not show_rules
+		_hover_action = ""
+		Sfx.play("back", 1.2)
 	elif action == "solo_start":
 		var lineup := _solo_lineup()
 		Link.leave()

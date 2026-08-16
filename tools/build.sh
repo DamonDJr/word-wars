@@ -128,6 +128,10 @@ fi
 # that starts cleanly and rejects every word. Ten seconds here beats finding it
 # after a runner build and an install.
 echo "==> iOS preset check"
+# The directory has to exist first — the iOS exporter writes a tree of files
+# beside the path it is given rather than creating it, and silently does nothing
+# if it is not there.
+mkdir -p "$OUT/ios-check"
 godot --headless --export-release "iOS" "$PWD/$OUT/ios-check/WordWars.ipa" >/dev/null 2>&1 || true
 if [ ! -f "$OUT/ios-check/WordWars.pck" ]; then
 	echo "FAILED: the iOS export produced no pck." >&2

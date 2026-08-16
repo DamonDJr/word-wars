@@ -166,32 +166,44 @@ window rather than by asking what platform this is. That is the only reason any
 of it could be built without an iPhone in the room.
 
 - **A portrait design space of 720x1440**, swapped in at runtime via
-  `content_scale_size`. A clean 1:2 that sits within a couple of percent of
-  every modern phone, so the letterboxing is a few pixels rather than a band.
+  `content_scale_size`, with `stretch/aspect = expand` so the long axis takes
+  whatever the screen actually has. 1:2 is a design *floor*, not a shape every
+  phone agrees to be — a Pro Max is 1:2.17, and under the old `keep` it played
+  with a black band at each end.
+- **Safe-area insets**, measured once per orientation change and applied to the
+  header, the board and the keyboard. Filling the screen is what makes these
+  necessary: the clock was behind the Dynamic Island and the FIRE key was under
+  the home indicator. `godot -- --safe=104,42` forces them, so a notch can be
+  laid out from a desktop window.
 - **A portrait match layout**: one board sized from the room left over after the
   keyboard takes its share, rivals reduced to chips along the top. You cannot
   read four boards on a phone, and pretending otherwise costs the one board you
   can read.
 - **A drawn keyboard** — three rows, QWERTY, plus DEL and FIRE. Alphabetical
   looks tidier and is slower for everyone who has ever used a phone.
+- **A back button**, top-left, in portrait only. A phone has no Escape, and
+  every screen in this game was leaving by it. It does whatever Escape does on
+  the screen you are on, read off the same phase table so the two cannot drift.
+  There is no quit: iOS apps are not meant to have one, so on the title screen
+  the button simply is not drawn.
 
-The keyboard earns its keep by knowing the board:
-
-- **Letters that cannot begin any word in the dictionary are dimmed.** On glass
-  a wrong letter costs a whole word, and this is one binary search per key,
-  recomputed only when something changes.
-- **Letters that open a stamp you are facing are lit**, including stamps still
-  in the air. That is the compensation for typing at a third the speed — given
-  back as information rather than as easier rules.
+The keyboard used to know the board — keys dimmed when no word began that way,
+lit when they opened a stamp you were facing. Good on paper and wrong in the
+hand: twenty-six keys changing colour on every keystroke is motion in the part
+of the screen you are not looking at, and it read as flicker under the thumbs.
+The information was real and the distraction was worse. Removed.
 
 ### Still to do
 
-- **The menus are still laid out for landscape.** The title screen stacks its
-  five doors in portrait so the game is reachable at all, but single-player
-  setup, mastery and the lobbies are all card grids sized for 1280px and they
-  run off a 720px screen. That is the next piece of work and it is mostly
-  mechanical: the grids already compute their columns, so they need to compute
-  them from the width available rather than from a constant.
+- **The menus below the title are still laid out for landscape.** The title
+  screen stacks its doors and centres them against the real screen height, and
+  the rules got a door of their own because H is not a key a phone has. But
+  single-player setup, mastery and the lobbies are card grids sized for 1280px
+  and they run off a 720px screen — mastery's stat strip goes off both edges.
+  Reachable, thanks to the back button, but not yet usable. That is the next
+  piece of work and it is mostly mechanical: the grids already compute their
+  columns, so they need to compute them from the width available rather than
+  from a constant. The rules panel is a fixed 860px wide and needs wrapping.
 - **The balance pass.** Nothing below has been touched yet.
 
 ### What a mobile version would actually be

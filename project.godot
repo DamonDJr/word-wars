@@ -12,7 +12,7 @@ config_version=5
 
 config/name="Word Wars"
 config/description="Type words to blast garbage blocks onto your opponent's board."
-config/version="0.15.0"
+config/version="0.16.0"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
@@ -44,6 +44,13 @@ logging/netfox_noray_log_level=3
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+; "keep" letterboxes anything that is not exactly the design aspect, which on a
+; Pro Max — 1:2.17 against a 1:2 design space — is a black band at each end.
+; "expand" holds the short axis and gives the long one whatever the screen
+; actually has, so the viewport grows to about 720x1564 there instead. Every
+; layout in the game already measures `get_viewport_rect()` rather than assuming
+; the constant, which is the only reason this is a one-line change.
+window/stretch/aspect="expand"
 ; Portrait phones and landscape desktops are handled by swapping the content
 ; scale size at runtime rather than by letterboxing one into the other; see
 ; `_apply_orientation`. Resizable so that swap can be exercised on a desktop.
