@@ -114,6 +114,15 @@ jobs:
           # build is an unusual enough path to be worth confirming it ran.
           test -f "$app/WordWars.pck" || {
             echo "::error::the built app has no pck"; exit 1; }
+          # UIDeviceFamily 1 is iPhone, 2 is iPad. Getting this wrong builds and
+          # signs perfectly and is only rejected by the phone at install time,
+          # because the preset field is a Godot enum index rather than the value
+          # it writes — 0 iPhone, 1 iPad, 2 both. It has been wrong once.
+          fam="$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$app/Info.plist")"
+          echo "$fam"
+          grep -q '^ *1 *$' <<<"$fam" || {
+            echo "::error::UIDeviceFamily has no iPhone — check targeted_device_family"
+            exit 1; }
           # An .ipa is a zip with the app inside a folder called Payload —
           # the same trick tools/build-ipa.sh uses in the other two projects.
           rm -rf Payload && mkdir Payload
