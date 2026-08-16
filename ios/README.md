@@ -1,6 +1,39 @@
 # Word Wars on iOS
 
+**Status: there is a working IPA.** CI builds it, it is arm64, it carries the
+dictionary, and it is unsigned on purpose. What is left is plugging the phone
+in. See "How to install it" below.
+
 Two separate problems, and only one of them is about Xcode.
+
+## 0. The preset had never exported once
+
+Worth recording, because the first bug hid the second and the second was the
+one that mattered.
+
+`export_presets.cfg` had its comments written with `#`. Godot's `ConfigFile`
+comments with `;` — a `#` does not get ignored, it **stops the parse**, and
+every section after it silently vanishes. The iOS preset was below such a
+comment, so Godot never saw it. I had read that as "Linux does not register the
+iOS platform", which was wrong and was never tested.
+
+With the comments fixed the real error surfaced immediately:
+
+```
+ERROR: Cannot export project with preset "iOS" due to configuration errors:
+App Store Team ID not specified.
+```
+
+Godot refuses to export iOS with an empty team ID. It is now the
+free-provisioning team this Apple ID already carries — a field Godot will not
+leave blank, not a signing decision, since the build ships unsigned and is
+re-signed at install.
+
+The other change is `application/export_project_only=true`. Godot otherwise
+tries to run `xcodebuild` at the end of the export, which cannot work here. With
+it set, the export is plain file writing, so **it runs on Linux** — and that is
+what lets `tools/build.sh` catch the one silent failure this platform has, the
+missing dictionary, without waiting on a runner.
 
 ## 1. Big Sur cannot build this, and it is not close
 
@@ -26,24 +59,64 @@ Worth being clear about what is *not* the problem:
   iOS 16.
 - **Not signing.** That was already solved for Kinetica and LegendFood.
 
-### The way round it: build in CI, install with xtool
+### The way round it: build in CI, install locally
 
 Split the two jobs apart. Nothing then needs the Mac at all.
 
 **Build** on a hosted macOS runner. `.github/workflows/ios.yml` installs Godot
-and the templates, exports the Xcode project, builds it **unsigned** with
-`CODE_SIGNING_ALLOWED=NO`, and zips a `Payload/` folder into an IPA — the same
-trick `tools/build-ipa.sh` uses in the other two projects.
+and the templates, exports the Xcode project, builds it **unsigned**, and zips a
+`Payload/` folder into an IPA — the same trick `tools/build-ipa.sh` uses in the
+other two projects. It passed on its first run and produced this:
 
-**Install** with [xtool](https://github.com/xtool-org/xtool), from Linux:
+```
+Payload/WordWars.app/WordWars   Mach-O 64-bit arm64 executable
+CFBundleIdentifier              com.damonj.wordwars
+MinimumOSVersion                14.0
+UISupportedInterfaceOrientations  [Portrait]
+DTSDKName                       iphoneos26.5
+_CodeSignature                  absent, as intended
+WordWars.pck                    carries data/words.txt and data/common.txt
+```
+
+48 MB. Grab it from the run's artifacts, or `gh run download <id> -n
+WordWars-ios-unsigned`.
+
+One detail worth knowing before re-signing: the app has a
+`Frameworks/libswift_Concurrency.dylib` in it. Nested code has to be signed too,
+and both installers below do that — but a hand-rolled `codesign` on the bundle
+alone would produce something that installs and then refuses to launch.
+
+Turning signing off needed more than the obvious flag. Godot writes the project
+with `CODE_SIGN_STYLE = Automatic` and a team, and automatic signing resolves a
+provisioning profile *before* it reads `CODE_SIGNING_ALLOWED` — so on a runner
+with no Apple account it fails first. Forcing `CODE_SIGN_STYLE=Manual` with an
+empty `DEVELOPMENT_TEAM` is what actually turns it off.
+
+### How to install it
+
+Two routes, and the Mac is only one of them.
+
+**From Linux, with [xtool](https://github.com/xtool-org/xtool).** Already set up
+on this machine — Kinetica uses it, `xtool auth status` is logged in and the
+token runs to 2027. So the setup friction is behind us, not ahead:
 
 ```bash
+sudo systemctl start usbmuxd
 xtool devices
 xtool install WordWars.ipa
 ```
 
-That replaces Sideloadly, and it replaces the Mac with it. From the source
-rather than the docs, which do not spell this out:
+`usbmuxd` is currently inactive and no phone is attached, which is the whole of
+what is left. Note that xtool cannot *build* this — it builds SwiftPM packages,
+and Godot emits an Xcode project full of prebuilt static libraries and
+Objective-C++. That is the half CI is doing. `xtool install` is a separate
+command that takes a finished `.ipa` and does not care what produced it.
+
+**From the Big Sur Mac, with Sideloadly.** Exactly the Kinetica and LegendFood
+process, on an IPA that was downloaded rather than built. The Mac never compiles
+anything, so its Xcode version stops mattering.
+
+From xtool's source rather than its docs, which do not spell this out:
 
 - `IntegratedInstaller.install(app:)` accepts a `.ipa`, unpacks it, finds the
   `.app` inside `Payload/`, calls **`signInPlace`**, repacks and installs. It
@@ -57,24 +130,15 @@ rather than the docs, which do not spell this out:
 It is also engine-agnostic: it operates on the built `.app`, so nothing about it
 cares that Godot produced it.
 
-**What xtool cannot do here is the build.** It builds *SwiftPM packages*, and
-Godot emits an Xcode project full of prebuilt static libraries and Objective-C++
-— not a Swift package. So the macOS runner stays. xtool is the deployment half,
-and it is the half the Mac was doing.
+The free-ID limits are the ones already lived with — seven-day certificates,
+three apps, re-install weekly. Word Wars would be the third alongside Kinetica
+and LegendFood, so something has to give if a fourth ever shows up.
 
-Expect setup friction rather than build friction: xtool needs `usbmuxd` for the
-USB link and Apple's anisette libraries for authentication, which is the fiddly
-part of every Linux sideload. The free-ID limits are the ones already lived with
-— seven-day certificates, three apps, re-install weekly.
-
-Expect the workflow itself to need a fix or two on its first run: it has never
-been run, because there is no Mac here to run it on.
-
-One trap it is already carrying: `include_filter="data/*.txt"` in the iOS
-preset. The word lists are plain text rather than imported resources, so without
-that line the game ships with an empty dictionary and rejects every word — and
-unlike the desktop build there is no headless boot to grep afterwards, so
-nothing downstream would catch it.
+The trap the preset carries is `include_filter="data/*.txt"`. The word lists are
+plain text rather than imported resources, so without that line the game ships
+with an empty dictionary and rejects every word. There is no headless iOS boot
+to grep afterwards, so it is checked three times instead: on the pck in
+`tools/build.sh`, on the pck in CI, and on the built `.app` before it is zipped.
 
 ## 2. It is a typing game
 
