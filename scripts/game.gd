@@ -1065,6 +1065,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			match k.keycode:
 				KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
 					settings_editing = false
+					_hide_keyboard()
 					Sfx.play("back")
 				KEY_BACKSPACE:
 					Link.set_name_and_save(Link.my_name.substr(
@@ -1181,9 +1182,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_1: _target_slot(1)
 		KEY_2: _target_slot(2)
 		KEY_3: _target_slot(3)
-		KEY_Q:
-			if paused:
-				_activate("leave_match")
+		# Guarded, not `KEY_Q:` with an `if` inside. `match` does not fall
+		# through, so an unguarded arm claims the key whether or not the body
+		# does anything with it — and Q is the only letter of the alphabet with
+		# an arm of its own here, so Q was the one letter that could not be
+		# typed. Everything else fell to `_:` and got through. With the guard on
+		# the pattern, a Q pressed while playing fails to match and carries on to
+		# the default arm, which is where letters are supposed to end up.
+		KEY_Q when paused:
+			_activate("leave_match")
 		_:
 			# Modifiers and arrows report unicode 0; chr(0) builds a NUL string.
 			if k.unicode <= 0 or paused or not player.alive:
@@ -2424,6 +2431,54 @@ func _back_rect() -> Rect2:
 const PORTRAIT_DOOR_PITCH := 104.0
 const PORTRAIT_DOOR_H := 92.0
 
+## Breathing room down each side of every card grid.
+const GRID_MARGIN := 36.0
+
+
+## Fit `count` cards into the width actually available, centred, in as many rows
+## as that takes.
+##
+## Every menu in this game is a centred strip of fixed-width cards, and every one
+## of them was written against 1280px. On a 720px screen they ran off both edges
+## — mastery's record strip was eight 138px tiles in a row that needed 1168.
+##
+## `want_cols` and `want_w` are what the desktop layout asks for and it still
+## gets exactly that, because at 1280 nothing here binds. Narrower, cards shrink
+## until they would go under `min_w`, and only then does a column get dropped and
+## the rest widen to fill the row. That order matters: four seats that wrap to
+## 3 + 1 read as a broken table, while four narrower seats read as a table.
+##
+## One helper for all of them, so a grid cannot be reflowed for portrait and
+## another quietly left behind.
+func _grid_rects(count: int, top: float, want_cols: int, want_w: float, ch: float,
+		gap: float = 10.0, min_w: float = 0.0, vgap: float = 10.0) -> Array:
+	var size := get_viewport_rect().size
+	var usable: float = maxf(120.0, size.x - GRID_MARGIN * 2.0)
+	var cols: int = maxi(1, mini(want_cols, count))
+	while cols > 1 and (usable - gap * float(cols - 1)) / float(cols) < min_w:
+		cols -= 1
+	var room: float = (usable - gap * float(cols - 1)) / float(cols)
+	# Only widen past the desktop width when columns had to be given up — a full
+	# row of the intended count keeps the intended size.
+	var cw: float = minf(want_w, room) if cols >= mini(want_cols, count) else room
+
+	var out: Array = []
+	for i in count:
+		var row: int = i / cols
+		var col: int = i % cols
+		var wide: int = mini(cols, count - row * cols)
+		var span: float = float(wide) * cw + float(wide - 1) * gap
+		out.append(Rect2(size.x * 0.5 - span * 0.5 + float(col) * (cw + gap),
+			top + float(row) * (ch + vgap), cw, ch))
+	return out
+
+
+## The bottom edge of a grid, for laying out whatever comes under it.
+func _grid_bottom(rects: Array, fallback: float) -> float:
+	if rects.is_empty():
+		return fallback
+	return (rects[rects.size() - 1] as Rect2).end.y
+
 ## Centred between the wordmark and the bottom of the safe area rather than
 ## fixed at 620. Once the viewport expands to the real screen instead of a 1:2
 ## design space, a constant that sat right on one phone leaves a void on the
@@ -2470,6 +2525,7 @@ func _press_back() -> void:
 		# The name field has the keyboard; back closes that before it closes the
 		# screen, or a rename is thrown away by the gesture that confirms it.
 		settings_editing = false
+		_hide_keyboard()
 		Sfx.play("back")
 		return
 	if act == "pause":
@@ -2509,6 +2565,39 @@ func _draw_keyboard() -> void:
 		_panel(r, bg, edge, 9.0, 2.0)
 		_otext(_font_bold, r.get_center(), String(k["label"]),
 			26 if id.length() == 1 else 19, ink)
+
+
+# --------------------------------------------------- the system keyboard
+#
+# The drawn keyboard is for the match, and only for the match. The lobby and the
+# settings screen have text fields — your name, and a room code — and those
+# needed the system one instead, for two reasons the drawn one cannot meet: a
+# room code has digits and punctuation in it, and it arrives by being pasted out
+# of a chat window rather than by being typed at all.
+#
+# Godot delivers what is typed on it as ordinary key events, so `_lobby_edit` and
+# the settings branch below carry on working unchanged and there is no second
+# implementation of what a keystroke means.
+
+var _vk_open := false
+
+
+## Raise it for a field holding `text`. Silently does nothing where there is no
+## virtual keyboard, which is every desktop — the field is already typeable there.
+func _show_keyboard(text: String) -> void:
+	if not portrait or not DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		return
+	DisplayServer.virtual_keyboard_show(text, Rect2i(), DisplayServer.KEYBOARD_TYPE_DEFAULT,
+		48, text.length(), text.length())
+	_vk_open = true
+
+
+func _hide_keyboard() -> void:
+	if not _vk_open:
+		return
+	_vk_open = false
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		DisplayServer.virtual_keyboard_hide()
 
 
 ## Which key is under a point, or "" for none.
@@ -3328,7 +3417,7 @@ func _draw_settings(size: Vector2) -> void:
 		Color(bg_top, 0.94), true)
 	_draw_decor()
 
-	_otext(_font_bold, Vector2(cx, 78.0), "SETTINGS", 32, Color("#e6ecff"))
+	_otext(_font_bold, Vector2(cx, safe_top + 78.0), "SETTINGS", 32, Color("#e6ecff"))
 
 	for row: Dictionary in _settings_rows():
 		var r: Rect2 = row["rect"]
@@ -3342,8 +3431,7 @@ func _draw_settings(size: Vector2) -> void:
 
 		match String(row["kind"]):
 			"slider":
-				var track := Rect2(r.position.x + 300.0, r.get_center().y - 4.0,
-					320.0, 8.0)
+				var track := _settings_track(r)
 				_panel(track, Color("#0e142a"), Color(PLAYER_ACCENT, 0.2), 4.0, 1.0)
 				var v: float = float(row["value"])
 				_overlay.draw_rect(Rect2(track.position + Vector2(2, 2),
@@ -3379,20 +3467,24 @@ func _draw_settings(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 656.0),
-		"click a slider or switch · click your name to change it · ESC back", 12,
-		Color("#5d6a92"))
+	var rows := _settings_rows()
+	var sfoot := _grid_bottom(
+		[(rows[rows.size() - 1] as Dictionary)["rect"]], 502.0) + 66.0
+	_text_fit_overlay(_font, Vector2(cx, sfoot),
+		"tap a slider or switch · tap your name to change it" if portrait
+		else "click a slider or switch · click your name to change it · ESC back",
+		12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
 
 	# Where the record lives, so it can be backed up or moved between machines
 	# without anyone having to guess at Godot's user directory. Loud and red if
 	# something is wrong with it, because the one thing worse than losing a
 	# profile is not being told until it is too late to rescue.
 	if Profile.read_failed:
-		_otext(_font_bold, Vector2(cx, 676.0),
+		_text_fit_overlay(_font_bold, Vector2(cx, sfoot + 20.0),
 			"YOUR PROFILE COULD NOT BE READ — NOTHING IS BEING SAVED THIS SESSION",
-			13, Color("#ff6b6b"))
+			13, size.x - GRID_MARGIN * 2.0, Color("#ff6b6b"), 10)
 	else:
-		_text_fit_overlay(_font, Vector2(cx, 676.0),
+		_text_fit_overlay(_font, Vector2(cx, sfoot + 20.0),
 			ProjectSettings.globalize_path(Profile.save_path), 11, size.x - 80.0,
 			Color("#3d4666"), 9)
 
@@ -3412,21 +3504,35 @@ func _settings_rows() -> Array:
 			bool(Profile.pref("hitstop"))],
 		["censor", "toggle", "Profanity filter", "masks rude words on screen",
 			bool(Profile.pref("censor"))],
-		["fullscreen", "toggle", "Fullscreen", "",
-			bool(Profile.pref("fullscreen"))],
-		["name", "text", "Your name", "shown to other players",
-			Link.my_name],
 	]
+	# A phone is already fullscreen and has no window to make one of, so the
+	# switch would be a control that does nothing whichever way it was thrown.
+	if not portrait:
+		defs.append(["fullscreen", "toggle", "Fullscreen", "",
+			bool(Profile.pref("fullscreen"))])
+	defs.append(["name", "text", "Your name", "shown to other players",
+		Link.my_name])
 	var out: Array = []
+	# 720 was the row width and 720 is also the whole of a portrait screen, so
+	# the rows ran edge to edge with no margin at all. Capped by the screen now.
+	var rw: float = minf(720.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 	for i in defs.size():
 		var d: Array = defs[i]
 		out.append({
-			"rect": Rect2(cx - 360.0, 124.0 + i * 66.0, 720.0, 54.0),
+			"rect": Rect2(cx - rw * 0.5, 124.0 + safe_top + i * 66.0, rw, 54.0),
 			"action": "set:" + String(d[0]),
 			"kind": String(d[1]), "label": String(d[2]), "note": String(d[3]),
 			"value": d[4],
 		})
 	return out
+
+
+## The slider's track. One definition, because the drawing and the click that
+## sets the value have to agree about where it starts and how long it is — and
+## it is no longer a constant now that the row width follows the screen.
+func _settings_track(r: Rect2) -> Rect2:
+	var x := r.position.x + 300.0
+	return Rect2(x, r.get_center().y - 4.0, maxf(120.0, r.end.x - 100.0 - x), 8.0)
 
 
 ## A click on a settings row. Sliders take their new value from where along the
@@ -3436,6 +3542,10 @@ func _settings_rows() -> Array:
 func _change_setting(key: String) -> void:
 	if key == "name":
 		settings_editing = not settings_editing
+		if settings_editing:
+			_show_keyboard(Link.my_name)
+		else:
+			_hide_keyboard()
 		Sfx.play("key", 1.2)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor":
@@ -3447,10 +3557,10 @@ func _change_setting(key: String) -> void:
 	for row: Dictionary in _settings_rows():
 		if String(row["action"]) != "set:" + key:
 			continue
-		var r: Rect2 = row["rect"]
-		var track_x := r.position.x + 302.0
+		var track := _settings_track(row["rect"])
 		var at := get_viewport().get_mouse_position().x
-		var v := clampf((at - track_x) / 316.0, 0.0, 1.0)
+		var v := clampf((at - track.position.x - 2.0) / maxf(1.0, track.size.x - 4.0),
+			0.0, 1.0)
 		Profile.set_pref(key, v)
 		_apply_prefs()
 		# Audible on the way past, or a volume slider is set blind.
@@ -3480,6 +3590,22 @@ func _apply_prefs() -> void:
 			DisplayServer.window_set_mode(want)
 
 
+## Tutorial and Training, side by side or stacked.
+func _practice_door_rects() -> Array:
+	return _grid_rects(2, 214.0 + safe_top, 2, 320.0, 104.0, 20.0, 340.0, 16.0)
+
+
+## The three pace cards. They wrap on a phone, which is the right answer here —
+## three across at 720 leaves each of them too narrow for its own note.
+func _practice_pace_rects() -> Array:
+	return _grid_rects(TRAINING_PACE.size(), _practice_pace_top(), 3, 214.0, 62.0,
+		12.0, 200.0, 10.0)
+
+
+func _practice_pace_top() -> float:
+	return _grid_bottom(_practice_door_rects(), 318.0) + 84.0
+
+
 ## Learn it or drill it. Two doors, and a pace for the second one.
 func _draw_practice(size: Vector2) -> void:
 	var cx := size.x * 0.5
@@ -3488,28 +3614,33 @@ func _draw_practice(size: Vector2) -> void:
 		Color(bg_top, 0.93), true)
 	_draw_decor()
 
-	_otext(_font_bold, Vector2(cx, 78.0), "PRACTICE", 32, Color("#e6ecff"))
+	var hy := safe_top
+	_otext(_font_bold, Vector2(cx, hy + 78.0), "PRACTICE", 32, Color("#e6ecff"))
 	if not bool(Profile.pref("taught")):
 		var pulse := 0.6 + 0.4 * sin(Time.get_ticks_msec() / 420.0)
-		_otext(_font_bold, Vector2(cx, 118.0), "START WITH THE TUTORIAL", 14,
+		_otext(_font_bold, Vector2(cx, hy + 118.0), "START WITH THE TUTORIAL", 14,
 			Color("#90be6d") * Color(1, 1, 1, pulse))
 	else:
-		_otext(_font, Vector2(cx, 118.0),
+		_text_fit_overlay(_font, Vector2(cx, hy + 118.0),
 			"nothing here is scored, and nothing here can be lost", 13,
-			Color("#8d99bd"))
+			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
 
-	_otext(_font_bold, Vector2(cx, 372.0), "TRAINING PACE", 13, Color("#7c88ad"))
+	_otext(_font_bold, Vector2(cx, _practice_pace_top() - 30.0), "TRAINING PACE", 13,
+		Color("#7c88ad"))
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 500.0),
-		"training has no opponent, no lives and no end — ESC when you are done",
-		13, Color("#5d6a92"))
+	var foot := _grid_bottom(_practice_pace_rects(), 464.0) + 36.0
+	_text_fit_overlay(_font, Vector2(cx, foot),
+		"training has no opponent, no lives and no end%s" % [
+			"" if portrait else " — ESC when you are done"],
+		13, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 11)
 	# Said plainly, because somebody will otherwise practise for an hour and
 	# wonder where their level went.
-	_otext(_font, Vector2(cx, 522.0),
-		"neither mode earns XP, so neither can be farmed", 12, Color("#4d5878"))
+	_text_fit_overlay(_font, Vector2(cx, foot + 22.0),
+		"neither mode earns XP, so neither can be farmed", 12,
+		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
 
 
 ## The lesson card, and the live readout a practice run is for. Both sit in the
@@ -3583,8 +3714,9 @@ func _draw_solo(size: Vector2) -> void:
 		Color(bg_top, 0.93), true)
 	_draw_decor()
 
-	_otext(_font_bold, Vector2(cx, 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
-	_otext(_font, Vector2(cx, 96.0), "add up to three, and pick who they are", 14,
+	var hy := safe_top
+	_otext(_font_bold, Vector2(cx, hy + 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
+	_otext(_font, Vector2(cx, hy + 96.0), "add up to three, and pick who they are", 14,
 		Color("#8d99bd"))
 
 	# The table, you included, so the size of the match is visible rather than
@@ -3622,8 +3754,9 @@ func _draw_solo(size: Vector2) -> void:
 			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
 				"rolled each match", 11, Color("#7c88ad"))
 
-	_otext(_font, Vector2(cx, 210.0),
-		"click a seat, then pick below · %d opponent%s" % [
+	_otext(_font, Vector2(cx, _solo_roster_top() - 24.0),
+		"%s a seat, then pick below · %d opponent%s" % [
+			"tap" if portrait else "click",
 			_solo_filled(), "" if _solo_filled() == 1 else "s"], 12, Color("#5d6a92"))
 
 	for c: Dictionary in _solo_cards():
@@ -3642,32 +3775,27 @@ func _draw_solo(size: Vector2) -> void:
 		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 48.0),
 			String(c["note"]), 11, r.size.x - 14.0, Color("#8d99bd"), 9)
 
-	_draw_kind_cards(410.0, true)
+	_draw_kind_cards(_solo_kinds_top(), true)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_otext(_font, Vector2(cx, 686.0),
-		"1 / 2 / 3 select a seat · ENTER starts · ESC back", 12, Color("#5d6a92"))
+	if not portrait:
+		# Clear of the Back button, which ends at foot + 110.
+		_otext(_font, Vector2(cx, _solo_foot() + 132.0),
+			"1 / 2 / 3 select a seat · ENTER starts · ESC back", 12, Color("#5d6a92"))
 
 
 ## The special-block switches. The same row of cards serves single-player setup
 ## and the versus room, so the two can never drift apart or explain themselves
 ## differently.
 func _kind_cards(top: float) -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
 	var out: Array = []
-	var per_row := 3
-	var cw := 254.0
-	var ch := 56.0
+	var rects := _grid_rects(KIND_ORDER.size(), top, 3, 254.0, 56.0, 10.0, 240.0, 8.0)
 	for i in KIND_ORDER.size():
 		var id: String = KIND_ORDER[i]
-		var row := i / per_row
-		var col := i % per_row
-		var span := per_row * cw + (per_row - 1) * 10.0
 		out.append({
-			"rect": Rect2(cx - span * 0.5 + col * (cw + 10.0), top + row * (ch + 8.0),
-				cw, ch),
+			"rect": rects[i],
 			"id": id,
 			"name": String(KIND_BLURB[id][0]),
 			"note": String(KIND_BLURB[id][1]),
@@ -3689,11 +3817,16 @@ func _draw_kind_cards(top: float, editable: bool) -> float:
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
 			Color("#ffd166") if on else Color(PLAYER_ACCENT, 0.5 if hot else 0.14),
 			10.0, 2.0 if on else 1.0)
-		_otext(_font_bold, Vector2(r.position.x + 96.0, r.get_center().y - 8.0),
+		# Centred in what is left after the switch has taken the right-hand end,
+		# rather than at a fixed offset — on a phone these cards are half again
+		# as wide and the text was hugging the left edge of them.
+		var tx: float = r.position.x + (r.size.x - 70.0) * 0.5
+		var tw: float = r.size.x - 90.0
+		_otext(_font_bold, Vector2(tx, r.get_center().y - 8.0),
 			String(c["name"]).to_upper(), 14,
 			Color("#e6ecff") if on else Color("#5d6a92"))
-		_text_fit_overlay(_font, Vector2(r.position.x + 96.0, r.get_center().y + 11.0),
-			String(c["note"]), 10, 170.0, Color("#7c88ad") if on else Color("#3d4666"), 8)
+		_text_fit_overlay(_font, Vector2(tx, r.get_center().y + 11.0),
+			String(c["note"]), 10, tw, Color("#7c88ad") if on else Color("#3d4666"), 8)
 		# A switch rather than a tick: these are settings, and a tick reads as
 		# "done" where a switch reads as "on".
 		var sw := Rect2(r.end.x - 62.0, r.get_center().y - 11.0, 46.0, 22.0)
@@ -3706,21 +3839,16 @@ func _draw_kind_cards(top: float, editable: bool) -> float:
 
 
 func _solo_seat_rects() -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
-	var w := 168.0
-	var gap := 12.0
-	var span := 4.0 * w + 3.0 * gap
-	var out: Array = []
-	for i in 4:
-		out.append(Rect2(cx - span * 0.5 + i * (w + gap), 118.0, w, 76.0))
-	return out
+	# Four across at whatever width fits, never wrapped: the point of the row is
+	# that it is the table, and a table that goes 3 + 1 stops reading as one.
+	# `min_w` of zero is what forbids the wrap.
+	return _grid_rects(4, 118.0 + safe_top, 4, 168.0, 76.0, 12.0, 0.0)
 
 
 ## Everything that can go in a seat: nothing, a random pick, or one of the
 ## roster. Built from `AiOpponent.ROSTER`, so a new personality appears here the
 ## moment it exists.
 func _solo_cards() -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
 	var list: Array = [
 		{"id": "", "name": "Empty", "note": "leave the seat open",
 			"accent": Color("#5d6a92")},
@@ -3733,19 +3861,37 @@ func _solo_cards() -> Array:
 			"accent": Color(String(d["tint"]))})
 
 	var out: Array = []
-	var per_row := 5
-	var cw := 202.0
-	var ch := 66.0
+	var rects := _grid_rects(list.size(), _solo_roster_top(), 5, 202.0, 66.0, 10.0, 190.0)
 	for i in list.size():
 		var e: Dictionary = list[i]
-		var row := i / per_row
-		var col := i % per_row
-		var wide: int = mini(per_row, list.size() - row * per_row)
-		var span := wide * cw + (wide - 1) * 10.0
-		e["rect"] = Rect2(cx - span * 0.5 + col * (cw + 10.0), 234.0 + row * (ch + 10.0),
-			cw, ch)
+		e["rect"] = rects[i]
 		e["action"] = "seat:%s" % String(e["id"])
 		out.append(e)
+	return out
+
+
+## Under the seats and the line of instructions beneath them.
+func _solo_roster_top() -> float:
+	return _grid_bottom(_solo_seat_rects(), 194.0) + 40.0
+
+
+## Under the roster. The special-block switches are the last thing on the screen
+## before the start button, and how far down they start depends on how many rows
+## the roster took — which is three on a desktop and six on a phone.
+func _solo_kinds_top() -> float:
+	var out := _solo_roster_top()
+	for c: Dictionary in _solo_cards():
+		out = maxf(out, (c["rect"] as Rect2).end.y)
+	return out + 42.0
+
+
+## The bottom of the last thing on the single-player screen, which the Start and
+## Back buttons sit under.
+func _solo_foot() -> float:
+	var top := _solo_kinds_top()
+	var out := top
+	for c: Dictionary in _kind_cards(top):
+		out = maxf(out, (c["rect"] as Rect2).end.y)
 	return out
 
 
@@ -3784,21 +3930,23 @@ func _draw_mastery(size: Vector2) -> void:
 		Color(bg_top, 0.94), true)
 	_draw_decor()
 
+	var hy := safe_top
 	var prog := Profile.level_progress()
-	_otext(_font_bold, Vector2(cx, 58.0), "MASTERY", 34, Color("#e6ecff"))
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "MASTERY", 34, Color("#e6ecff"))
 	var title := Profile.title_text()
-	_otext(_font_bold, Vector2(cx, 96.0),
+	_otext(_font_bold, Vector2(cx, hy + 96.0),
 		"LEVEL %d%s" % [int(prog["level"]), ("  ·  " + title.to_upper()) if title != "" else ""],
 		20, Color("#ffd166"))
 
 	# The bar carries the numbers rather than sitting beside them; one thing to
-	# read instead of three.
-	var bar := Rect2(cx - 300.0, 116.0, 600.0, 12.0)
+	# read instead of three. Its width is capped by the screen, not by 600.
+	var bw: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
+	var bar := Rect2(cx - bw * 0.5, hy + 116.0, bw, 12.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.25), 6.0, 1.0)
 	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
 		Vector2((bar.size.x - 4.0) * float(prog["frac"]), bar.size.y - 4.0)),
 		Color("#ffd166"), true)
-	_otext(_font, Vector2(cx, 144.0), "%s / %s xp to level %d" % [
+	_otext(_font, Vector2(cx, hy + 144.0), "%s / %s xp to level %d" % [
 		_commas(int(prog["into"])), _commas(int(prog["need"])), int(prog["level"]) + 1],
 		12, Color("#7c88ad"))
 
@@ -3814,20 +3962,20 @@ func _draw_mastery(size: Vector2) -> void:
 		["LONGEST", _show(Profile.longest_word.to_upper())
 			if Profile.longest_word != "" else "—"],
 	]
-	var tw := 138.0
-	var span := stats.size() * tw + (stats.size() - 1) * 8.0
+	var strip := _mastery_stat_rects(stats.size())
 	for i in stats.size():
-		var r := Rect2(cx - span * 0.5 + i * (tw + 8.0), 166.0, tw, 56.0)
+		var r: Rect2 = strip[i]
 		_panel(r, Color("#141b33"), Color(PLAYER_ACCENT, 0.16), 8.0, 1.0)
-		_otext(_font, Vector2(r.get_center().x, 184.0), stats[i][0], 10, Color("#7c88ad"))
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, 207.0), stats[i][1], 18,
-			tw - 12.0, Color("#e6ecff"))
+		_otext(_font, Vector2(r.get_center().x, r.position.y + 18.0), stats[i][0], 10,
+			Color("#7c88ad"))
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 41.0),
+			stats[i][1], 18, r.size.x - 20.0, Color("#e6ecff"))
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
 	var slot: String = Profile.SLOTS[mastery_slot]
-	_otext(_font_bold, Vector2(cx, 251.0),
+	_otext(_font_bold, Vector2(cx, _mastery_grid_top() - 25.0),
 		String(Profile.SLOT_NAMES[slot]), 15, Color("#7c88ad"))
 
 	var worn := Profile.worn(slot)
@@ -3858,7 +4006,7 @@ func _draw_mastery(size: Vector2) -> void:
 				"EQUIPPED", 11, Color("#ffd166"))
 		elif got:
 			_otext(_font, Vector2(r.get_center().x, r.position.y + 55.0),
-				"click to wear", 11, Color("#7c88ad"))
+				"tap to wear" if portrait else "click to wear", 11, Color("#7c88ad"))
 		else:
 			var st := Profile.standing(c["need"])
 			_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 55.0),
@@ -3869,8 +4017,13 @@ func _draw_mastery(size: Vector2) -> void:
 				0.0, 1.0)
 			_overlay.draw_rect(Rect2(r.position.x + 8.0, r.end.y - 7.0,
 				(r.size.x - 16.0) * frac, 3.0), Color("#ffd166", 0.55), true)
-	_otext(_font, Vector2(cx, 620.0),
-		"← → change category · click to equip · ESC back", 13, Color("#5d6a92"))
+	var foot := _mastery_bottom()
+	if not portrait:
+		_otext(_font, Vector2(cx, foot + 122.0),
+			"← → change category · click to equip · ESC back", 13, Color("#5d6a92"))
+	else:
+		_otext(_font, Vector2(cx, foot + 34.0),
+			"‹ › change category", 13, Color("#5d6a92"))
 
 	# Whatever the hovered entry wants, spelled out. Shown under the grid so it
 	# does not jump about as the mouse moves between rows.
@@ -3883,33 +4036,47 @@ func _draw_mastery(size: Vector2) -> void:
 				hint = "%s — %s / %s" % [String(st["what"]).capitalize(),
 					_commas(int(st["have"])), _commas(int(st["want"]))]
 	if hint != "":
-		_otext(_font, Vector2(cx, 592.0), hint, 14, Color("#ffd166"))
+		_otext(_font, Vector2(cx, foot + 94.0), hint, 14, Color("#ffd166"))
 
 
 ## The unlock grid for the category on show. Doubles as the hit-test source, so
 ## a card that is drawn is always a card that can be clicked.
 func _mastery_cards() -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
 	var slot: String = Profile.SLOTS[mastery_slot]
 	var list: Array = Profile.entries(slot)
 	var out: Array = []
-	var per_row := 5
-	var cw := 202.0
-	var ch := 70.0
+	var rects := _grid_rects(list.size(), _mastery_grid_top(), 5, 202.0, 70.0, 10.0, 190.0)
 	for i in list.size():
 		var e: Dictionary = list[i]
-		var row := i / per_row
-		var col := i % per_row
-		var wide: int = mini(per_row, list.size() - row * per_row)
-		var span := wide * cw + (wide - 1) * 10.0
 		out.append({
-			"rect": Rect2(cx - span * 0.5 + col * (cw + 10.0), 276.0 + row * (ch + 10.0),
-				cw, ch),
+			"rect": rects[i],
 			"id": String(e["id"]),
 			"name": String(e["name"]),
 			"need": e.get("need", {}),
 			"action": "wear:%s:%s" % [slot, String(e["id"])],
 		})
+	return out
+
+
+## The record strip above the grid, which is itself a grid and wraps first.
+func _mastery_stat_rects(count: int) -> Array:
+	return _grid_rects(count, 166.0 + safe_top, 8, 138.0, 56.0, 8.0, 140.0, 8.0)
+
+
+## Where the unlock grid starts, once the record strip above it has taken as many
+## rows as it needs. On a desktop that is one row and this is the old constant.
+func _mastery_grid_top() -> float:
+	return _grid_bottom(_mastery_stat_rects(8), 222.0) + 54.0
+
+
+## The bottom of the unlock grid. Everything below it — the back button, the
+## hints — hangs off this rather than off a constant, because the grid is a
+## different height per category and a different height again in portrait.
+func _mastery_bottom() -> float:
+	var cards := _mastery_cards()
+	var out := _mastery_grid_top()
+	for c: Dictionary in cards:
+		out = maxf(out, (c["rect"] as Rect2).end.y)
 	return out
 
 
@@ -3956,8 +4123,11 @@ func _draw_lobby(size: Vector2) -> void:
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.92), true)
 	_draw_decor()
 
-	_otext(_font_bold, Vector2(cx, 104), "VERSUS", 66, Color("#e6ecff"))
-	_otext(_font, Vector2(cx, 150), "two keyboards, one word chain", 16, Color("#8d99bd"))
+	var hy := safe_top
+	_text_fit_overlay(_font_bold, Vector2(cx, hy + 104), "VERSUS", 66,
+		size.x - GRID_MARGIN * 2.0, Color("#e6ecff"))
+	_otext(_font, Vector2(cx, hy + 150), "two keyboards, one word chain", 16,
+		Color("#8d99bd"))
 
 	if Link.connected:
 		_draw_room(cx)
@@ -3970,9 +4140,9 @@ func _draw_lobby(size: Vector2) -> void:
 		# about to play.
 		if not Link.is_host:
 			block_kinds = Link.kinds.duplicate()
-			_otext(_font, Vector2(cx, 540.0), "the host sets these", 11,
+			_otext(_font, Vector2(cx, _lobby_kinds_top() - 32.0), "the host sets these", 11,
 				Color("#5d6a92"))
-		_draw_kind_cards(556.0, Link.is_host)
+		_draw_kind_cards(_lobby_kinds_top(), Link.is_host)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -3984,7 +4154,11 @@ func _draw_lobby(size: Vector2) -> void:
 				or Link.status.contains("not installed") or Link.status.contains("not wired"):
 			tint = Color("#ff6b6b")
 		var dots := ".".repeat(1 + int(Time.get_ticks_msec() / 400.0) % 3) if waiting else ""
-		_otext(_font_bold, Vector2(cx, 692.0), Link.status + dots, 14, tint)
+		# Pinned near the bottom rather than measured off the rest: this is the
+		# line that says whether the connection is going anywhere, and it should
+		# not move about as rooms fill up and the layout above it grows.
+		_text_fit_overlay(_font_bold, Vector2(cx, size.y - safe_bottom - 28.0),
+			Link.status + dots, 14, size.x - GRID_MARGIN * 2.0, tint, 10)
 
 
 ## Before anyone has connected: who you are, where they are, which backend.
@@ -4027,7 +4201,13 @@ func _draw_lobby_setup(cx: float) -> void:
 		# Worth the line while codes are 21 mixed-case characters: getting the
 		# case wrong is the most likely reason a join goes nowhere.
 		hint = "codes are case-sensitive · CTRL+V pastes · TAB switches field"
-	_otext(_font, Vector2(cx, 330.0), hint, 12, Color("#5d6a92"))
+	if portrait:
+		# TAB and CTRL+V are not on the drawn keyboard, so the only true half of
+		# any of those lines is the tapping.
+		hint = "tap the code to copy it" if (Link.is_host and Link.room_code != "") \
+			else "tap a field to type in it"
+	_otext(_font, Vector2(cx, _lobby_backend_rect(0).position.y - 38.0), hint, 12,
+		Color("#5d6a92"))
 
 	# Backend picker. Room codes go through the lobby server; direct dials an address.
 	var labels := ["ROOM CODE", "DIRECT"]
@@ -4049,8 +4229,7 @@ func _draw_room(cx: float) -> void:
 	var ids := Link.peer_ids()
 	var count := 1 + ids.size() + Link.bot_count
 	var w := 250.0 if count > 2 else 320.0
-	var gap := 16.0
-	var span := count * w + (count - 1) * gap
+	var seats := _room_seat_rects(count, w)
 
 	for i in count:
 		var mine := i == 0
@@ -4060,13 +4239,13 @@ func _draw_room(cx: float) -> void:
 		var set_up: bool = true if is_bot else (
 			Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"]))
 		var tint: Color = SLOT_ACCENTS[i % SLOT_ACCENTS.size()]
-		var r := Rect2(cx - span * 0.5 + i * (w + gap), 232.0, w, 128.0)
+		var r: Rect2 = seats[i]
 		_panel(r, Color("#141b33"), Color(tint, 0.7 if set_up else 0.25), 12.0,
 			3.0 if set_up else 2.0)
 		_otext(_font, Vector2(r.get_center().x, r.position.y + 26.0),
 			"YOU" if mine else ("COMPUTER" if is_bot else "CHALLENGER"), 11, Color("#7c88ad"))
 		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 60.0),
-			who.to_upper(), 26, w - 26.0, Color("#e6ecff"))
+			who.to_upper(), 26, r.size.x - 26.0, Color("#e6ecff"))
 		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 98.0),
 			"READY" if set_up else "not ready", 15,
 			tint if set_up else Color("#5d6a92"))
@@ -4078,9 +4257,41 @@ func _draw_room(cx: float) -> void:
 			if not Link.roster[id]["ready"]:
 				waiting.append(_show_name(String(Link.roster[id]["name"]).to_upper()))
 		note = "waiting for %s" % ", ".join(waiting) if not waiting.is_empty() else "starting"
-	_otext(_font, Vector2(cx, 392.0), note, 14, Color("#8d99bd"))
-	_otext(_font, Vector2(cx, 414.0),
-		"up to four boards — the host starts when everyone is ready", 12, Color("#5d6a92"))
+	var foot := _grid_bottom(seats, 360.0)
+	_otext(_font, Vector2(cx, foot + 32.0), note, 14, Color("#8d99bd"))
+	_text_fit_overlay(_font, Vector2(cx, foot + 54.0),
+		"up to four boards — the host starts when everyone is ready", 12,
+		get_viewport_rect().size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+
+
+## Where everyone in the room sits. Four across on a desktop; on a phone they
+## wrap to two rows rather than shrinking to a width a name cannot be read at.
+func _room_seat_rects(count: int, w: float) -> Array:
+	return _grid_rects(count, 232.0 + safe_top, count, w, 128.0, 16.0, 240.0, 12.0)
+
+
+## The bottom of the seat grid, which everything else in a connected room hangs
+## off. Recomputed rather than remembered, because `_menu_buttons` is called
+## from the hit test as well as from the draw.
+func _room_foot() -> float:
+	var ids := Link.peer_ids()
+	var count := 1 + ids.size() + Link.bot_count
+	var w := 250.0 if count > 2 else 320.0
+	return _grid_bottom(_room_seat_rects(count, w), 360.0 + safe_top)
+
+
+## Where the house-rule switches start, under the buttons.
+func _lobby_kinds_top() -> float:
+	return _room_foot() + 196.0 if not portrait else _lobby_portrait_kinds_top()
+
+
+## In portrait the buttons stack instead of flanking, so the switches start below
+## whatever that came to rather than a fixed distance down.
+func _lobby_portrait_kinds_top() -> float:
+	var low := _room_foot() + 196.0
+	for b: Dictionary in _menu_buttons():
+		low = maxf(low, (b["rect"] as Rect2).end.y + 60.0)
+	return low
 
 
 ## Both lobby fields go through here: names take anything printable, addresses
@@ -4143,35 +4354,58 @@ func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
 	_otext(font, center, text, s, color)
 
 
+## Name and room code. `min_w` is set above what a 720px screen can give two of
+## them, so portrait stacks rather than squeezing — a room code being read out
+## over a call is the one string in this game that has to stay large.
 func _lobby_field_rect(i: int) -> Rect2:
-	var cx := get_viewport_rect().size.x * 0.5
-	return Rect2(cx - 330.0 + i * 340.0, 234.0, 320.0, 52.0)
+	return _grid_rects(2, 234.0 + safe_top, 2, 320.0, 52.0, 20.0, 340.0, 34.0)[i]
 
 
 func _lobby_backend_rect(i: int) -> Rect2:
-	var cx := get_viewport_rect().size.x * 0.5
-	return Rect2(cx - 330.0 + i * 340.0, 368.0, 320.0, 56.0)
+	var top := _lobby_field_rect(1).end.y + 82.0
+	return _grid_rects(2, top, 2, 320.0, 56.0, 20.0, 340.0, 14.0)[i]
 
 
 func _draw_rules_panel(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	var r := Rect2(cx - 430.0, 172.0, 860.0, 424.0)
-	_panel(r, Color("#111730"), Color(PLAYER_ACCENT, 0.22), 12.0)
-	var lines := [
-		"Type a word, fire with SPACE or ENTER. Its LAST letters brand a block on your rival.",
-		"Clear a block by typing a word that STARTS with its letters. Garbage is ONLY ever",
-		"removed that way — nothing you send blocks it. Answer it while still inbound and it",
-		"never lands. One word reaches one block per two letters: four AL blocks need ALIGNMENT.",
-		"Block size comes only from your chain: 1, 2, 3, 5, 7, 9 words for each step up.",
-		"A tenth word cashes the run in as a SALVO of single blocks and resets you to nothing.",
-		"Pause or fire a non-word and the run is gone.",
-		"Topping out costs one of THREE LIVES and wipes your board — it does not end the match.",
-		"Words score by their letters, times your chain, times what they broke.",
+	# The panel was 860 wide against a 720 screen, so on a phone its border was
+	# off both edges and every line of it overhung. Width and wrapping now come
+	# from the screen, which means the paragraphs below are written as sentences
+	# and broken by the font rather than by hand at one particular width.
+	var pw: float = minf(860.0, size.x - GRID_MARGIN * 2.0)
+	var inner: float = pw - 40.0
+	var paras := [
+		"Type a word, fire with %s. Its LAST letters brand a block on your rival." % [
+			"the FIRE key" if portrait else "SPACE or ENTER"],
+		"Clear a block by typing a word that STARTS with its letters. Garbage is ONLY ever "
+			+ "removed that way — nothing you send blocks it. Answer it while still inbound "
+			+ "and it never lands. One word reaches one block per two letters: four AL "
+			+ "blocks need ALIGNMENT.",
+		"Block size comes only from your chain: 1, 2, 3, 5, 7, 9 words for each step up. "
+			+ "A tenth word cashes the run in as a SALVO of single blocks and resets you to "
+			+ "nothing. Pause or fire a non-word and the run is gone.",
+		"Topping out costs one of THREE LIVES and wipes your board — it does not end the "
+			+ "match. Words score by their letters, times your chain, times what they broke.",
 	]
-	var y := 194.0
-	for l: String in lines:
-		_otext(_font, Vector2(cx, y), l, 14, Color("#aab4d4"))
-		y += 25.0
+
+	# Measured before the panel is drawn, so the panel is the height of what is
+	# going in it rather than a number that happened to be right at 1280.
+	var body := 0.0
+	for p: String in paras:
+		body += _font.get_multiline_string_size(
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14).y + 10.0
+	var top: float = 172.0 + safe_top
+	_panel(Rect2(cx - pw * 0.5, top, pw, body + _rules_extra() + 40.0),
+		Color("#111730"), Color(PLAYER_ACCENT, 0.22), 12.0)
+
+	var y: float = top + 22.0
+	for p: String in paras:
+		var mh: float = _font.get_multiline_string_size(
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14).y
+		_overlay.draw_multiline_string(_font,
+			Vector2(cx - inner * 0.5, y + _font.get_ascent(14)),
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14, -1, Color("#aab4d4"))
+		y += mh + 10.0
 
 	# Special blocks only appear in the list when they are switched on. A rules
 	# screen listing rules that are not in play is worse than one that is short.
@@ -4182,15 +4416,23 @@ func _draw_rules_panel(size: Vector2) -> void:
 			if block_kinds.has(id):
 				on.append("%s — %s" % [String(KIND_BLURB[id][0]).to_upper(),
 					String(KIND_BLURB[id][1])])
-		_text_fit_overlay(_font, Vector2(cx, y), "SPECIAL BLOCKS IN PLAY: "
-			+ "  ·  ".join(on), 12, 800.0, Color("#ffd166"), 9)
-		y += 19.0
+		# Six of these joined together is far too long for one line at any width,
+		# and shrinking the type until it fits produces something nobody reads.
+		# Wrapped, like the paragraphs above it.
+		var kinds_line := "SPECIAL BLOCKS IN PLAY: " + "  ·  ".join(on)
+		var kh: float = _font.get_multiline_string_size(
+			kinds_line, HORIZONTAL_ALIGNMENT_CENTER, inner, 12).y
+		_overlay.draw_multiline_string(_font,
+			Vector2(cx - inner * 0.5, y - 8.0 + _font.get_ascent(12)),
+			kinds_line, HORIZONTAL_ALIGNMENT_CENTER, inner, 12, -1, Color("#ffd166"))
+		y += kh + 6.0
 
 	# Power words are worth spelling out here, but they are meant to be met in
 	# play first: the game announces one the first time you manage it by
 	# accident, and this is where you come to find out what happened.
 	y += 12.0
-	_overlay.draw_rect(Rect2(cx - 380.0, y - 8.0, 760.0, 1.0), Color(PLAYER_ACCENT, 0.2), true)
+	_overlay.draw_rect(Rect2(cx - inner * 0.5, y - 8.0, inner, 1.0),
+		Color(PLAYER_ACCENT, 0.2), true)
 	y += 16.0
 	_otext(_font_bold, Vector2(cx, y), "POWER WORDS", 15, Color("#e6ecff"))
 	y += 24.0
@@ -4204,23 +4446,52 @@ func _draw_rules_panel(size: Vector2) -> void:
 	# against a common edge, bodies all starting at the same x. Centring each row
 	# on its own width reads as four unrelated notes rather than a table.
 	var name_w := 0.0
-	var body_w := 0.0
 	for name: String in POWER_ORDER:
 		name_w = maxf(name_w, _font_bold.get_string_size(
 			name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x)
-		body_w = maxf(body_w, _font.get_string_size(
-			String(how[name]), HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x)
+	# The bodies are a trigger and a reward separated by a wide gap, and the gap
+	# is what makes them read as two columns. There is no room for a gap that
+	# wide at 720, so on a phone the reward goes on its own line under it — two
+	# lines that mean something beats one line squeezed until neither does.
+	var stacked := portrait
+	var body_w := 0.0
+	for name: String in POWER_ORDER:
+		for part: String in _power_parts(String(how[name]), stacked):
+			body_w = maxf(body_w, _font.get_string_size(
+				part, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x)
 	var left := cx - (name_w + 18.0 + body_w) * 0.5
 
 	for name: String in POWER_ORDER:
 		var tint := Color(String(POWERS[name]["tint"]))
-		var text: String = how[name]
 		var nm := _font_bold.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
-		var bd := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
 		_otext(_font_bold, Vector2(left + name_w - nm.x * 0.5, y), name, 14, tint)
-		_otext(_font, Vector2(left + name_w + 18.0 + bd.x * 0.5, y), text, 13,
-			Color("#8d99bd"))
-		y += 24.0
+		for part: String in _power_parts(String(how[name]), stacked):
+			var bd := _font.get_string_size(part, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
+			_otext(_font, Vector2(left + name_w + 18.0 + bd.x * 0.5, y), part, 13,
+				Color("#8d99bd"))
+			y += 19.0
+		y += 5.0 if stacked else 5.0
+
+
+## A power word's line, as one column or two rows.
+func _power_parts(text: String, stacked: bool) -> Array:
+	if not stacked:
+		return [text]
+	var out: Array = []
+	for part: String in text.split("     ", false):
+		out.append(part.strip_edges())
+	return out if out.size() > 1 else [text]
+
+
+## Everything under the paragraphs: the special-block line when there is one,
+## the rule, the heading, and a row per power word.
+func _rules_extra() -> float:
+	var rows: float = float(POWER_ORDER.size()) * (43.0 if portrait else 24.0)
+	# The block list wraps, so on a narrow screen it is worth two or three lines.
+	var kinds: float = 0.0
+	if not block_kinds.is_empty():
+		kinds = 25.0 if not portrait else 70.0
+	return 12.0 + 16.0 + 24.0 + rows + kinds
 
 
 func _draw_gameover(size: Vector2) -> void:
@@ -4274,27 +4545,38 @@ func _draw_gameover(size: Vector2) -> void:
 		["POWERS", str(player.powers_fired)],
 		["SALVOS", str(player.salvos)],
 	]
-	var tw := 132.0
-	var total := stats.size() * tw + (stats.size() - 1) * 12.0
+	var tiles := _over_stat_rects(stats.size())
 	for i in stats.size():
-		var x := cx - total * 0.5 + i * (tw + 12.0)
-		var r := Rect2(x, 314, tw, 74)
+		var r: Rect2 = tiles[i]
 		_panel(r, Color("#141b33"), Color(tint, 0.20), 10.0)
-		_otext(_font, Vector2(r.get_center().x, 336), stats[i][0], 11, Color("#7c88ad"))
-		_otext(_font_bold, Vector2(r.get_center().x, 364), stats[i][1], 24, Color("#e6ecff"))
+		_otext(_font, Vector2(r.get_center().x, r.position.y + 22.0), stats[i][0], 11,
+			Color("#7c88ad"))
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 50.0),
+			stats[i][1], 24, r.size.x - 16.0, Color("#e6ecff"))
 
-	_otext(_font, Vector2(cx, 410), "versus %s — %s" % [
+	_text_fit_overlay(_font, Vector2(cx, _over_foot() + 22.0), "versus %s — %s" % [
 		difficulty.to_upper(), String(AiOpponent.spec(difficulty)["style"])],
-		14, Color("#7c88ad"))
+		14, size.x - GRID_MARGIN * 2.0, Color("#7c88ad"), 11)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
 	_draw_mastery_strip(cx)
 
-	_otext(_font, Vector2(cx, 674),
-		"R — rematch      1 – %d — new opponent      P — mastery      ESC — title"
-			% AiOpponent.ROSTER.size(), 13, Color("#4d5878"))
+	if not portrait:
+		_otext(_font, Vector2(cx, 674),
+			"R — rematch      1 – %d — new opponent      P — mastery      ESC — title"
+				% AiOpponent.ROSTER.size(), 13, Color("#4d5878"))
+
+
+## Eight tiles across on a desktop; two rows of four on a phone.
+func _over_stat_rects(count: int) -> Array:
+	return _grid_rects(count, 314.0 + safe_top, 8, 132.0, 74.0, 12.0, 130.0, 10.0)
+
+
+## The bottom of the tiles, which the rest of the summary hangs off.
+func _over_foot() -> float:
+	return _grid_bottom(_over_stat_rects(8), 388.0 + safe_top)
 
 
 ## What the match just did to your record. This is the hook — win or lose, the
@@ -4313,22 +4595,28 @@ func _draw_mastery_strip(cx: float) -> void:
 	# you on the right. A level-up takes over that right-hand label rather than
 	# claiming a line of its own — there is no room above it that the buttons
 	# and their shadows are not already using.
-	var bar := Rect2(cx - 176.0, 570.0, 352.0, 9.0)
+	# Under the buttons, which are one row on a desktop and two on a phone. The
+	# bar narrows to leave room for the labels either side of it.
+	var strip_y: float = 570.0
+	for b: Dictionary in _menu_buttons():
+		strip_y = maxf(strip_y, (b["rect"] as Rect2).end.y + 32.0)
+	var bw: float = minf(352.0, get_viewport_rect().size.x - 240.0)
+	var bar := Rect2(cx - bw * 0.5, strip_y, bw, 9.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.22), 5.0, 1.0)
 	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
 		Vector2((bar.size.x - 4.0) * float(prog["frac"]), bar.size.y - 4.0)),
 		Color("#ffd166"), true)
-	_otext(_font_bold, Vector2(cx - 232.0, 574.0), "+%s XP" % _commas(gained), 15,
-		Color("#ffd166"))
+	_otext(_font_bold, Vector2(bar.position.x - 56.0, strip_y + 4.0),
+		"+%s XP" % _commas(gained), 15, Color("#ffd166"))
 
 	if to_lv > from_lv:
 		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 170.0)
-		_otext(_font_bold, Vector2(cx + 248.0, 574.0), "LEVEL %d" % to_lv, 19,
+		_otext(_font_bold, Vector2(bar.end.x + 72.0, strip_y + 4.0), "LEVEL %d" % to_lv, 19,
 			Color("#ffd166") * Color(1, 1, 1, pulse))
 	else:
-		_otext(_font, Vector2(cx + 240.0, 574.0),
+		_text_fit_overlay(_font, Vector2(bar.end.x + 64.0, strip_y + 4.0),
 			"%s to level %d" % [_commas(int(prog["need"]) - int(prog["into"])), to_lv + 1],
-			12, Color("#8d99bd"))
+			12, 108.0, Color("#8d99bd"), 9)
 
 	if not fresh.is_empty():
 		# Two at most. A wall of unlocks reads as a patch note; two reads as a
@@ -4336,8 +4624,8 @@ func _draw_mastery_strip(cx: float) -> void:
 		var line := " · ".join(fresh.slice(0, mini(2, fresh.size())))
 		if fresh.size() > 2:
 			line += "  (+%d more)" % (fresh.size() - 2)
-		_text_fit_overlay(_font_bold, Vector2(cx, 604.0), "UNLOCKED — " + line, 14,
-			980.0, Color("#7bdff2"))
+		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED — " + line, 14,
+			minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
 
 
 # ------------------------------------------------------------------ networking
@@ -4610,14 +4898,21 @@ func _menu_buttons() -> Array:
 				"note": "", "rating": 0, "accent": d[4], "action": String(d[3]),
 			})
 	elif phase == Phase.SOLO:
+		# Under the switches rather than at 596, which the roster now overruns on
+		# anything narrower than a desktop.
+		var sfoot := _solo_foot() + 26.0
+		var sw: float = minf(300.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 		out.append({
-			"rect": Rect2(cx - 150.0, 596.0, 300.0, 46.0), "key": "ENTER",
+			"rect": Rect2(cx - sw * 0.5, sfoot, sw, 46.0), "key": "ENTER",
 			"label": "Start", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#7bdff2"), "action": "solo_start"})
-		out.append({
-			"rect": Rect2(cx - 150.0, 648.0, 300.0, 32.0), "key": "ESC",
-			"label": "Back", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#8d99bd"), "action": "title"})
+		# Portrait already has the chevron in the corner; a second Back inside the
+		# screen is the same button twice.
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - sw * 0.5, sfoot + 52.0, sw, 32.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.LOBBY:
 		# Restored. A slice-replacement while splitting the title screen into
 		# four doors took this whole branch out with it, which left every button
@@ -4625,86 +4920,134 @@ func _menu_buttons() -> Array:
 		# Ready up, Leave, Add CPU. The keyboard shortcuts still worked, which is
 		# exactly why it survived the network testing that came after.
 		if Link.connected:
-			if Link.is_host and Link.free_seats() > 0:
-				out.append({
-					"rect": Rect2(cx + 186.0, 408.0, 150.0, 66.0), "key": "+",
-					"label": "Add CPU", "sub": "", "note": "", "rating": 0,
-					"accent": Color("#ffd166"), "action": "addbot"})
+			# All measured off the bottom of the seat grid, which is one row on a
+			# desktop and two on a phone. The offsets are chosen to land on the
+			# old constants at 1280, so the landscape screen is unmoved.
+			var rfoot := _room_foot()
+			# The CPU buttons flank the Ready button on a desktop. There is no
+			# room to flank anything at 720, so in portrait they go underneath.
+			var ready := Rect2(cx - 170.0, rfoot + 48.0, 340.0, 66.0)
+			if portrait:
+				var rw: float = minf(340.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+				ready = Rect2(cx - rw * 0.5, rfoot + 48.0, rw, 66.0)
+			var bots: Array = []
 			if Link.is_host and Link.bot_count > 0:
+				bots.append(["-", "Drop CPU", Color("#8d99bd"), "dropbot"])
+			if Link.is_host and Link.free_seats() > 0:
+				bots.append(["+", "Add CPU", Color("#ffd166"), "addbot"])
+			for i in bots.size():
+				var b2: Array = bots[i]
+				var br := Rect2(cx - 336.0, ready.position.y, 150.0, 66.0)
+				if String(b2[3]) == "addbot" and not portrait:
+					br = Rect2(cx + 186.0, ready.position.y, 150.0, 66.0)
+				if portrait:
+					var half: float = (ready.size.x - 12.0) * 0.5
+					br = Rect2(ready.position.x + float(i) * (half + 12.0),
+						ready.end.y + 10.0, half, 56.0)
 				out.append({
-					"rect": Rect2(cx - 336.0, 408.0, 150.0, 66.0), "key": "-",
-					"label": "Drop CPU", "sub": "", "note": "", "rating": 0,
-					"accent": Color("#8d99bd"), "action": "dropbot"})
+					"rect": br, "key": String(b2[0]), "label": String(b2[1]),
+					"sub": "", "note": "", "rating": 0,
+					"accent": b2[2], "action": String(b2[3])})
 			out.append({
-				"rect": Rect2(cx - 170.0, 408.0, 340.0, 66.0), "key": "ENTER",
+				"rect": ready, "key": "ENTER",
 				"label": "Not ready" if Link.my_ready else "Ready up",
 				"sub": "", "note": "", "rating": 0,
 				"accent": Color("#ffd166") if Link.my_ready else PLAYER_ACCENT,
 				"action": "ready"})
+			# Leaving a room is not going back a screen — it disconnects other
+			# people's lobby — so this one keeps its button in portrait too.
+			var lv := rfoot + 124.0
+			if portrait:
+				lv = ready.end.y + (76.0 if bots.is_empty() else 76.0 + 56.0)
 			out.append({
-				"rect": Rect2(cx - 90.0, 484.0, 180.0, 38.0), "key": "ESC",
+				"rect": Rect2(cx - 90.0, lv, 180.0, 38.0), "key": "ESC",
 				"label": "Leave", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "leave"})
 		else:
+			var jt := _lobby_backend_rect(1).end.y + 24.0
+			var joins := _grid_rects(2, jt, 2, 320.0, 66.0, 20.0, 340.0, 12.0)
 			out.append({
-				"rect": Rect2(cx - 330.0, 448.0, 320.0, 66.0), "key": "CTRL+H",
+				"rect": joins[0], "key": "CTRL+H",
 				"label": "Host", "sub": "", "note": "", "rating": 0,
 				"accent": PLAYER_ACCENT, "action": "host"})
 			out.append({
-				"rect": Rect2(cx + 10.0, 448.0, 320.0, 66.0), "key": "ENTER",
+				"rect": joins[1], "key": "ENTER",
 				"label": "Join", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#c77dff"), "action": "join"})
-			out.append({
-				"rect": Rect2(cx - 90.0, 530.0, 180.0, 44.0), "key": "ESC",
-				"label": "Back", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#8d99bd"), "action": "title"})
+			if not portrait:
+				out.append({
+					"rect": Rect2(cx - 90.0, (joins[1] as Rect2).end.y + 16.0, 180.0, 44.0),
+					"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
+					"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.PRACTICE:
+		var doors2 := _practice_door_rects()
 		out.append({
-			"rect": Rect2(cx - 330.0, 214.0, 320.0, 104.0), "key": "1",
+			"rect": doors2[0], "key": "1",
 			"label": "Tutorial", "sub": "seven steps, no opponent", "note": "",
 			"rating": 0, "accent": Color("#90be6d"), "action": "tutorial"})
 		out.append({
-			"rect": Rect2(cx + 10.0, 214.0, 320.0, 104.0), "key": "2",
+			"rect": doors2[1], "key": "2",
 			"label": "Training", "sub": "drill it at your own pace", "note": "",
 			"rating": 0, "accent": Color("#7bdff2"), "action": "training"})
+		var paces := _practice_pace_rects()
 		for i in TRAINING_PACE.size():
 			var pace: Dictionary = TRAINING_PACE[i]
 			out.append({
-				"rect": Rect2(cx - 330.0 + i * 226.0, 402.0, 214.0, 62.0),
+				"rect": paces[i],
 				"key": "", "label": String(pace["name"]),
 				"sub": String(pace["note"]), "note": "", "rating": 0,
 				"accent": Color("#ffd166") if train_pace == i else Color("#4d5878"),
 				"action": "pace:%d" % i})
-		out.append({
-			"rect": Rect2(cx - 90.0, 560.0, 180.0, 40.0), "key": "ESC",
-			"label": "Back", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#8d99bd"), "action": "title"})
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - 90.0, _grid_bottom(paces, 464.0) + 96.0, 180.0, 40.0),
+				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.SETTINGS:
-		out.append({
-			"rect": Rect2(cx - 90.0, 598.0, 180.0, 40.0), "key": "ESC",
-			"label": "Back", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#8d99bd"), "action": "title"})
+		# Portrait has the chevron, and 598 was landing on top of the name row —
+		# the rows start lower once the safe area pushes them down.
+		if not portrait:
+			var rws := _settings_rows()
+			var below: float = ((rws[rws.size() - 1] as Dictionary)["rect"] as Rect2).end.y
+			out.append({
+				"rect": Rect2(cx - 90.0, below + 24.0, 180.0, 40.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.MASTERY:
+		# The category arrows straddle the label, which sits just above the grid
+		# — so they travel with it when the record strip above wraps to two rows.
+		var arrow_y := _mastery_grid_top() - 38.0
+		# Fatter in portrait: these are the only way to change category without a
+		# left and right arrow key, and 30x26 is not a thumb target.
+		var aw := 30.0 if not portrait else 56.0
+		var ah := 26.0 if not portrait else 48.0
+		# The arrowhead is the whole of what these buttons say, and in portrait it
+		# has to be the label rather than the key badge — the badges are
+		# suppressed there, which left two blank panels either side of the title.
 		out.append({
-			"rect": Rect2(cx - 128.0, 238.0, 30.0, 26.0), "key": "<",
-			"label": "", "sub": "", "note": "", "rating": 0,
+			"rect": Rect2(cx - 128.0 - (aw - 30.0), arrow_y - (ah - 26.0) * 0.5, aw, ah),
+			"key": "" if portrait else "<", "label": "<" if portrait else "",
+			"sub": "", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "slot:-1"})
 		out.append({
-			"rect": Rect2(cx + 98.0, 238.0, 30.0, 26.0), "key": ">",
-			"label": "", "sub": "", "note": "", "rating": 0,
+			"rect": Rect2(cx + 98.0, arrow_y - (ah - 26.0) * 0.5, aw, ah),
+			"key": "" if portrait else ">", "label": ">" if portrait else "",
+			"sub": "", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "slot:1"})
-		out.append({
-			"rect": Rect2(cx - 90.0, 528.0, 180.0, 42.0), "key": "ESC",
-			"label": "Back", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#8d99bd"), "action": "title"})
+		# Portrait has the chevron in the corner and does not need this as well.
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - 90.0, _mastery_bottom() + 30.0, 180.0, 42.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.OVER:
-		var w := 264.0
+		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
 		out.append({
-			"rect": Rect2(cx - w - 10.0, 442.0, w, 96.0), "key": "R",
+			"rect": over[0], "key": "R",
 			"label": "Rematch", "sub": difficulty, "note": "", "rating": 0,
 			"accent": PLAYER_ACCENT, "action": "rematch"})
 		out.append({
-			"rect": Rect2(cx + 10.0, 442.0, w, 96.0), "key": "ESC",
+			"rect": over[1], "key": "ESC",
 			"label": "Title", "sub": "pick a new opponent", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "title"})
 	return out
@@ -4723,7 +5066,11 @@ func _draw_menu_button(b: Dictionary) -> void:
 
 	var key: String = b["key"]
 	# An empty key means the button is click-only, and a badge with nothing in it
-	# would promise a shortcut that does not exist.
+	# would promise a shortcut that does not exist. In portrait every one of them
+	# is that: there is no ESC, no ENTER and no CTRL on a phone, and a badge
+	# naming a key the device does not have is worse than no badge at all.
+	if portrait:
+		key = ""
 	var badge := Rect2(r.position.x + 14.0, r.position.y + 14.0,
 		18.0 + 9.0 * key.length(), 22.0)
 	if key != "":
@@ -4939,11 +5286,11 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _solo_cards():
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
-		for c: Dictionary in _kind_cards(410.0):
+		for c: Dictionary in _kind_cards(_solo_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
 	if phase == Phase.LOBBY and Link.connected and Link.is_host:
-		for c: Dictionary in _kind_cards(556.0):
+		for c: Dictionary in _kind_cards(_lobby_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
 	if phase == Phase.SETTINGS:
@@ -4965,6 +5312,11 @@ func _action_at(p: Vector2) -> String:
 
 
 func _activate(action: String) -> void:
+	# Anything that is not picking a field is leaving the one you were in, so the
+	# keyboard comes down. Doing it here rather than in each branch means a new
+	# action cannot forget to, and leave a phone with a keyboard up over a match.
+	if not action.begins_with("field:") and action != "set:name":
+		_hide_keyboard()
 	if action.begins_with("diff:"):
 		Link.leave()
 		start_match(action.substr(5), 1)
@@ -5028,6 +5380,7 @@ func _activate(action: String) -> void:
 			Sfx.play("count", 1.3)
 		else:
 			lobby_field = which
+			_show_keyboard(Link.my_name if which == 0 else join_ip)
 	elif action == "solo":
 		phase = Phase.SOLO
 		_hover_action = ""

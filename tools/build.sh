@@ -72,6 +72,19 @@ if ! grep -q "practice behaves" <<<"$PRACTICE"; then
 	exit 1
 fi
 
+# Q was untypeable on every desktop build for several releases, because `match`
+# does not fall through and the arm that owned Q only did anything while paused.
+# Any shortcut added to the play phase can do the same to its letter, and the
+# phone build cannot see it — the drawn keyboard never goes near that code.
+echo "==> Keys check"
+KEYS=$("$(command -v godot)" --headless --script tools/keystest.gd 2>&1 || true)
+if ! grep -q "keys behave" <<<"$KEYS"; then
+	echo "FAILED: a letter cannot be typed." >&2
+	grep -E "FAILED|swallowed" <<<"$KEYS" >&2 || true
+	echo "        Run: godot --headless --script tools/keystest.gd" >&2
+	exit 1
+fi
+
 echo "==> Linux"
 godot --headless --export-release "Linux" "$OUT/linux/WordWars.x86_64" >/dev/null
 echo "==> Windows"

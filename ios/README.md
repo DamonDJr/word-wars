@@ -193,17 +193,27 @@ hand: twenty-six keys changing colour on every keystroke is motion in the part
 of the screen you are not looking at, and it read as flicker under the thumbs.
 The information was real and the distraction was worse. Removed.
 
+- **Every menu reflows.** One helper, `_grid_rects`, lays out every card grid in
+  the game — the mastery record strip and its unlock grid, the opponent roster,
+  the block switches, the room seats, the summary tiles. It shrinks cards until
+  they would go under a stated minimum and only then drops a column, which is
+  what keeps four seats reading as one table instead of wrapping to 3 + 1. The
+  desktop numbers are what it aims for and at 1280 nothing binds, so landscape
+  is unchanged.
+- **The rules panel wraps.** It was 860px of hand-broken lines against a 720px
+  screen. The paragraphs are sentences now and the font breaks them, and the
+  panel is measured to its contents rather than to a constant.
+- **The system keyboard for text fields.** The drawn keyboard is letters, DEL
+  and FIRE — no digits, no paste. A room code has both. So the lobby and the
+  name field raise the iOS keyboard instead, and Godot delivers what is typed
+  on it as ordinary key events, which means there is no second implementation
+  of what a keystroke means.
+- **Nothing claims a key the phone does not have.** Key badges (ESC, ENTER,
+  CTRL+H) are suppressed in portrait, the fullscreen switch is gone, and the
+  rules say "the FIRE key" where they said SPACE or ENTER.
+
 ### Still to do
 
-- **The menus below the title are still laid out for landscape.** The title
-  screen stacks its doors and centres them against the real screen height, and
-  the rules got a door of their own because H is not a key a phone has. But
-  single-player setup, mastery and the lobbies are card grids sized for 1280px
-  and they run off a 720px screen — mastery's stat strip goes off both edges.
-  Reachable, thanks to the back button, but not yet usable. That is the next
-  piece of work and it is mostly mechanical: the grids already compute their
-  columns, so they need to compute them from the width available rather than
-  from a constant. The rules panel is a fixed 860px wide and needs wrapping.
 - **The balance pass.** Nothing below has been touched yet.
 
 ### What a mobile version would actually be
