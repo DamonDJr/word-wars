@@ -313,6 +313,11 @@ class SideState extends RefCounted:
 
 var phase: int = Phase.SPLASH
 var splash_time := 0.0
+## How long the summary has been up. A match ends while your hands are still
+## moving, and whatever you were halfway through typing arrives here — so for
+## the first moment of it nothing is listening, keys or taps.
+var over_age := 0.0
+const OVER_LOCKOUT := 1.1
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
@@ -411,7 +416,9 @@ var earned: Dictionary = {}
 var decor: Array = []
 var join_ip := "127.0.0.1"
 var lobby_field := 1        # 0 = name, 1 = address
-var lobby_backend := 0      # Link.Backend
+## Link.Backend. Defaults to whichever backend owns the code slot — EOS once
+## credentials exist, noray otherwise.
+var lobby_backend: int = Link.Backend.EOS if EOSConfig.is_configured() else Link.Backend.ROOM
 var countdown := 0.0
 var paused := false
 var _last_count_beep := -1
@@ -1194,8 +1201,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					var pasted := DisplayServer.clipboard_get().strip_edges().substr(0, 48)
 					# A code copied out of a chat window arrives chunked for
 					# reading. Addresses are pasted exactly as they came.
-					if lobby_backend == Link.Backend.ROOM:
-						pasted = Link.clean_code(pasted)
+					if _backend_uses_codes():
+						pasted = Link.clean_code(pasted, lobby_backend)
 					join_ip = pasted
 					Sfx.play("count", 1.2)
 			KEY_C when k.ctrl_pressed:
@@ -1219,7 +1226,23 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					_lobby_edit(String.chr(k.unicode), false)
 		return
 
-	if phase == Phase.TITLE or phase == Phase.OVER:
+	# The summary is the payoff for the match you just played, and it used to
+	# share the title screen's keys — so 1, 2, 3, 4, 5, V, P and H all threw you
+	# somewhere else the instant they were pressed. You finish a match with your
+	# hands mid-word, the trailing keystrokes land here, and the scoreboard you
+	# were meant to read is gone before you have seen it.
+	#
+	# So OVER gets its own two keys and nothing else: the two things drawn on the
+	# screen. Everything else is ignored rather than repurposed.
+	if phase == Phase.OVER:
+		if over_age < OVER_LOCKOUT:
+			return
+		match k.keycode:
+			KEY_R: _activate("rematch")
+			KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER: _activate("title")
+		return
+
+	if phase == Phase.TITLE:
 		match k.keycode:
 			KEY_1: _activate("practice")
 			KEY_2: _activate("solo")
@@ -1228,15 +1251,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_5: _activate("settings")
 			KEY_V: _activate("versus")
 			KEY_P: _activate("mastery")
-			KEY_R: _activate("rematch")
 			KEY_H:
 				show_rules = not show_rules
 				Sfx.play("back", 1.2)
 			KEY_ESCAPE:
-				if phase == Phase.OVER:
-					_activate("title")
-				else:
-					get_tree().quit()
+				get_tree().quit()
 		return
 
 	# Nothing to type until GO.
@@ -1923,6 +1942,9 @@ func _process(delta: float) -> void:
 		if splash_time >= SPLASH_HOLD + SPLASH_FADE:
 			phase = Phase.TITLE
 
+	if phase == Phase.OVER:
+		over_age += delta
+
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
 		and phase != Phase.LOBBY and phase != Phase.MASTERY \
@@ -2346,6 +2368,10 @@ func _lose_life(side: SideState) -> void:
 
 func _end_match(loser: SideState) -> void:
 	phase = Phase.OVER
+	over_age = 0.0
+	# Whatever was half-typed when it ended is not a command for this screen.
+	typed = ""
+	_hover_action = ""
 	_clear_hitstop()
 	tracers.clear()
 	var standing := _living()
@@ -4217,13 +4243,20 @@ func _draw_spectating(size: Vector2) -> void:
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
 		Color(bg_top, 0.5), true)
 	# Sit the notice low and centre, clear of the boards you are here to watch.
+	# In portrait "low" is not the bottom of the screen — the keyboard is there,
+	# and the notice was landing across the FIRE key.
 	var cx := size.x * 0.5
-	var y := size.y - 108.0
-	_otext(_font_bold, Vector2(cx, y), "ELIMINATED", 44, Color("#ff6b6b"))
+	var y: float = size.y - 108.0
+	if portrait:
+		y = _portrait_board_bottom() - 96.0
+	_text_fit_overlay(_font_bold, Vector2(cx, y), "ELIMINATED", 44,
+		size.x - GRID_MARGIN * 2.0, Color("#ff6b6b"), 24)
 	var left := _living().size()
-	_otext(_font, Vector2(cx, y + 34.0),
-		"%d still standing — watching until it is over" % left, 15, Color("#aab4d4"))
-	_otext(_font, Vector2(cx, y + 58.0), "ESC — menu", 12, Color("#5d6a92"))
+	_text_fit_overlay(_font, Vector2(cx, y + 34.0),
+		"%d still standing — watching until it is over" % left, 15,
+		size.x - GRID_MARGIN * 2.0, Color("#aab4d4"), 11)
+	_otext(_font, Vector2(cx, y + 58.0),
+		"tap the corner to leave" if portrait else "ESC — menu", 12, Color("#5d6a92"))
 
 
 func _draw_pause(size: Vector2) -> void:
@@ -4305,7 +4338,7 @@ func _draw_lobby_setup(cx: float) -> void:
 		var label := "YOUR NAME"
 		if not is_name:
 			label = "YOUR ROOM CODE" if hosting_code else (
-				"THEIR ROOM CODE" if lobby_backend == Link.Backend.ROOM else "THEIR ADDRESS")
+				"THEIR ROOM CODE" if _backend_uses_codes() else "THEIR ADDRESS")
 		_otext(_font, Vector2(r.get_center().x, r.position.y - 14.0), label, 11,
 			Color("#7c88ad"))
 
@@ -4327,7 +4360,7 @@ func _draw_lobby_setup(cx: float) -> void:
 	var hint := "click a field to type in it · TAB switches · CTRL+V pastes"
 	if Link.is_host and Link.room_code != "":
 		hint = "click the code to copy it · they paste with CTRL+V"
-	elif lobby_backend == Link.Backend.ROOM and not Link.short_codes():
+	elif lobby_backend == Link.Backend.ROOM and not Link.short_codes(lobby_backend):
 		# Worth the line while codes are 21 mixed-case characters: getting the
 		# case wrong is the most likely reason a join goes nowhere.
 		hint = "codes are case-sensitive · CTRL+V pastes · TAB switches field"
@@ -4340,17 +4373,31 @@ func _draw_lobby_setup(cx: float) -> void:
 		Color("#5d6a92"))
 
 	# Backend picker. Room codes go through the lobby server; direct dials an address.
-	var labels := ["ROOM CODE", "DIRECT"]
-	var subs := ["works anywhere, no port forwarding", "LAN or a forwarded port"]
-	var tints := [Color("#c77dff"), PLAYER_ACCENT]
+	var slots := _backend_slots()
+	var labels := {
+		Link.Backend.EOS: "ROOM CODE",
+		Link.Backend.ROOM: "ROOM CODE",
+		Link.Backend.DIRECT: "DIRECT",
+	}
+	var subs := {
+		Link.Backend.EOS: "five letters, works anywhere",
+		Link.Backend.ROOM: "works anywhere, no port forwarding",
+		Link.Backend.DIRECT: "LAN or a forwarded port",
+	}
+	var tints := {
+		Link.Backend.EOS: Color("#c77dff"),
+		Link.Backend.ROOM: Color("#c77dff"),
+		Link.Backend.DIRECT: PLAYER_ACCENT,
+	}
 	for i in 2:
+		var be: int = slots[i]
 		var r: Rect2 = _lobby_backend_rect(i)
-		var picked: bool = lobby_backend == i
+		var picked: bool = lobby_backend == be
 		_panel(r, Color("#1b2444") if picked else Color("#141b33"),
-			Color(tints[i], 0.9 if picked else 0.25), 10.0, 2.0)
+			Color(tints[be], 0.9 if picked else 0.25), 10.0, 2.0)
 		_otext(_font_bold, Vector2(r.get_center().x, r.get_center().y - 8.0),
-			labels[i], 16, tints[i])
-		_otext(_font, Vector2(r.get_center().x, r.get_center().y + 14.0), subs[i], 11,
+			labels[be], 16, tints[be])
+		_otext(_font, Vector2(r.get_center().x, r.get_center().y + 14.0), subs[be], 11,
 			Color("#7c88ad"))
 
 
@@ -4448,7 +4495,7 @@ func _lobby_edit(ch: String, backspace: bool) -> void:
 			# sent, instead of letting somebody type a code in a case that is
 			# about to be corrected out from under them on submit. Addresses are
 			# left alone — hostnames are not ours to shout.
-			if lobby_backend == Link.Backend.ROOM and Link.short_codes():
+			if _backend_uses_codes() and Link.short_codes(lobby_backend):
 				join_ip += ch.to_upper()
 			else:
 				join_ip += ch
@@ -4489,6 +4536,25 @@ func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
 ## over a call is the one string in this game that has to stay large.
 func _lobby_field_rect(i: int) -> Rect2:
 	return _grid_rects(2, 234.0 + safe_top, 2, 320.0, 52.0, 20.0, 340.0, 34.0)[i]
+
+
+## Which backends the picker offers, in slot order.
+##
+## EOS takes the code slot whenever credentials are present: it is the same
+## "share a code" experience, but five readable characters instead of the
+## orchestrator's twenty-one, and rooms can be listed. noray stays the fallback
+## for an unconfigured checkout, so there are always exactly two slots to draw
+## and the existing layout is untouched.
+func _backend_slots() -> Array:
+	if EOSConfig.is_configured():
+		return [Link.Backend.EOS, Link.Backend.DIRECT]
+	return [Link.Backend.ROOM, Link.Backend.DIRECT]
+
+
+## True when the join field holds a room code rather than an address. Both the
+## noray and EOS paths are code-based; only DIRECT dials a host.
+func _backend_uses_codes() -> bool:
+	return lobby_backend == Link.Backend.ROOM or lobby_backend == Link.Backend.EOS
 
 
 func _lobby_backend_rect(i: int) -> Rect2:
@@ -4664,57 +4730,148 @@ func _draw_gameover(size: Vector2) -> void:
 			"best word — %s for %s" % [_show(player.best_word.to_upper()),
 				_commas(player.best_word_score)], 14, Color("#8d99bd"))
 
-	# Stat tiles read far better than one long sentence of numbers.
-	var stats := [
-		["TIME", "%d:%02d" % [int(match_time) / 60, int(match_time) % 60]],
-		["WPM", str(int(round(_wpm())))],
-		["WORDS", str(player.words_played)],
-		["CLEARED", str(player.blocks_cleared)],
-		["BEST CHAIN", "x%d" % player.best_chain],
-		["BEST COMBO", "x%d" % player.best_combo],
-		["POWERS", str(player.powers_fired)],
-		["SALVOS", str(player.salvos)],
-	]
-	var tiles := _over_stat_rects(stats.size())
-	for i in stats.size():
-		var r: Rect2 = tiles[i]
-		_panel(r, Color("#141b33"), Color(tint, 0.20), 10.0)
-		_otext(_font, Vector2(r.get_center().x, r.position.y + 22.0), stats[i][0], 11,
-			Color("#7c88ad"))
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 50.0),
-			stats[i][1], 24, r.size.x - 16.0, Color("#e6ecff"))
+	# Time and words-per-minute are the two numbers here that are only ever
+	# yours: there is no such thing as a CPU's typing speed, and a peer's is not
+	# sent. Everything else is comparable, so everything else went into the
+	# table below rather than being said twice.
+	_otext(_font, Vector2(cx, 312), "%d:%02d  ·  %d wpm  ·  %s" % [
+		int(match_time) / 60, int(match_time) % 60, int(round(_wpm())),
+		difficulty.to_upper() if not net_active() else "VERSUS"],
+		13, Color("#7c88ad"))
 
-	_text_fit_overlay(_font, Vector2(cx, _over_foot() + 22.0), "versus %s — %s" % [
-		difficulty.to_upper(), String(AiOpponent.spec(difficulty)["style"])],
-		14, size.x - GRID_MARGIN * 2.0, Color("#7c88ad"), 11)
+	_draw_scoreboard(size, _scoreboard_top(), tint)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	_draw_mastery_strip(cx)
+	var strip_bottom := _draw_mastery_strip(cx)
 
+	# Two keys, because there are now two. This used to advertise 1 – 7 for a new
+	# opponent and P for mastery, which were exactly the shortcuts that made the
+	# summary impossible to read — and it was pinned at 674, which the buttons
+	# now sit on top of.
 	if not portrait:
-		_otext(_font, Vector2(cx, 674),
-			"R — rematch      1 – %d — new opponent      P — mastery      ESC — title"
-				% AiOpponent.ROSTER.size(), 13, Color("#4d5878"))
+		_otext(_font, Vector2(cx, strip_bottom + 26.0), "R — rematch      ESC — title",
+			13, Color("#4d5878"))
 
 
-## Eight tiles across on a desktop; two rows of four on a phone.
-func _over_stat_rects(count: int) -> Array:
-	return _grid_rects(count, 314.0 + safe_top, 8, 132.0, 74.0, 12.0, 130.0, 10.0)
+const SCORE_ROW_H := 34.0
+const SCORE_HEAD_H := 22.0
 
 
-## The bottom of the tiles, which the rest of the summary hangs off.
+func _scoreboard_top() -> float:
+	return 342.0 + safe_top
+
+
+## Which columns the table carries. Powers and salvos are the first to go on a
+## narrow screen: they are the rarest events in a match and often read 0 across
+## every row, where words and clears always say something.
+func _scoreboard_cols() -> Array:
+	if portrait:
+		return ["SCORE", "WORDS", "CLEARED", "CHAIN"]
+	return ["SCORE", "WORDS", "CLEARED", "CHAIN", "POWERS", "SALVOS"]
+
+
+## Everyone who played, best first.
+##
+## The summary used to print your own eight numbers and "versus Duelist"
+## underneath — which told you how you did, and nothing whatever about how you
+## did *against them*. In a free-for-all it did not even say who came second.
+## Same numbers for every board, sorted, so the screen answers the question the
+## match just asked.
+func _scoreboard_sides() -> Array:
+	var out: Array = []
+	for s: SideState in sides:
+		if s.in_match:
+			out.append(s)
+	out.sort_custom(func(a: SideState, b: SideState) -> bool: return a.score > b.score)
+	return out
+
+
+func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
+	var rows := _scoreboard_sides()
+	if rows.is_empty():
+		return
+	var cols := _scoreboard_cols()
+	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
+	var x0: float = size.x * 0.5 - tw * 0.5
+	# The name gets the left third and the numbers share the rest evenly, so the
+	# columns line up whether there are four of them or six.
+	var name_w: float = tw * 0.32
+	var col_w: float = (tw - name_w) / float(cols.size())
+
+	for i in cols.size():
+		_otext(_font, Vector2(x0 + name_w + col_w * (float(i) + 0.5), top), cols[i], 10,
+			Color("#5d6a92"))
+
+	var y := top + SCORE_HEAD_H
+	for s: SideState in rows:
+		var mine: bool = s == player
+		# Who actually won, not who happened to still be standing — in a
+		# free-for-all the match can end with three boards alive, and marking
+		# all of them is the same as marking none.
+		var won: bool = (winner == "YOU") if mine else (s.label == winner)
+		var r := Rect2(x0, y, tw, SCORE_ROW_H)
+		# Your own row is picked out because it is the one you are looking for,
+		# and the winner's because it is the one the match was about. When they
+		# are the same row it simply gets both.
+		_panel(r, Color("#1b2444") if mine else Color("#121930"),
+			Color(s.accent, 0.85 if mine else 0.28), 8.0, 2.0 if mine else 1.0)
+		if won:
+			_overlay.draw_rect(Rect2(r.position.x + 3.0, r.position.y + 7.0, 3.0,
+				r.size.y - 14.0), Color("#ffd166"), true)
+
+		_text_fit_overlay(_font_bold, Vector2(x0 + name_w * 0.5, r.get_center().y),
+			_show(s.label).to_upper(), 15, name_w - 26.0,
+			Color("#e6ecff") if (mine or won) else Color("#8d99bd"))
+
+		var vals := {
+			"SCORE": _commas(s.score),
+			"WORDS": str(s.words_played),
+			"CLEARED": str(s.blocks_cleared),
+			"CHAIN": "x%d" % s.best_chain,
+			"POWERS": str(s.powers_fired),
+			"SALVOS": str(s.salvos),
+		}
+		for i in cols.size():
+			var key: String = cols[i]
+			var lead: bool = key == "SCORE" and s == rows[0]
+			_text_fit_overlay(_font_bold,
+				Vector2(x0 + name_w + col_w * (float(i) + 0.5), r.get_center().y),
+				String(vals[key]), 17 if key == "SCORE" else 15, col_w - 10.0,
+				Color("#ffd166") if lead else Color("#e6ecff"))
+		y += SCORE_ROW_H + 6.0
+
+	# The longest word anyone managed, which is the other thing worth arguing
+	# over and does not fit in a column.
+	var best: SideState = null
+	for s: SideState in rows:
+		if best == null or s.longest_word.length() > best.longest_word.length():
+			best = s
+	if best != null and best.longest_word != "":
+		_otext(_font, Vector2(size.x * 0.5, y + 12.0),
+			"longest word — %s by %s" % [_show(best.longest_word.to_upper()),
+				_show(best.label).to_upper()], 12, Color(tint, 0.75))
+
+
+## The bottom of the table, which the buttons and the mastery strip hang off.
 func _over_foot() -> float:
-	return _grid_bottom(_over_stat_rects(8), 388.0 + safe_top)
+	var n := maxi(1, _scoreboard_sides().size())
+	return _scoreboard_top() + SCORE_HEAD_H + float(n) * (SCORE_ROW_H + 6.0) + 20.0
 
 
 ## What the match just did to your record. This is the hook — win or lose, the
 ## screen has something on it that went up — so it runs under both results, and
 ## a level-up gets announced rather than left to be noticed.
-func _draw_mastery_strip(cx: float) -> void:
+## Returns the bottom of whatever it drew, so the line under it does not have to
+## guess. When there is nothing earned — practice, or a match that banked
+## nothing — that is just the bottom of the buttons.
+func _draw_mastery_strip(cx: float) -> float:
+	var buttons_foot := 570.0
+	for b: Dictionary in _menu_buttons():
+		buttons_foot = maxf(buttons_foot, (b["rect"] as Rect2).end.y)
 	if earned.is_empty():
-		return
+		return buttons_foot
 	var gained := int(earned.get("xp", 0))
 	var from_lv := int(earned.get("from", 1))
 	var to_lv := int(earned.get("to", 1))
@@ -4727,9 +4884,7 @@ func _draw_mastery_strip(cx: float) -> void:
 	# and their shadows are not already using.
 	# Under the buttons, which are one row on a desktop and two on a phone. The
 	# bar narrows to leave room for the labels either side of it.
-	var strip_y: float = 570.0
-	for b: Dictionary in _menu_buttons():
-		strip_y = maxf(strip_y, (b["rect"] as Rect2).end.y + 32.0)
+	var strip_y: float = maxf(570.0, buttons_foot + 32.0)
 	var bw: float = minf(352.0, get_viewport_rect().size.x - 240.0)
 	var bar := Rect2(cx - bw * 0.5, strip_y, bw, 9.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.22), 5.0, 1.0)
@@ -4756,6 +4911,8 @@ func _draw_mastery_strip(cx: float) -> void:
 			line += "  (+%d more)" % (fresh.size() - 2)
 		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED — " + line, 14,
 			minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
+		return strip_y + 34.0
+	return strip_y + 10.0
 
 
 # ------------------------------------------------------------------ networking
@@ -5377,6 +5534,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 			_skip_splash()
 		return
+	# The same hold as the keys. On a phone the last thing you did was hammer
+	# FIRE, and the release of that tap should not pick a button off the summary
+	# that has just appeared under your thumb.
+	if phase == Phase.OVER and over_age < OVER_LOCKOUT:
+		return
 	if phase == Phase.PLAY and not paused:
 		if not player.alive:
 			return
@@ -5503,7 +5665,9 @@ func _activate(action: String) -> void:
 		_hover_action = ""
 		Sfx.play("back")
 	elif action.begins_with("backend:"):
-		lobby_backend = int(action.substr(8))
+		# The action carries the picker slot, not the enum value — which backend
+		# owns slot 0 depends on whether EOS is configured.
+		lobby_backend = _backend_slots()[int(action.substr(8))]
 		Sfx.play("key", 1.2)
 	elif action.begins_with("field:"):
 		var which := int(action.substr(6))

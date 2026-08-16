@@ -50,6 +50,17 @@ jobs:
           mv templates "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
           echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
 
+      - name: Fetch the EOS binaries
+        run: |
+          set -euo pipefail
+          # addons/.../bin is gitignored — a quarter of a gigabyte of prebuilt
+          # libraries does not belong in the repo — so the checkout has the
+          # GDScript half of the addon and none of the native half. Without this
+          # the export writes an Xcode project that references three
+          # xcframeworks that are not there, and the build fails at link.
+          tools/fetch-eos.sh
+          test -d addons/epic-online-services-godot/bin/ios
+
       - name: Import the project
         run: |
           # Two passes. A cold import does not always finish resolving every
@@ -122,6 +133,13 @@ jobs:
           echo "$fam"
           grep -q '^ *1 *$' <<<"$fam" || {
             echo "::error::UIDeviceFamily has no iPhone — check targeted_device_family"
+            exit 1; }
+          # EOS is a GDExtension, so its framework has to be inside the bundle.
+          # A build that links fine and ships without it starts up and then dies
+          # the moment anything touches multiplayer.
+          test -d "$app/Frameworks/EOSSDK.framework" || {
+            echo "::error::EOSSDK.framework is not in the app bundle"
+            ls "$app/Frameworks" || true
             exit 1; }
           # An .ipa is a zip with the app inside a folder called Payload —
           # the same trick tools/build-ipa.sh uses in the other two projects.

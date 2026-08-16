@@ -137,15 +137,27 @@ func _unpack() -> void:
 	_wipe(INSTALL_DIR)
 	DirAccess.make_dir_recursive_absolute(INSTALL_DIR)
 
+	# Unpacked with its directories intact rather than flattened into one folder.
+	# This used to take `name.get_file()` and drop everything into INSTALL_DIR,
+	# which was harmless while a build was a single executable and is a trap now
+	# that it carries native libraries: a shared object the game loads by
+	# relative path stops being findable the moment its folder is thrown away.
+	# The current exports happen to be flat, so this is guarding against the next
+	# one rather than fixing today — but the failure it guards against is a game
+	# that installs without complaint and then will not start.
 	for name in zip.get_files():
-		var bytes := zip.read_file(name)
-		var out := "%s/%s" % [INSTALL_DIR, name.get_file()]
+		if name.ends_with("/"):
+			continue
+		var out := "%s/%s" % [INSTALL_DIR, name]
+		var sub := out.get_base_dir()
+		if sub != INSTALL_DIR:
+			DirAccess.make_dir_recursive_absolute(sub)
 		var f := FileAccess.open(out, FileAccess.WRITE)
 		if f == null:
 			zip.close()
 			_fail("could not write %s" % name.get_file(), "Check disk space.")
 			return
-		f.store_buffer(bytes)
+		f.store_buffer(zip.read_file(name))
 		f.close()
 	zip.close()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(_zip_path))

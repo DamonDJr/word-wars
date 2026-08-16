@@ -18,7 +18,15 @@ signal pressure_received(source: String)
 signal opponent_topped_out
 signal state_received(payload: Dictionary)
 
-enum Backend { ROOM, DIRECT }
+## ROOM  — noray orchestration + ENet punchthrough. Codes are the orchestrator's
+##         own ids, so they are long and there is no way to browse rooms.
+## DIRECT — dial an address. LAN or a forwarded port, no third party.
+## EOS    — Epic lobbies over `EOSGMultiplayerPeer`. Short codes and a browsable
+##         room list, because the code is just a lobby attribute we choose.
+##
+## Every one of these ends up as a MultiplayerPeer, so the RPCs below never learn
+## which is in play.
+enum Backend { ROOM, DIRECT, EOS }
 
 const PORT := 8642
 const CONFIG_PATH := "user://player.cfg"
@@ -27,6 +35,18 @@ const CONFIG_PATH := "user://player.cfg"
 ## foxssake run a public one; point this at your own before shipping.
 const NORAY_HOST := "tomfol.io"
 const NORAY_PORT := 8890
+
+## Codes people read out loud, so the alphabet drops every glyph that gets
+## misheard or mistyped: no O/0, no I/1. Five characters over 32 symbols is
+## ~33.5 million combinations, which is far more than enough for the number of
+## rooms open at once and short enough to say down a phone.
+const EOS_CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const EOS_CODE_LENGTH := 5
+## A freshly created lobby is not searchable for a few seconds. Without retries
+## the very first thing anyone tries — host, then join from the other machine —
+## reports "no such room", which reads as a broken code rather than a slow index.
+const EOS_SEARCH_TRIES := 5
+const EOS_SEARCH_GAP := 2.0
 
 ## Mirrors the orchestration server's NORAY_OID_CHARSET, and must not disagree
 ## with it. Leave it empty while NORAY_HOST points at a server handing out the
@@ -139,7 +159,9 @@ func _ready() -> void:
 func host(which: int) -> void:
 	leave()
 	backend = which
-	if which == Backend.ROOM:
+	if which == Backend.EOS:
+		_host_by_eos()
+	elif which == Backend.ROOM:
 		_host_by_code()
 	else:
 		var enet := ENetMultiplayerPeer.new()
@@ -157,7 +179,9 @@ func host(which: int) -> void:
 func join(which: int, address: String) -> void:
 	leave()
 	backend = which
-	if which == Backend.ROOM:
+	if which == Backend.EOS:
+		_join_by_eos(address)
+	elif which == Backend.ROOM:
 		_join_by_code(address)
 	else:
 		var enet := ENetMultiplayerPeer.new()
@@ -178,7 +202,17 @@ func join(which: int, address: String) -> void:
 ## True when the server behind `NORAY_HOST` issues codes a person can read out.
 ## The lobby asks this rather than measuring a code's length, because the answer
 ## has to be the same before any code exists.
-func short_codes() -> bool:
+## `which` asks about a backend other than the live one.
+##
+## The lobby needs this *before* anyone connects — while a code is still being
+## typed — and at that point `backend` is whatever the last session left behind.
+## Passing the backend the menu is offering gets the right answer for a session
+## that hasn't started yet.
+func short_codes(which := -1) -> bool:
+	var b: int = backend if which < 0 else which
+	# EOS codes come from our own alphabet above, so they are always tidy.
+	if b == Backend.EOS:
+		return true
 	return CODE_ALPHABET != ""
 
 
@@ -187,9 +221,9 @@ func short_codes() -> bool:
 ## case are only touched when the alphabet says touching them is safe: `-` is a
 ## real character in nanoid's default alphabet, so stripping it there would turn
 ## a valid code into one that does not exist.
-func clean_code(raw: String) -> String:
+func clean_code(raw: String, which := -1) -> String:
 	var out := raw.strip_edges().replace(" ", "").replace("\t", "").replace("\n", "")
-	if not short_codes():
+	if not short_codes(which):
 		return out
 	return out.replace("-", "").to_upper()
 
@@ -299,9 +333,31 @@ func _shake_hands(address: String, port: int) -> Error:
 
 
 func leave() -> void:
+	# No-op on ENet and for clients; only a host ever holds a lobby.
+	_destroy_lobby()
+	_reset_room()
+	# Never tear the peer down inline — see `_release_peer`.
+	_release_peer.call_deferred()
+
+
+## Drop the ENet peer, one frame late, deliberately.
+##
+## `leave()` is reachable from `peer_disconnected`, `server_disconnected` and
+## `connection_failed`, and all three are emitted while ENet is still walking
+## the event queue that produced them. Closing and freeing the peer during that
+## walk is a use-after-free inside the native library: it takes the whole
+## process down on Windows and macOS, with no Godot-level error, so it presents
+## as the game simply vanishing rather than as a script bug.
+##
+## Deferring puts the teardown after the queue has drained. State is still reset
+## immediately above, so the UI reacts on the same frame the player left.
+func _release_peer() -> void:
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
+
+
+func _reset_room() -> void:
 	_join_countdown = 0.0
 	active = false
 	is_host = false
@@ -416,19 +472,29 @@ func _on_host_vanished() -> void:
 	_drop("the host closed the game")
 
 
+## Somebody else's connection went away.
+##
+## Nobody's room ends here. An empty roster used to mean "drop everything",
+## which in a two-player game fired the instant the only guest left: the host
+## was ejected from their own lobby, and the inline teardown that followed took
+## the guest's client down with it. An empty room is a room waiting for someone.
+##
+## A guest's room ends only when the *host* goes, and that arrives separately as
+## `server_disconnected` — see `_on_host_vanished`. Another guest leaving is
+## just news either way, so both roles are handled the same.
 func _on_peer_disconnected(id: int) -> void:
 	var who: String = String(roster[id]["name"]) if roster.has(id) else "a rival"
 	roster.erase(id)
-	# In a crowd, one person leaving is not the end of the match.
-	if roster.is_empty():
-		_drop("%s disconnected" % who)
-	else:
-		status = "%s left" % who
-		peer_left.emit("%s left" % who)
-		room_changed.emit()
+	status = "%s left" % who
+	peer_left.emit("%s left" % who)
+	room_changed.emit()
 
 
 func _drop(why: String) -> void:
+	# The host vanishing raises both `peer_disconnected` and
+	# `server_disconnected`, so this can be reached twice for one event.
+	if not active:
+		return
 	leave()
 	status = why
 	peer_left.emit(why)
@@ -449,6 +515,176 @@ func _tighten_timeout(id: int) -> void:
 	var pp := enet.get_peer(id)
 	if pp != null:
 		pp.set_timeout(1500, 2000, 6000)
+
+
+# ------------------------------------------------------------------------- EOS
+#
+# Epic lobbies serve two different jobs at once, which is what makes short codes
+# and a room browser fall out of the same mechanism:
+#
+#   bucket_id            the private room code, looked up directly
+#   BROWSE_KEY attribute a tag every Word Wars lobby carries, so one attribute
+#                        search returns every open room
+#
+# The lobby is only ever a directory entry. Once a client has the host's product
+# user id, traffic goes over `EOSGMultiplayerPeer` and every RPC in this file
+# behaves exactly as it does on ENet.
+
+var _eos_ready := false
+## Only the host holds this. Clients never create a lobby.
+var _lobby: HLobby = null
+
+
+## Bring the platform up and sign in, once per run.
+##
+## Device ID sign-in, so there is no Epic account, no login screen and no
+## password anywhere — appropriate for a game people open to play one round.
+func _ensure_eos() -> bool:
+	if _eos_ready:
+		return true
+	if not EOSConfig.is_configured():
+		status = "Epic is not set up yet — fill in scripts/eos_config.gd"
+		leave()
+		room_changed.emit()
+		return false
+
+	status = "connecting to Epic"
+	room_changed.emit()
+	if not await HPlatform.setup_eos_async(EOSConfig.make_credentials()):
+		status = "could not start Epic Online Services"
+		leave()
+		room_changed.emit()
+		return false
+
+	status = "signing in"
+	room_changed.emit()
+	if not await HAuth.login_anonymous_async(my_name):
+		# Overwhelmingly the cause is portal-side rather than anything local.
+		status = "Epic sign-in failed — check the client policy allows Device ID and Lobbies"
+		leave()
+		room_changed.emit()
+		return false
+
+	_eos_ready = true
+	return true
+
+
+func _mint_code() -> String:
+	var code := ""
+	for _i in EOS_CODE_LENGTH:
+		code += EOS_CODE_ALPHABET[randi() % EOS_CODE_ALPHABET.length()]
+	return code
+
+
+func _host_by_eos() -> void:
+	if not await _ensure_eos():
+		return
+
+	var code := _mint_code()
+	status = "opening the room"
+	room_changed.emit()
+
+	var opts := EOS.Lobby.CreateLobbyOptions.new()
+	opts.bucket_id = code
+	opts.max_lobby_members = SEATS
+	opts.permission_level = EOS.Lobby.LobbyPermissionLevel.PublicAdvertised
+	opts.presence_enabled = true
+
+	var lobby: HLobby = await HLobbies.create_lobby_async(opts)
+	if lobby == null:
+		status = "Epic would not open a room"
+		leave()
+		room_changed.emit()
+		return
+	_lobby = lobby
+
+	var peer := EOSGMultiplayerPeer.new()
+	if peer.create_server(EOSConfig.SOCKET) != OK:
+		status = "could not open the Epic network socket"
+		leave()
+		room_changed.emit()
+		return
+	# Without this the host has to answer each connection request by hand, and
+	# joiners simply hang.
+	peer.set_auto_accept_connection_requests(true)
+
+	multiplayer.multiplayer_peer = peer
+	active = true
+	is_host = true
+	room_code = code
+	status = "share your code — waiting for a challenger"
+	room_changed.emit()
+
+
+func _join_by_eos(code: String) -> void:
+	if not await _ensure_eos():
+		return
+
+	var wanted := clean_code(code, Backend.EOS)
+	_host_code = wanted
+	active = true
+	is_host = false
+	# The generic join timeout stays off while searching: the retry loop below is
+	# already bounded, and letting `_process` fire mid-search would abandon a
+	# lookup that was about to succeed.
+	_join_countdown = 0.0
+	status = "looking for %s" % wanted
+	room_changed.emit()
+
+	var lobbies = null
+	for attempt in EOS_SEARCH_TRIES:
+		lobbies = await HLobbies.search_by_bucket_id_async(wanted)
+		if lobbies != null and not lobbies.is_empty():
+			break
+		# The player can back out mid-search; do not resurrect a dead attempt.
+		if not active:
+			return
+		if attempt < EOS_SEARCH_TRIES - 1:
+			status = "looking for %s (%d)" % [wanted, attempt + 2]
+			room_changed.emit()
+			await get_tree().create_timer(EOS_SEARCH_GAP).timeout
+			if not active:
+				return
+
+	if lobbies == null or lobbies.is_empty():
+		status = "no room with code %s — is it right, and are they still hosting?" % wanted
+		leave()
+		room_changed.emit()
+		return
+
+	var host_puid: String = lobbies[0].owner_product_user_id
+	if host_puid == "":
+		status = "that room has no host"
+		leave()
+		room_changed.emit()
+		return
+
+	var peer := EOSGMultiplayerPeer.new()
+	if peer.create_client(EOSConfig.SOCKET, host_puid) != OK:
+		status = "could not reach the host"
+		leave()
+		room_changed.emit()
+		return
+
+	multiplayer.multiplayer_peer = peer
+	_join_countdown = ROOM_JOIN_TIMEOUT
+	status = "connecting"
+	room_changed.emit()
+
+
+## Tear down the lobby we host, so leaving actually closes the room.
+##
+## Skipping this leaves the entry sitting in the browser — and answering to its
+## code — until Epic times it out, so the next person to try that code connects
+## to nothing. Fire-and-forget is deliberate: the request goes out before the
+## coroutine's first await, and `leave()` must not become async for its callers.
+## Owner-gated inside EOSG, so a client reaching here is harmless.
+func _destroy_lobby() -> void:
+	if _lobby == null:
+		return
+	var lobby := _lobby
+	_lobby = null
+	lobby.destroy_async()
 
 
 # ---------------------------------------------------------------- lobby protocol

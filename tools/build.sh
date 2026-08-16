@@ -176,8 +176,54 @@ rm -rf "$OUT/ios-check"
 cp packaging/README-linux.txt "$OUT/linux/README.txt"
 cp packaging/README-windows.txt "$OUT/windows/README.txt"
 
-( cd "$OUT" && zip -q -j WordWars-linux-x86_64.zip linux/WordWars.x86_64 linux/README.txt )
-( cd "$OUT" && zip -q -j WordWars-windows-x86_64.zip windows/WordWars.exe windows/README.txt )
+# Everything the exporter wrote, not a hand-written list of it.
+#
+# This used to name the executable and the readme, which was true for as long as
+# a build was one file. EOS arrives as a GDExtension, so a Linux export is now
+# three files and a Windows one is four — and the two that were being dropped
+# are the shared libraries the extension loads at startup. The game still ran
+# perfectly from the export directory, so nothing here noticed; it only died for
+# people who installed from the zip, with "Can't open dynamic library" followed
+# by every EOS script failing to parse and the lobby refusing to accept a
+# keystroke. Naming files by hand is what made that possible, so stop doing it.
+( cd "$OUT/linux" && zip -q -r ../WordWars-linux-x86_64.zip . )
+( cd "$OUT/windows" && zip -q -r ../WordWars-windows-x86_64.zip . )
+
+# And prove it, rather than trusting the glob. A missing file here is invisible
+# until somebody installs the thing.
+for pair in "linux:WordWars-linux-x86_64.zip" "windows:WordWars-windows-x86_64.zip"; do
+	dir="${pair%%:*}"
+	zipf="${pair##*:}"
+	if ! diff <(cd "$OUT/$dir" && find . -type f | sed 's|^\./||' | sort) \
+			<(unzip -Z1 "$OUT/$zipf" | sort) >/dev/null; then
+		echo "FAILED: $zipf does not match what the $dir export produced:" >&2
+		diff <(cd "$OUT/$dir" && find . -type f | sed 's|^\./||' | sort) \
+			<(unzip -Z1 "$OUT/$zipf" | sort) >&2 || true
+		exit 1
+	fi
+done
+
+# The one check that would have caught this: unpack the shipped zip somewhere
+# with nothing else in it and boot that, which is exactly what the launcher does
+# to somebody's machine. Booting the export directory proves nothing, because
+# the export directory has the files the zip is missing.
+echo "==> Booting the shipped zip"
+rm -rf "$OUT/ziptest"
+mkdir -p "$OUT/ziptest"
+unzip -q "$OUT/WordWars-linux-x86_64.zip" -d "$OUT/ziptest"
+chmod +x "$OUT/ziptest/WordWars.x86_64"
+ZIPBOOT=$(cd "$OUT/ziptest" && ./WordWars.x86_64 --headless --quit-after 120 2>&1 || true)
+if grep -qE "Can't open dynamic library|GDExtension dynamic library not found" <<<"$ZIPBOOT"; then
+	echo "FAILED: the shipped zip is missing a native library." >&2
+	grep -E "Can't open dynamic library|not found" <<<"$ZIPBOOT" | head -3 >&2
+	exit 1
+fi
+if ! grep -q "WordBank: 3" <<<"$ZIPBOOT"; then
+	echo "FAILED: the shipped zip does not start cleanly." >&2
+	grep -E "ERROR|SCRIPT ERROR" <<<"$ZIPBOOT" | head -5 >&2
+	exit 1
+fi
+rm -rf "$OUT/ziptest"
 
 # The macOS zip already contains the .app, so the readme is added to it rather
 # than a second archive being wrapped around the first.
