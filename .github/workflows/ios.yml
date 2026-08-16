@@ -4,11 +4,13 @@
 # 13.2.1 (iOS 15.2 SDK) — and Godot 4.7's iOS export templates are compiled
 # against the iOS 26.1 SDK. That is a five-generation gap and it is not a
 # configuration problem; the toolchain simply is not there. A hosted runner has
-# a current Xcode, so the Mac only has to run Sideloadly, which it does fine.
+# a current Xcode, so nothing local has to compile anything.
 #
 # Unsigned on purpose, exactly like Kinetica and LegendFood: a free Apple ID
-# cannot be issued a profile for a device Xcode has never registered, so
-# Sideloadly signs the app and registers the device instead.
+# cannot be issued a profile for a device Xcode has never registered. Whatever
+# installs the IPA signs it and registers the device — `xtool install` from
+# Linux, or Sideloadly on the Big Sur Mac. Signing here would only be thrown
+# away by both.
 #
 # Run it from the Actions tab. The IPA comes out as a build artifact.
 name: iOS
@@ -60,29 +62,58 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/ios
+          # The preset sets export_project_only, so this writes the Xcode
+          # project into build/ios and stops. The .ipa path is only how Godot
+          # is told where to put things; no .ipa is produced by this step.
           "$GODOT" --headless --export-release "iOS" build/ios/WordWars.ipa
           find build/ios -maxdepth 2 -name "*.xcodeproj" -print
+
+          # The word lists are plain .txt rather than imported resources, so
+          # they reach the game only through the preset's include_filter. Lose
+          # it and the app starts with an empty dictionary and rejects every
+          # word — no crash, no error, and half an hour of runner time before
+          # anyone finds out. The pck is right here, so look now.
+          for f in data/words.txt data/common.txt; do
+            grep -aq "$f" build/ios/WordWars.pck || {
+              echo "::error::$f is not in the pck — check include_filter in the iOS preset"
+              exit 1
+            }
+          done
 
       - name: Build unsigned
         run: |
           set -euo pipefail
           proj="$(find build/ios -maxdepth 2 -name '*.xcodeproj' | head -1)"
           scheme="$(basename "$proj" .xcodeproj)"
+          # Godot writes the project with automatic signing and a team, which is
+          # right for a Mac with an Xcode account and wrong here — automatic
+          # signing resolves a provisioning profile before it ever reads
+          # CODE_SIGNING_ALLOWED, and fails on a runner that has no account.
+          # Forcing manual with an empty team is what actually turns it off.
           xcodebuild \
             -project "$proj" \
             -scheme "$scheme" \
             -sdk iphoneos \
             -configuration Release \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             build
 
       - name: Package the ipa
         run: |
           set -euo pipefail
           app="$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          # Resource copying is a build phase like any other, and an unsigned
+          # build is an unusual enough path to be worth confirming it ran.
+          test -f "$app/WordWars.pck" || {
+            echo "::error::the built app has no pck"; exit 1; }
           # An .ipa is a zip with the app inside a folder called Payload —
           # the same trick tools/build-ipa.sh uses in the other two projects.
           rm -rf Payload && mkdir Payload

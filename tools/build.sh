@@ -119,6 +119,31 @@ if ! unzip -p "$OUT/macos/WordWars.zip" "*.pck" 2>/dev/null | grep -aq "data/wor
 	exit 1
 fi
 
+# iOS is not built here — Godot emits an Xcode project and a Mac compiles it, so
+# the shippable artifact comes out of .github/workflows/ios.yml. But the export
+# step itself is just file writing, so it runs fine on Linux, and running it is
+# the only way to find out on this machine that the preset is still valid. The
+# thing worth catching is the dictionary: the word lists are plain .txt and
+# reach the game only through include_filter, and losing them produces an app
+# that starts cleanly and rejects every word. Ten seconds here beats finding it
+# after a runner build and an install.
+echo "==> iOS preset check"
+godot --headless --export-release "iOS" "$PWD/$OUT/ios-check/WordWars.ipa" >/dev/null 2>&1 || true
+if [ ! -f "$OUT/ios-check/WordWars.pck" ]; then
+	echo "FAILED: the iOS export produced no pck." >&2
+	echo "        Run: godot --headless --export-release iOS build/ios/WordWars.ipa" >&2
+	exit 1
+fi
+for f in data/words.txt data/common.txt; do
+	if ! grep -aq "$f" "$OUT/ios-check/WordWars.pck"; then
+		echo "FAILED: $f is not in the iOS build." >&2
+		echo "        Check include_filter in the iOS preset." >&2
+		exit 1
+	fi
+done
+# Half a gigabyte of xcframeworks that nothing downstream wants.
+rm -rf "$OUT/ios-check"
+
 cp packaging/README-linux.txt "$OUT/linux/README.txt"
 cp packaging/README-windows.txt "$OUT/windows/README.txt"
 
