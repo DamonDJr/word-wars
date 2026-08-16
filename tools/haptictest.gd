@@ -81,8 +81,16 @@ func _the_fight_outranks_the_typing() -> void:
 	# Nothing may be long enough to still be running when the next one is due.
 	# There is no way to cancel one, so an over-long pulse cannot be taken back.
 	for name in H.EVENTS:
-		_expect("%s is under half a second" % name,
-			int((H.EVENTS[name] as Array)[0]) <= 500)
+		_expect("%s is within the ceiling" % name,
+			float((H.EVENTS[name] as Array)[0]) <= H.MAX_MS)
+
+	# Godot only emits continuous haptic events — there is no transient one in
+	# the iOS template — and a continuous event too short to spin the actuator up
+	# is silence. This is the check that would have caught the first draft of
+	# this table, every event of which was tuned as though it were a tap.
+	for name in H.EVENTS:
+		_expect("%s is long enough to be felt at all" % name,
+			int((H.EVENTS[name] as Array)[0]) >= 25)
 
 
 func _a_weaker_event_does_not_interrupt() -> void:

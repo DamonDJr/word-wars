@@ -219,14 +219,32 @@ The information was real and the distraction was worse. Removed.
   your own attacks still in the air, which `_on_net_state` already mirrors at
   15 Hz, so the rail is live against a person and not only against a CPU.
 - **Haptics**, in `scripts/haptics.gd`, as a named vocabulary rather than
-  durations sprinkled through the match code. Godot's iOS build drives
-  `vibrate_handheld` through Core Haptics — the template carries
-  `CHHapticEngine`, `CHHapticPattern` and the intensity parameter — so duration
-  and strength are both real dials. Two rules run it: nothing may drown out
-  anything (a weaker event landing inside 45ms of a stronger one is dropped
-  rather than queued, because the hand cannot separate them), and typing is the
-  floor (a keystroke is 9ms at 0.22 and is the first thing suppressed).
-  There is a switch in settings, portrait only.
+  durations sprinkled through the match code. Two rules run it: nothing may
+  drown out anything (a weaker event landing inside 60ms of a stronger one is
+  dropped rather than queued, because the hand cannot separate them), and typing
+  is the floor. There is a switch in settings, portrait only.
+
+  The shape of the table comes from what the template can actually emit, which
+  is worth knowing before tuning it. Godot drives `vibrate_handheld` through
+  Core Haptics, but only ever as `CHHapticEventTypeHapticContinuous` — there is
+  no transient event in there — and it sets intensity with no sharpness. So
+  **these are rumbles, not clicks**: anything under about 25ms is gone before
+  the actuator has spun up, and nothing can be made crisp. The first version was
+  tuned as though they were taps, with a 9ms keystroke, and was reported back as
+  too faint to feel. Everything is two to three times longer now and most of it
+  sits on the intensity ceiling, which is also why `scale` spends its overflow
+  on duration — a three-block break has nowhere else left to be bigger.
+
+- **The splash art, in all three places it appears.** iOS shows a launch
+  storyboard from the moment the icon is tapped, then the engine paints its own
+  boot splash, then the game draws one over the menu assembling underneath. Miss
+  one and the opening is three different pictures in half a second. The
+  storyboard comes from `storyboard/custom_image@2x/@3x` in the preset at
+  "Scale to Fit", the boot splash from a `boot_splash/image.ios` feature
+  override, and the drawn one picks its cut by orientation. Feature overrides
+  are resolved in exported builds and ignored in the editor, so reading that
+  setting back from a project folder always shows the landscape one — measure it
+  from an export or not at all.
 
 ### Still to do
 

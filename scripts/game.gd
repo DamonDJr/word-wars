@@ -422,6 +422,7 @@ var _font: Font
 var _font_bold: Font
 var _font_title: Font
 var _splash: Texture2D
+var _splash_tall: Texture2D
 var _overlay: Node2D
 var _chip_sb: StyleBoxFlat
 var _ui_sb: StyleBoxFlat
@@ -444,6 +445,9 @@ func _ready() -> void:
 		push_warning("Game: title font missing — falling back to the plain face")
 		_font_title = _font_bold
 	_splash = _load_or_null("res://splashScreen.png") as Texture2D
+	# The portrait cut, for phones. Optional on purpose: without it the landscape
+	# art is used in both orientations, which is worse but not broken.
+	_splash_tall = _load_or_null("res://iosSplashScreen.png") as Texture2D
 	if _splash == null:
 		push_warning("Game: splash art missing — going straight to the menu")
 		phase = Phase.TITLE
@@ -3376,19 +3380,26 @@ func _draw_countdown(size: Vector2) -> void:
 ## same backdrop — so the hand-off from engine to scene has nothing to show. It
 ## then dissolves off the menu that has been assembling underneath it.
 func _draw_splash(size: Vector2) -> void:
-	if _splash == null:
+	# Whichever cut matches the screen. This is the third place the art appears —
+	# after the iOS launch storyboard and the engine's own boot splash — and all
+	# three have to agree, or the opening of the game is three different pictures
+	# in half a second.
+	var art_tex: Texture2D = _splash
+	if portrait and _splash_tall != null:
+		art_tex = _splash_tall
+	if art_tex == null:
 		return
 	var a := 1.0
 	if splash_time > SPLASH_HOLD:
 		a = 1.0 - clampf((splash_time - SPLASH_HOLD) / SPLASH_FADE, 0.0, 1.0)
 		a = a * a * (3.0 - 2.0 * a)
 
-	var art := Vector2(_splash.get_width(), _splash.get_height())
+	var art := Vector2(art_tex.get_width(), art_tex.get_height())
 	var s: float = minf(size.x / art.x, size.y / art.y)
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
 		Color(SPLASH_MATTE, a), true)
-	_overlay.draw_texture_rect(_splash, Rect2((size - art * s) * 0.5, art * s),
+	_overlay.draw_texture_rect(art_tex, Rect2((size - art * s) * 0.5, art * s),
 		false, Color(1.0, 1.0, 1.0, a))
 
 

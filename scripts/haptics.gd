@@ -9,6 +9,20 @@ extends Node
 ## a game where every event feels identical in the hand is no better than one
 ## with no haptics at all.
 ##
+## But look at *which* dials, because the first version of this table was tuned
+## against the wrong model of them and came out too faint to feel. The template
+## emits `CHHapticEventTypeHapticContinuous` and nothing else — there is no
+## transient event in it — and it sets intensity with no sharpness alongside.
+##
+## Two things follow, and they set every number below:
+##
+## - **These are rumbles, not clicks.** A continuous event has to spin the
+##   actuator up, so anything under about 25ms is gone before it has started. The
+##   9ms keystroke the first draft shipped with was, in practice, silence.
+## - **Nothing here can be crisp.** Sharpness is what makes a tap feel like a
+##   tap, and it is not exposed. So the only way to make an event register is
+##   longer and harder, and the table leans on both accordingly.
+##
 ## Everything here is a no-op on desktop. `Input.vibrate_handheld` does nothing
 ## without hardware, so there is no platform branch and no second code path — the
 ## calls sit in the same places on every build.
@@ -31,39 +45,48 @@ extends Node
 ## be felt through a burst of keystrokes, and a keystroke must never be felt
 ## through losing a life.
 const EVENTS := {
-	# Typing. Barely there on purpose — this is the one you feel hundreds of
-	# times a match, and it is meant to read as the key having depth rather than
-	# as the game telling you something.
-	"key":      [9, 0.22, 0],
-	"back":     [12, 0.30, 0],
-	# A word that went nowhere. Longer and duller than a keystroke so a
-	# rejection is felt as a stop rather than as another letter.
-	"reject":   [55, 0.45, 2],
+	# Typing. The lightest thing here, but no longer the faintest possible thing
+	# here — this is the one you feel hundreds of times a match, and it has to
+	# read as the key having depth without becoming the texture of the game.
+	# 30ms is roughly where a continuous event stops being imaginary.
+	"key":      [30, 0.55, 0],
+	"back":     [38, 0.65, 0],
+	# A word that went nowhere. Long and hard enough to read as a stop rather
+	# than as another letter.
+	"reject":   [120, 0.90, 2],
 
 	# Your own hits, scaled by how much you broke. `clear` takes an argument.
-	"clear":    [22, 0.45, 3],
-	"salvo":    [140, 1.00, 6],
-	"power":    [90, 0.85, 5],
-	"combo":    [40, 0.70, 4],
+	"clear":    [60, 0.85, 3],
+	"salvo":    [240, 1.00, 6],
+	"power":    [160, 1.00, 5],
+	"combo":    [95, 1.00, 4],
 
 	# Things done to you. Deliberately heavier than anything you do yourself —
 	# taking a hit should be the more physical of the two.
-	"land":     [70, 0.75, 4],
-	"life":     [260, 1.00, 7],
-	"danger":   [30, 0.55, 3],
+	"land":     [130, 1.00, 4],
+	"life":     [400, 1.00, 7],
+	"danger":   [80, 0.90, 3],
 
 	# The bookends.
-	"win":      [320, 0.90, 8],
-	"lose":     [420, 1.00, 8],
-	"level":    [180, 0.80, 6],
-	# Menus. One notch above nothing, so a tap is acknowledged by the device and
-	# not only by the speaker, which may well be muted.
-	"tap":      [14, 0.35, 1],
+	"win":      [430, 1.00, 8],
+	"lose":     [480, 1.00, 8],
+	"level":    [280, 1.00, 6],
+	# Menus. Firmly there, so a tap is acknowledged by the device and not only by
+	# the speaker, which may well be muted.
+	"tap":      [36, 0.70, 1],
 }
 
 ## Below this, two events are one event as far as the hand is concerned, so the
-## quieter of the pair is thrown away rather than made to wait.
-const MERGE_MS := 45.0
+## quieter of the pair is thrown away rather than made to wait. Grew with the
+## table: the events themselves are two to three times longer now, so the window
+## in which one masks the next is wider too. At 60ms a typist would have to pass
+## 200wpm before it started eating their keystrokes.
+const MERGE_MS := 60.0
+
+## The ceiling on any single pulse, before and after scaling. There is no way to
+## cancel one once it has started, so an over-long buzz cannot be taken back —
+## it would still be running when the next thing happened.
+const MAX_MS := 520.0
 
 var enabled := true
 var _last_ms := 0.0
@@ -97,11 +120,17 @@ func fire(name: String, scale: float = 1.0) -> bool:
 	if now - _last_ms < MERGE_MS and weight <= _last_weight:
 		return false
 
-	var strength: float = clampf(float(e[1]) * scale, 0.05, 1.0)
+	var want: float = float(e[1]) * scale
+	var strength: float = clampf(want, 0.05, 1.0)
+	# Intensity stops at 1.0 and most of this table now sits on that ceiling, so
+	# whatever `scale` cannot spend on strength is spent on duration instead.
+	# Without this a three-block break and a one-block break would arrive in the
+	# hand as exactly the same event, which is the thing the scaling exists to
+	# prevent. Capped, because there is no way to cancel one of these.
+	var ms: float = minf(float(e[0]) * maxf(1.0, want), MAX_MS)
+
 	_last_ms = now
 	_last_weight = weight
-	# `vibrate_handheld(duration_ms, amplitude)` is the whole of the API — there
-	# is no way to cancel one, which is the real reason nothing here runs long.
-	# The heaviest event in the table is under half a second for that reason.
-	Input.vibrate_handheld(int(e[0]), strength)
+	# `vibrate_handheld(duration_ms, amplitude)` is the whole of the API.
+	Input.vibrate_handheld(int(ms), strength)
 	return true
