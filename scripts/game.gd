@@ -159,6 +159,12 @@ const POWER_ORDER := ["COUNTER", "COMBO", "CLUTCH", "PERFECT"]
 ## punished for taking longer to type — but they buy no extra block size.
 const CHAIN_BASE := 1.8
 const CHAIN_PER_CHAR := 0.2
+## What a phone's chain window is multiplied by in a room that also has a
+## keyboard in it. A starting number rather than a measured one: good phone
+## typists manage about half their desktop speed, and a full 2.0 here felt like
+## a different game rather than a level one, so this gives back most of the gap
+## and leaves the pressure clock alone.
+const TOUCH_GRACE := 1.55
 
 const PLAYER_ACCENT := Color("#7bdff2")
 const AI_ACCENT := Color("#ff8fa3")
@@ -208,7 +214,20 @@ enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
 ## around them. Neither can be lost, and neither banks anything: a mode with no
 ## opponent and no death would be an XP farm, and the level has to keep meaning
 ## matches played through.
-enum Mode { NORMAL, TUTORIAL, TRAINING }
+enum Mode { NORMAL, TUTORIAL, TRAINING, DAILY }
+
+## The daily board: one run, everybody gets the same one, and it is over when
+## the clock runs out rather than when somebody wins.
+##
+## There is no opponent. A shared board only means anything if the thing being
+## compared is the same for everyone, and an opponent — human or CPU — makes
+## every run diverge on its second word. So the pressure is the ambient clock
+## and nothing else, and what is being measured is how much you can wring out
+## of three minutes of it.
+const DAILY_SECONDS := 180.0
+## The block kinds are part of the day. Rolled from the seed, so the setting is
+## as fixed as the letters are.
+const DAILY_KIND_POOL := ["bomb", "armoured", "volatile", "split", "frozen", "cursed"]
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -301,6 +320,9 @@ class SideState extends RefCounted:
 	## Seconds of CLUTCH reprieve still running on this board.
 	var slowdown := 0.0
 	var powers_fired := 0
+	## What this player is typing on, and what that is worth. See `_apply_handicap`.
+	var device: int = 0
+	var grace := 1.0
 	var in_danger := false
 	var flash := 0.0
 
@@ -656,8 +678,10 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# screen, so the clock does not sit behind the Dynamic Island.
 	var top := safe_top
 
+	var clock: float = daily_left() if mode == Mode.DAILY else match_time
 	_text_centered(_font_bold, Vector2(cx - 96.0, top + 34.0),
-		"%d:%02d" % [int(match_time) / 60, int(match_time) % 60], 26, Color("#e6ecff"))
+		"%d:%02d" % [int(clock) / 60, int(clock) % 60], 26,
+		Color("#ff6b6b") if (mode == Mode.DAILY and clock <= 15.0) else Color("#e6ecff"))
 	var kick := score_kick * score_kick
 	_text_centered(_font_bold, Vector2(cx + 62.0, top + 34.0), _commas(int(round(score_shown))),
 		int(26 + 8.0 * kick), Color("#ffd166").lerp(Color.WHITE, kick * 0.7))
@@ -893,11 +917,17 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	lesson_age = 0.0
 	lesson_done = false
 	difficulty = diff
-	# A lesson and a practice run are played alone. There is nobody to lose to
-	# and nothing to be distracted by, which is the entire point of both.
+	# A lesson, a practice run and the daily are played alone. There is nobody to
+	# lose to and nothing to be distracted by, which is the entire point.
 	if mode != Mode.NORMAL:
 		bots = 0
 		lineup = []
+	# Fix the deal before a single block is minted, or the seed is meaningless.
+	if mode == Mode.DAILY:
+		WordBank.seed_run(daily_seed())
+		block_kinds = daily_kinds()
+	else:
+		WordBank.free_run()
 	slots_in_play = clampi(1 + bots, 2, SLOTS)
 	if lineup.is_empty():
 		lineup = _bot_lineup(diff, slots_in_play - 1)
@@ -1078,6 +1108,38 @@ func _aim(shooter: SideState, mark: SideState) -> void:
 
 
 ## Step your aim to the next living rival. What Tab does.
+## Today, as a number, in UTC — so a board changes over at the same instant for
+## everyone rather than at each player's local midnight.
+func daily_key() -> String:
+	var d := Time.get_datetime_dict_from_system(true)
+	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
+
+
+## The seed for today. Hashed rather than used raw so consecutive days do not
+## deal near-identical boards.
+func daily_seed() -> int:
+	return hash("wordwars-daily-" + daily_key())
+
+
+## Which special blocks are in play today. Two of them, picked by the seed, so
+## the setting varies day to day and is still the same setting for everyone.
+func daily_kinds() -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = daily_seed()
+	var pool := DAILY_KIND_POOL.duplicate()
+	for i in range(pool.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var t = pool[i]
+		pool[i] = pool[j]
+		pool[j] = t
+	return pool.slice(0, 2)
+
+
+## How long is left of the daily run.
+func daily_left() -> float:
+	return maxf(0.0, DAILY_SECONDS - match_time)
+
+
 ## Whoever you are aiming at, or null if that slot is gone.
 func _target_side() -> SideState:
 	if player.target < 0 or player.target >= sides.size():
@@ -1255,10 +1317,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if phase == Phase.TITLE:
 		match k.keycode:
 			KEY_1: _activate("practice")
-			KEY_2: _activate("solo")
-			KEY_3: _activate("versus")
-			KEY_4: _activate("mastery")
-			KEY_5: _activate("settings")
+			KEY_2: _activate("daily")
+			KEY_3: _activate("solo")
+			KEY_4: _activate("versus")
+			KEY_5: _activate("mastery")
+			KEY_6: _activate("settings")
 			KEY_V: _activate("versus")
 			KEY_P: _activate("mastery")
 			KEY_H:
@@ -1418,7 +1481,7 @@ func _play_word(attacker: SideState, word: String) -> void:
 		attacker.chain += 1
 	else:
 		attacker.chain = 1
-	attacker.chain_window = CHAIN_BASE + word.length() * CHAIN_PER_CHAR
+	attacker.chain_window = (CHAIN_BASE + word.length() * CHAIN_PER_CHAR) * attacker.grace
 	attacker.chain_timer = attacker.chain_window
 	attacker.best_chain = maxi(attacker.best_chain, attacker.chain)
 	# Banked after the chain steps up, so the word that extends a run is paid at
@@ -1527,9 +1590,9 @@ func _send_block(defender: SideState, word: String, tier: int, delay: float) -> 
 ## owns the board, which is safe over a network because each board is simulated
 ## by exactly one machine and the enabled set is agreed before the match starts.
 func _roll_kind() -> int:
-	if block_kinds.is_empty() or randf() >= KIND_CHANCE:
+	if block_kinds.is_empty() or WordBank.rng.randf() >= KIND_CHANCE:
 		return WWBoard.Kind.PLAIN
-	return int(KIND_NAMES[block_kinds.pick_random()])
+	return int(KIND_NAMES[block_kinds[WordBank.rng.randi_range(0, block_kinds.size() - 1)]])
 
 
 ## Throw a visible attack from one board to another. Cosmetic only — the rules
@@ -1990,6 +2053,10 @@ func _process(delta: float) -> void:
 
 	if phase == Phase.PLAY:
 		match_time += delta
+		# The daily ends on the clock, not on a winner. Three minutes is the
+		# whole of the contest, so it is checked before anything else can move.
+		if mode == Mode.DAILY and daily_left() <= 0.0:
+			_finish_daily()
 		for s: SideState in sides:
 			if not s.in_match or not s.alive:
 				continue
@@ -2299,6 +2366,26 @@ func _lesson_next() -> void:
 	Sfx.play("count", 1.2)
 
 
+## The clock ran out, or the lives did. Either way the run is spent for today.
+##
+## Banked before the summary is drawn, and banked whichever way it ended, so
+## quitting out of a bad run is not a way to get a second go at the same board.
+func _finish_daily() -> void:
+	phase = Phase.OVER
+	over_age = 0.0
+	typed = ""
+	_hover_action = ""
+	_clear_hitstop()
+	tracers.clear()
+	winner = "YOU"
+	Profile.record_daily(daily_key(), player.score, int(round(_wpm())),
+		player.words_played, player.best_chain)
+	earned = {}
+	Sfx.play("win")
+	Haptics.fire("win")
+	WordBank.free_run()
+
+
 func _finish_lesson() -> void:
 	Sfx.play("win")
 	_say("lesson complete", Color("#ffd166"))
@@ -2323,7 +2410,21 @@ func _peril(s: SideState) -> float:
 ## the third life is played under conditions the first never saw.
 func _lose_life(side: SideState) -> void:
 	# Practice you can fail is not practice. The board still comes apart — that
-	# is the feedback — but nothing is spent and the run carries on.
+	# is the feedback — but nothing is spent and the run carries on. The daily
+	# is not practice: it has real lives, and running out ends the run early.
+	if mode == Mode.DAILY:
+		side.lives -= 1
+		side.chain = 0
+		side.chain_timer = 0.0
+		side.pending.clear()
+		side.board.reset()
+		side.respite = RESPITE
+		side.life_flash = 1.0
+		Sfx.play("lose")
+		Haptics.fire("life")
+		if side.lives <= 0:
+			_finish_daily()
+		return
 	if mode != Mode.NORMAL:
 		side.chain = 0
 		side.chain_timer = 0.0
@@ -3504,7 +3605,7 @@ func _draw_title(size: Vector2) -> void:
 		_otext(_font, Vector2(cx, _portrait_menu_top(5) + 540.0), "tap to choose",
 			13, Color("#5d6a92"))
 	else:
-		_otext(_font, Vector2(cx, 578), "click, or press 1 – 5", 13, Color("#5d6a92"))
+		_otext(_font, Vector2(cx, 578), "click, or press 1 – 6", 13, Color("#5d6a92"))
 		_otext(_font, Vector2(cx, 674),
 			"H — full rules      F1 — %s      ESC — quit" % [
 				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
@@ -3815,6 +3916,31 @@ func _draw_coaching(size: Vector2) -> void:
 	var band := _center_band()
 	var cx := (band.x + band.y) * 0.5
 	var wide := maxf(300.0, band.y - band.x - 20.0)
+
+	# The daily borrows the empty centre column the same way training does, and
+	# for the same reason — there is no rival board to be in the way. It gets its
+	# own readout rather than falling through to the tutorial card, which is what
+	# it did on its first run: a daily board that opened on "STEP 1 OF 7".
+	if mode == Mode.DAILY:
+		var left := daily_left()
+		_otext(_font_bold, Vector2(cx, 300.0), "DAILY BOARD", 16, Color("#ffd166"))
+		_otext(_font, Vector2(cx, 322.0), daily_key(), 11, Color("#5d6a92"))
+		var rows2 := [
+			["TIME LEFT", "%d:%02d" % [int(left) / 60, int(left) % 60]],
+			["SCORE", _commas(player.score)],
+			["BEST CHAIN", "x%d" % player.best_chain],
+			["LIVES", str(player.lives)],
+		]
+		var y2 := 356.0
+		for r: Array in rows2:
+			_otext(_font, Vector2(cx - 70.0, y2), r[0], 11, Color("#5d6a92"))
+			_otext(_font_bold, Vector2(cx + 60.0, y2), r[1], 16,
+				Color("#ff6b6b") if (r[0] == "TIME LEFT" and left <= 15.0)
+					else Color("#e6ecff"))
+			y2 += 28.0
+		_otext(_font, Vector2(cx, y2 + 14.0), "one run — no second go", 11,
+			Color("#4d5878"))
+		return
 
 	if mode == Mode.TRAINING:
 		_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", 16, Color("#7bdff2"))
@@ -4425,6 +4551,11 @@ func _draw_room(cx: float) -> void:
 			"CPU %d" % (i - ids.size()) if is_bot else String(Link.roster[ids[i - 1]]["name"]))
 		var set_up: bool = true if is_bot else (
 			Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"]))
+		var dev: int = Link.Device.KEYS
+		if mine:
+			dev = Link.my_device()
+		elif not is_bot:
+			dev = int(Link.roster[ids[i - 1]].get("device", Link.Device.KEYS))
 		var tint: Color = SLOT_ACCENTS[i % SLOT_ACCENTS.size()]
 		var r: Rect2 = seats[i]
 		_panel(r, Color("#141b33"), Color(tint, 0.7 if set_up else 0.25), 12.0,
@@ -4436,6 +4567,13 @@ func _draw_room(cx: float) -> void:
 		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 98.0),
 			"READY" if set_up else "not ready", 15,
 			tint if set_up else Color("#5d6a92"))
+		# What they are playing on, said before the match rather than worked out
+		# thirty seconds into it. A CPU has no device worth naming.
+		if not is_bot:
+			var touch: bool = dev == Link.Device.TOUCH
+			_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 116.0),
+				Link.device_label(dev), 10, r.size.x - 20.0,
+				Color("#7bdff2") if touch else Color("#5d6a92"), 8)
 
 	var note := "ready up when you are"
 	if Link.my_ready:
@@ -4744,15 +4882,27 @@ func _draw_gameover(size: Vector2) -> void:
 	# yours: there is no such thing as a CPU's typing speed, and a peer's is not
 	# sent. Everything else is comparable, so everything else went into the
 	# table below rather than being said twice.
-	_otext(_font, Vector2(cx, 312), "%d:%02d  ·  %d wpm  ·  %s" % [
+	var subtitle := "%d:%02d  ·  %d wpm  ·  %s" % [
 		int(match_time) / 60, int(match_time) % 60, int(round(_wpm())),
-		difficulty.to_upper() if not net_active() else "VERSUS"],
-		13, Color("#7c88ad"))
+		difficulty.to_upper() if not net_active() else "VERSUS"]
+	if mode == Mode.DAILY:
+		subtitle = "DAILY BOARD  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
+	_otext(_font, Vector2(cx, 312), subtitle, 13, Color("#7c88ad"))
 
 	_draw_scoreboard(size, _scoreboard_top(), tint)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
+
+	if mode == Mode.DAILY:
+		var run: Dictionary = Profile.daily_result(daily_key())
+		var line := "best ever %s" % _commas(Profile.daily_best)
+		if Profile.daily_streak > 1:
+			line += "      %d days running" % Profile.daily_streak
+		if int(run.get("score", 0)) >= Profile.daily_best and Profile.daily_best > 0:
+			line = "a new best      " + line
+		_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0), line, 14,
+			size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
@@ -4977,6 +5127,7 @@ func _on_net_match_begin() -> void:
 		s.alive = true
 		s.peer_id = int(seat["id"])
 		s.label = String(seat["name"])
+		s.device = int(seat.get("device", Link.Device.KEYS))
 		# Only the host actually runs the bots; everyone else just watches them.
 		# The seat name IS the personality — the host chose it when it built the
 		# seating, so both ends already agree on who this is.
@@ -4985,8 +5136,39 @@ func _on_net_match_begin() -> void:
 			s.bot.configure(s.label)
 		else:
 			s.bot = null
+	player.device = Link.my_device()
+	_apply_handicap()
 	_layout_boards()
 	_aim_everyone()
+
+
+## A phone typist against a keyboard typist is giving away roughly half their
+## speed, in a game whose whole currency is speed. So in a room with both, the
+## phones get a longer chain window — the run survives a slower gap between
+## words.
+##
+## The window rather than the damage on purpose. The deficit is time, so the
+## compensation is time: it buys back the thinking room that thumbs cost you
+## without changing what a word is worth, which would make the two players be
+## playing different games rather than the same one at different speeds.
+##
+## Only ever in a mixed room. Everybody on phones is a fair fight already, and
+## so is everybody on keys — a handicap there would just be a slower game.
+func _apply_handicap() -> void:
+	var touch := 0
+	var keys := 0
+	for s: SideState in sides:
+		if not s.in_match:
+			continue
+		if s.device == Link.Device.TOUCH:
+			touch += 1
+		else:
+			keys += 1
+	var mixed: bool = touch > 0 and keys > 0
+	for s: SideState in sides:
+		s.grace = TOUCH_GRACE if (mixed and s.device == Link.Device.TOUCH) else 1.0
+	if mixed and player.grace > 1.0:
+		_say("phone handicap — longer chains", Color("#7bdff2"))
 
 
 func _on_net_peer_left(why: String) -> void:
@@ -5169,11 +5351,22 @@ func _menu_buttons() -> Array:
 		var doors := [
 			["1", "Practice", "learn it, or drill it", "practice",
 				Color("#90be6d") if green else Color("#8d99bd")],
-			["2", "Single player", "you against the machines", "solo", Color("#7bdff2")],
-			["3", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
-			["4", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
-			["5", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
+			["3", "Single player", "you against the machines", "solo", Color("#7bdff2")],
+			["4", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
+			["5", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
+			["6", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
 		]
+		# The daily sits with the modes rather than off on its own, and says its
+		# state on the door: there is no point walking into a room you have
+		# already used up today.
+		var dkey := daily_key()
+		var spent: bool = Profile.daily_done(dkey)
+		var dsub := "one run, everyone gets the same board"
+		if spent:
+			dsub = "done — %s, back tomorrow" % _commas(
+				int(Profile.daily_result(dkey).get("score", 0)))
+		doors.insert(1, ["2", "Daily board", dsub, "daily",
+			Color("#5d6a92") if spent else Color("#ffd166")])
 		# Five across needs 1248px and a phone has 720, so portrait stacks them.
 		# The rest of the menus are still laid out for landscape and are the next
 		# piece of work; the title at least has to be reachable, or nothing else
@@ -5199,13 +5392,16 @@ func _menu_buttons() -> Array:
 				"key": "", "label": "Full rules", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#5d6a92"), "action": "rules"})
 			return out
-		var w := 240.0
-		var gap := 12.0
-		var span := doors.size() * w + (doors.size() - 1) * gap
+		# Six of these need 1500px and the screen has 1280, so they are fitted
+		# rather than laid out from a constant — the same helper every other grid
+		# in the game uses. Five used to fit exactly, which is why this was a
+		# constant until the daily arrived.
+		var wide := _grid_rects(doors.size(), 428.0, doors.size(), 240.0, 112.0,
+			12.0, 150.0)
 		for i in doors.size():
 			var d: Array = doors[i]
 			out.append({
-				"rect": Rect2(cx - span * 0.5 + i * (w + gap), 428.0, w, 112.0),
+				"rect": wide[i],
 				"key": String(d[0]), "label": String(d[1]), "sub": String(d[2]),
 				"note": "", "rating": 0, "accent": d[4], "action": String(d[3]),
 			})
@@ -5353,6 +5549,15 @@ func _menu_buttons() -> Array:
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.OVER:
+		# The daily has no rematch. That is the entire shape of it — offering a
+		# button that would refuse itself is worse than not offering one.
+		if mode == Mode.DAILY:
+			var only := _grid_rects(1, _over_foot() + 54.0, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
+			out.append({
+				"rect": only[0], "key": "ESC",
+				"label": "Title", "sub": "a new board at midnight UTC", "note": "",
+				"rating": 0, "accent": Color("#ffd166"), "action": "title"})
+			return out
 		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
 		out.append({
 			"rect": over[0], "key": "",
@@ -5411,7 +5616,8 @@ func _draw_menu_button(b: Dictionary) -> void:
 			Vector2((badge.end.x + pip_x) * 0.5, r.position.y + 32.0),
 			String(b["label"]).to_upper(), 20, pip_x - badge.end.x - 12.0,
 			Color.WHITE if hot else Color("#e6ecff"))
-		_otext(_font, Vector2(cx, r.position.y + 54.0), b["sub"], 12, accent)
+		_text_fit_overlay(_font, Vector2(cx, r.position.y + 54.0), String(b["sub"]), 12,
+			r.size.x - 22.0, accent, 9)
 		_text_fit_overlay(_font, Vector2(cx, r.position.y + 71.0), String(b["note"]), 11,
 			r.size.x - 20.0, Color("#8d99bd") if hot else Color("#7c88ad"), 8)
 		if rating > 0:
@@ -5422,7 +5628,10 @@ func _draw_menu_button(b: Dictionary) -> void:
 
 	_otext(_font_bold, Vector2(cx, r.position.y + 60.0), String(b["label"]).to_upper(), 26,
 		Color.WHITE if hot else Color("#e6ecff"))
-	_otext(_font, Vector2(cx, r.position.y + 86.0), b["sub"], 14, accent)
+	# Fitted rather than fixed: six doors are narrower than five were, and a
+	# subtitle that overhangs its own card reads as a rendering fault.
+	_text_fit_overlay(_font, Vector2(cx, r.position.y + 86.0), String(b["sub"]), 14,
+		r.size.x - 24.0, accent, 10)
 	if String(b["note"]) != "":
 		_otext(_font, Vector2(cx, r.position.y + 108.0), b["note"], 12, Color("#7c88ad"))
 
@@ -5726,6 +5935,15 @@ func _activate(action: String) -> void:
 		settings_editing = false
 		_hover_action = ""
 		Sfx.play("count", 1.1)
+	elif action == "daily":
+		if Profile.daily_done(daily_key()):
+			# Said rather than silently ignored, or the door looks broken.
+			_say("today's board is spent — a new one at midnight UTC",
+				Color("#8d99bd"))
+			Sfx.play("reject", 1.2)
+			return
+		Link.leave()
+		start_match("Daily", 0, [], Mode.DAILY)
 	elif action == "rules":
 		show_rules = not show_rules
 		_hover_action = ""

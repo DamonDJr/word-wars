@@ -252,7 +252,14 @@ func add_garbage(prefix: String, tier: int, w: int, h: int,
 		choices.append(x)
 	if choices.is_empty():
 		return false
-	choices.shuffle()
+	# Shuffled from the run's own generator rather than the global one, so where
+	# a block lands is part of what a daily seed reproduces. `Array.shuffle`
+	# always uses the global generator, hence doing it by hand.
+	for i in range(choices.size() - 1, 0, -1):
+		var j := WordBank.rng.randi_range(0, i)
+		var tmp = choices[i]
+		choices[i] = choices[j]
+		choices[j] = tmp
 
 	var best_x: int = choices[0]
 	var best_y := _landing_row(b, best_x, grid)

@@ -28,6 +28,7 @@ func _init() -> void:
 	await process_frame
 
 	_scoreboard_survives_the_wire()
+	_the_handicap_is_only_for_mixed_rooms()
 
 	print("--- %s ---" % ("net state behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -94,6 +95,47 @@ func _scoreboard_survives_the_wire() -> void:
 	game._on_net_state(old)
 	_expect("an old payload does not zero the score", blank.score == 500)
 	_expect("an old payload does not zero the salvos", blank.salvos == 2)
+
+
+## The phone handicap has to be conditional, or it is not a handicap — it is
+## just a slower game for everyone, and a phone playing a phone would be getting
+## help against an opponent with exactly the same problem.
+func _the_handicap_is_only_for_mixed_rooms() -> void:
+	print("--- the handicap only applies to a mixed room ---")
+	var L = get_root().get_node("Link")
+
+	for setup in [
+		{"what": "everyone on keys", "me": L.Device.KEYS, "them": L.Device.KEYS,
+			"mine": 1.0, "theirs": 1.0},
+		{"what": "everyone on phones", "me": L.Device.TOUCH, "them": L.Device.TOUCH,
+			"mine": 1.0, "theirs": 1.0},
+		{"what": "a phone against keys", "me": L.Device.TOUCH, "them": L.Device.KEYS,
+			"mine": game.TOUCH_GRACE, "theirs": 1.0},
+		{"what": "keys against a phone", "me": L.Device.KEYS, "them": L.Device.TOUCH,
+			"mine": 1.0, "theirs": game.TOUCH_GRACE},
+	]:
+		game.start_match("Rookie", 1)
+		game.sides[0].device = int(setup["me"])
+		game.sides[1].device = int(setup["them"])
+		game.sides[1].in_match = true
+		game._apply_handicap()
+		_expect("%s — you get x%.2f" % [setup["what"], setup["mine"]],
+			is_equal_approx(game.sides[0].grace, float(setup["mine"])))
+		_expect("%s — they get x%.2f" % [setup["what"], setup["theirs"]],
+			is_equal_approx(game.sides[1].grace, float(setup["theirs"])))
+
+	# And it has to actually reach the chain window, not just sit in a field.
+	game.start_match("Rookie", 1)
+	game.sides[0].device = L.Device.TOUCH
+	game.sides[1].device = L.Device.KEYS
+	game.sides[1].in_match = true
+	game._apply_handicap()
+	game.phase = game.Phase.PLAY
+	game._play_word(game.sides[0], "planet")
+	var mine: float = game.sides[0].chain_window
+	game._play_word(game.sides[1], "planet")
+	var theirs: float = game.sides[1].chain_window
+	_expect("the phone's chain window is genuinely longer", mine > theirs + 0.01)
 
 
 func _expect(what: String, ok: bool) -> void:

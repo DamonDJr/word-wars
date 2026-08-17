@@ -352,6 +352,60 @@ func record_match(r: Dictionary) -> void:
 ## Stored so a future version can convert an old file instead of ignoring it.
 const SCHEMA := 1
 
+# ---------------------------------------------------------------- the daily
+#
+# One run a day, and the record of it is what stops a second one. Kept as a map
+# of date -> result rather than just "today", so the streak survives and there
+# is something to look back at.
+
+## "YYYY-MM-DD" -> {"score", "wpm", "words", "chain"}.
+var daily: Dictionary = {}
+var daily_best := 0
+var daily_streak := 0
+
+
+## Has today's run already been spent?
+func daily_done(key: String) -> bool:
+	return daily.has(key)
+
+
+func daily_result(key: String) -> Dictionary:
+	return daily.get(key, {})
+
+
+## Bank a finished run. Refuses to overwrite a day that already has one, so a
+## crash, a rematch or a reload cannot buy a second attempt at the same board.
+func record_daily(key: String, score: int, wpm: int, words: int, chain: int) -> void:
+	if daily.has(key):
+		return
+	daily[key] = {"score": score, "wpm": wpm, "words": words, "chain": chain}
+	daily_best = maxi(daily_best, score)
+	# Yesterday continues a streak; anything older starts a new one.
+	var y := _day_before(key)
+	daily_streak = (daily_streak + 1) if daily.has(y) else 1
+	# Trim, or a year of play turns the profile into a log file.
+	if daily.size() > 60:
+		var keys: Array = daily.keys()
+		keys.sort()
+		while keys.size() > 60:
+			daily.erase(keys.pop_front())
+	save()
+	changed.emit()
+
+
+## The day before a "YYYY-MM-DD", by going through unix time so month and year
+## ends are somebody else's problem.
+func _day_before(key: String) -> String:
+	var bits := key.split("-")
+	if bits.size() != 3:
+		return ""
+	var t := Time.get_unix_time_from_datetime_dict({
+		"year": int(bits[0]), "month": int(bits[1]), "day": int(bits[2]),
+		"hour": 12, "minute": 0, "second": 0,
+	})
+	var d := Time.get_datetime_dict_from_unix_time(int(t) - 86400)
+	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
+
 ## True when something is on disk that we could not read. Saving stays off while
 ## this is set, because a profile that cannot be parsed might still be one that
 ## can be rescued by hand.
@@ -413,6 +467,9 @@ func _read(path: String) -> Error:
 	best_score = int(cfg.get_value("record", "best_score", 0))
 	longest_word = String(cfg.get_value("record", "longest_word", ""))
 	powers = cfg.get_value("record", "powers", {})
+	daily = cfg.get_value("daily", "runs", {})
+	daily_best = int(cfg.get_value("daily", "best", 0))
+	daily_streak = int(cfg.get_value("daily", "streak", 0))
 	equipped = cfg.get_value("worn", "equipped", {})
 	prefs = cfg.get_value("worn", "prefs", {})
 	return OK
@@ -437,6 +494,9 @@ func save() -> void:
 	cfg.set_value("record", "best_score", best_score)
 	cfg.set_value("record", "longest_word", longest_word)
 	cfg.set_value("record", "powers", powers)
+	cfg.set_value("daily", "runs", daily)
+	cfg.set_value("daily", "best", daily_best)
+	cfg.set_value("daily", "streak", daily_streak)
 	cfg.set_value("worn", "equipped", equipped)
 	cfg.set_value("worn", "prefs", prefs)
 

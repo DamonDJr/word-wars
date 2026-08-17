@@ -85,6 +85,19 @@ if ! grep -q "net state behaves" <<<"$NET"; then
 	exit 1
 fi
 
+# The daily makes two promises that both fail quietly: the same board for
+# everyone, and one run a day. A daily that deals different boards still looks
+# like a working daily — it just is not a contest — and a second attempt at a
+# board you have already seen is not a score anyone can compare.
+echo "==> Daily check"
+DAILY=$("$(command -v godot)" --headless --script tools/dailytest.gd 2>&1 || true)
+if ! grep -q "daily behaves" <<<"$DAILY"; then
+	echo "FAILED: the daily board is not behaving." >&2
+	grep -E "FAILED" <<<"$DAILY" >&2 || true
+	echo "        Run: godot --headless --script tools/dailytest.gd" >&2
+	exit 1
+fi
+
 # Haptics fail silently by construction: there is no taptic engine on this
 # machine, so a call naming an event that does not exist does exactly what a
 # correct one does here — nothing. Nobody would find out until a phone did.

@@ -8,6 +8,28 @@ extends Node
 ##              needs enough answers a person would actually think of, not just
 ##              enough answers that exist.
 
+## The draws that decide what a board looks like.
+##
+## Kept apart from the engine's global generator on purpose. Cosmetic randomness
+## — sparks, grain, decor — draws from the global one every frame, at a rate
+## that depends on framerate and on what is on screen, so anything sharing it
+## can never be reproduced. The daily board needs the same letters for everyone
+## who plays it, so the letters come from here and here alone, and `seed_run`
+## makes a day repeatable.
+var rng := RandomNumberGenerator.new()
+
+
+## Fix the run to a seed, so two machines deal the same board.
+func seed_run(value: int) -> void:
+	rng.seed = value
+
+
+## Back to unpredictable, for everything that is not the daily.
+func free_run() -> void:
+	rng.randomize()
+
+
+
 const VALID_PATH := "res://data/words.txt"
 const COMMON_PATH := "res://data/common.txt"
 const MAX_INDEXED_PREFIX := 4
@@ -165,7 +187,7 @@ func _weighted_stamp(pool: Array, avoid: Dictionary) -> String:
 	if total <= 0.0:
 		return pool[0]["s"]
 
-	var roll := randf() * total
+	var roll := rng.randf() * total
 	for i in pool.size():
 		roll -= weights[i]
 		if roll <= 0.0:
@@ -245,7 +267,7 @@ func pick_any(min_len: int, max_len: int, exclude: Dictionary, bias: float = 1.7
 	if n == 0:
 		return ""
 	for _attempt in 200:
-		var i := int(pow(randf(), bias) * n)
+		var i := int(pow(rng.randf(), bias) * n)
 		var w: String = _common[mini(i, n - 1)]
 		if w.length() >= min_len and w.length() <= max_len and not exclude.has(w):
 			return w
@@ -262,4 +284,4 @@ func random_common(bias: float = 1.4) -> String:
 	var n := _common.size()
 	if n == 0:
 		return "s"
-	return _common[mini(int(pow(randf(), bias) * n), n - 1)]
+	return _common[mini(int(pow(rng.randf(), bias) * n), n - 1)]

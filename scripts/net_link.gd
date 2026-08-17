@@ -79,7 +79,27 @@ var status := ""
 
 var my_name := "PLAYER"
 var my_ready := false
-## peer id -> {"name": String, "ready": bool}. Everyone in the room but you.
+## What kind of machine somebody is playing on.
+##
+## Typing on glass is roughly half the speed of typing on keys, which in a game
+## about typing fast is not a small difference — so the room says who is on what
+## rather than leaving it to be discovered in the first thirty seconds of a
+## match. `touch` is the half that matters for balance; the rest is a label.
+enum Device { KEYS, TOUCH }
+
+static func my_device() -> int:
+	match OS.get_name():
+		"iOS", "Android":
+			return Device.TOUCH
+	return Device.KEYS
+
+
+## What to call it on screen.
+static func device_label(dev: int) -> String:
+	return "PHONE" if dev == Device.TOUCH else "KEYBOARD"
+
+
+## peer id -> {"name": String, "ready": bool, "device": int}. Everyone but you.
 var roster: Dictionary = {}
 ## How many CPUs the host is adding to fill the room out.
 var bot_count := 0
@@ -412,16 +432,20 @@ func net_kinds(list: Array) -> void:
 ## work this out for themselves any more: bots have no peer id to sort by.
 func _build_seating() -> Array:
 	var out: Array = [{"id": multiplayer.get_unique_id(), "name": my_name,
-		"kinds": kinds}]
+		"kinds": kinds, "device": my_device()}]
 	for id in peer_ids():
-		out.append({"id": id, "name": String(roster[id]["name"])})
+		out.append({"id": id, "name": String(roster[id]["name"]),
+			"device": int(roster[id].get("device", Device.KEYS))})
 	# CPUs are named for the personality they will play as, and the host decides
 	# once so everybody in the room sees the same table. The name is the whole
 	# message: the host configures its bots straight back off these labels.
 	var picks: Array = AiOpponent.ROSTER.duplicate()
 	picks.shuffle()
 	for i in bot_count:
-		out.append({"id": -(i + 1), "name": String(picks[i % picks.size()]).to_upper()})
+		# A CPU runs on whoever is hosting, so it types at whatever speed it was
+		# built for and gets no label and no handicap either way.
+		out.append({"id": -(i + 1), "name": String(picks[i % picks.size()]).to_upper(),
+			"device": Device.KEYS})
 	return out
 
 
@@ -443,9 +467,9 @@ func set_ready(value: bool) -> void:
 func _on_peer_connected(id: int) -> void:
 	connected = true
 	_tighten_timeout(id)
-	roster[id] = {"name": "…", "ready": false}
+	roster[id] = {"name": "…", "ready": false, "device": Device.KEYS}
 	status = "%d in the room" % (roster.size() + 1)
-	net_hello.rpc(my_name)
+	net_hello.rpc(my_name, my_device())
 	# Whoever just arrived does not know the house rules yet.
 	if is_host:
 		net_kinds.rpc_id(id, kinds)
@@ -690,27 +714,28 @@ func _destroy_lobby() -> void:
 # ---------------------------------------------------------------- lobby protocol
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_hello(who: String) -> void:
-	_note_name(multiplayer.get_remote_sender_id(), who)
+func net_hello(who: String, dev: int = Device.KEYS) -> void:
+	_note_name(multiplayer.get_remote_sender_id(), who, dev)
 	# Answer so whoever connected later still learns the earlier names.
-	net_hello_back.rpc(my_name)
+	net_hello_back.rpc(my_name, my_device())
 	room_changed.emit()
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func net_hello_back(who: String) -> void:
-	_note_name(multiplayer.get_remote_sender_id(), who)
+func net_hello_back(who: String, dev: int = Device.KEYS) -> void:
+	_note_name(multiplayer.get_remote_sender_id(), who, dev)
 	room_changed.emit()
 
 
-func _note_name(id: int, who: String) -> void:
+func _note_name(id: int, who: String, dev: int = Device.KEYS) -> void:
 	var clean := who.strip_edges().substr(0, 14)
 	if clean == "":
 		clean = "RIVAL"
 	if not roster.has(id):
-		roster[id] = {"name": clean, "ready": false}
+		roster[id] = {"name": clean, "ready": false, "device": dev}
 	else:
 		roster[id]["name"] = clean
+		roster[id]["device"] = dev
 
 
 @rpc("any_peer", "call_remote", "reliable")
