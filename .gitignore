@@ -32,3 +32,8 @@ scripts/Documents/
 # excludes it because it can hold signing keys and passwords; ours holds
 # neither, and it carries the include_filter that puts the word lists in the
 # build. Without it committed, a fresh clone exports a game with no dictionary.
+
+# Downloaded build artifacts. `gh run download` drops the IPA into whatever
+# directory it is run from, and `git add -A` will happily commit 55 MB of it.
+*.ipa
+Payload/
