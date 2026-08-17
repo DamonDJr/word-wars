@@ -85,6 +85,19 @@ if ! grep -q "net state behaves" <<<"$NET"; then
 	exit 1
 fi
 
+# You could win a match and finish second on points, because the two hardest
+# things in the game paid nothing. These bonuses are what tie the scoreboard back
+# to the result, and focus fire is invisible by construction — the only symptom
+# is that blocks get bigger, which is indistinguishable from a chain tier.
+echo "==> Scoring check"
+SCORE=$("$(command -v godot)" --headless --script tools/scoretest.gd 2>&1 || true)
+if ! grep -q "scoring behaves" <<<"$SCORE"; then
+	echo "FAILED: the scoring or the focus rule is not behaving." >&2
+	grep -E "FAILED" <<<"$SCORE" >&2 || true
+	echo "        Run: godot --headless --script tools/scoretest.gd" >&2
+	exit 1
+fi
+
 # A premium cosmetic that any amount of playing can reach is a sale given away,
 # and one that a purchase fails to deliver is worse. Every other unlock here is
 # a pure function of the record, and that formula gets re-tuned — so the check

@@ -272,6 +272,10 @@ class Pending extends RefCounted:
 	var cells := 1
 	var timer := 0.0
 	var kind := 0
+	## Who sent it, as an entity id — 0 for the local player, a peer id for
+	## anyone else, and -1 for ambient pressure, which has nobody to credit.
+	## Carried so a board that overfills can pay whoever filled it.
+	var from := -1
 
 
 ## An attack in flight. Purely cosmetic — the rules already resolved the moment
@@ -349,6 +353,9 @@ class SideState extends RefCounted:
 	var device: int = 0
 	var grace := 1.0
 	var in_danger := false
+	## How many rivals were aiming here last time it was checked, so a change can
+	## be announced once rather than every frame.
+	var focused_by := 0
 	var flash := 0.0
 
 	func pending_cells() -> int:
@@ -1187,6 +1194,78 @@ func daily_left() -> float:
 	return maxf(0.0, DAILY_SECONDS - match_time)
 
 
+## Extra weight when a board is being ganged up on.
+##
+## In a four-way, spreading fire is safe and coordinating is not rewarded, so
+## everybody quietly plays their own solitaire and the free-for-all stops being a
+## free-for-all. This makes a shared target worth agreeing on: two attackers on
+## one board each hit a tier harder, three hit two harder.
+##
+## It reads live off who is aiming where rather than from anything remembered, so
+## it appears the moment a second player switches on and goes the moment they
+## switch off — and the target can feel it and re-aim, which is the counterplay.
+## Only ever with three or more boards in the match: in a duel there is nobody to
+## gang up with, and a "focus bonus" there would just be a damage buff.
+func _focus_bonus(attacker: SideState, defender: SideState) -> int:
+	if slots_in_play < 3 or defender == null:
+		return 0
+	var on_them := 0
+	for s: SideState in sides:
+		if s == defender or not s.in_match or not s.alive:
+			continue
+		if s.target == defender.slot:
+			on_them += 1
+	# One attacker is not a gang. Every attacker past the first adds a tier.
+	return maxi(0, on_them - 1)
+
+
+## Pay for overfilling somebody's board.
+##
+## Only the machine that owns the board knows the block landed, and only the
+## attacker's machine holds the attacker's score — so a local culprit is paid
+## here and a remote one is told. Ambient pressure has nobody to pay.
+func _credit_topout(culprit: int, victim: SideState) -> void:
+	if culprit < 0 or victim == null:
+		return
+	var who := _side_for_entity(culprit)
+	if who == null or who == victim:
+		return
+	if _owned_here(who):
+		who.score += Scoring.TOPOUT_BONUS
+		if who == player:
+			_pop_score("+%s" % _commas(Scoring.TOPOUT_BONUS), "TOPPED THEM OUT",
+				Scoring.TOPOUT_BONUS)
+			score_kick = 1.0
+			Sfx.play("salvo", 1.1)
+			Haptics.fire("salvo")
+			_say("TOPPED OUT %s — +%s" % [_show(victim.label),
+				_commas(Scoring.TOPOUT_BONUS)], Color("#ffd166"))
+		_log("%s overfilled %s — +%s" % [_show(who.label), _show(victim.label),
+			_commas(Scoring.TOPOUT_BONUS)], Color("#ffd166"))
+	elif net_active():
+		Link.send_topout(culprit)
+
+
+## Their attack ended one of our lives, and they are owed for it.
+func _on_topout_credit(_culprit: int) -> void:
+	player.score += Scoring.TOPOUT_BONUS
+	_pop_score("+%s" % _commas(Scoring.TOPOUT_BONUS), "TOPPED THEM OUT",
+		Scoring.TOPOUT_BONUS)
+	score_kick = 1.0
+	Sfx.play("salvo", 1.1)
+	Haptics.fire("salvo")
+	_say("TOPPED THEM OUT — +%s" % _commas(Scoring.TOPOUT_BONUS), Color("#ffd166"))
+
+
+## A side as a network entity id: 0 for your own board, its peer id otherwise.
+## Bots have negative peer ids, which is what distinguishes "the host's CPU"
+## from "a person" when a topout has to be credited.
+func _entity_of(s: SideState) -> int:
+	if s == null:
+		return -1
+	return 0 if s == player else s.peer_id
+
+
 ## Whoever you are aiming at, or null if that slot is gone.
 func _target_side() -> SideState:
 	if player.target < 0 or player.target >= sides.size():
@@ -1563,10 +1642,12 @@ func _play_word(attacker: SideState, word: String) -> void:
 	# is what makes it a promise rather than a bonus.
 	var spent := attacker.tier_bonus
 	attacker.tier_bonus = 0
-	var out_tier := clampi(_chain_tier(attacker.chain) + combo + spent, 0, TIERS.size() - 1)
+	var focus := _focus_bonus(attacker, defender)
+	var out_tier := clampi(_chain_tier(attacker.chain) + combo + spent + focus,
+		0, TIERS.size() - 1)
 
 	if out_tier >= 0:
-		_send_block(defender, word, out_tier, DROP_DELAY)
+		_send_block(defender, word, out_tier, DROP_DELAY, attacker)
 		_throw(attacker, defender, out_tier, word.substr(maxi(0, word.length() - 3)))
 
 	earned += _fire_powers(attacker, defender, word, powers, out_tier, intercepted)
@@ -1617,12 +1698,14 @@ func _note_best(side: SideState, word: String, earned: int) -> void:
 
 ## One block on its way. The defender mints its own stamp over a network,
 ## because only they can see what their board is already holding.
-func _send_block(defender: SideState, word: String, tier: int, delay: float) -> void:
+func _send_block(defender: SideState, word: String, tier: int, delay: float,
+		from: SideState = null) -> void:
 	if net_active() and not _owned_here(defender):
 		Link.send_attack(defender.peer_id, word, tier)
 		defender.flash = 1.0
 		return
 	var p := Pending.new()
+	p.from = _entity_of(from)
 	p.tier = tier
 	p.kind = _roll_kind()
 	# A bomb clears its neighbours, so it has to be worth the trouble of setting
@@ -1729,12 +1812,12 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 				# Literally back where it came from: one for one, so it can never
 				# pay out more than was aimed at you in the first place.
 				for i in intercepted:
-					_send_block(defender, word, 0, DROP_DELAY + 0.25 + i * 0.12)
+					_send_block(defender, word, 0, DROP_DELAY + 0.25 + i * 0.12, attacker)
 					_throw(attacker, defender, 0, "")
 			"COMBO":
 				attacker.tier_bonus = 1
 			"PERFECT":
-				_send_block(defender, word, out_tier, DROP_DELAY + 0.4)
+				_send_block(defender, word, out_tier, DROP_DELAY + 0.4, attacker)
 				_throw(attacker, defender, out_tier, "")
 			"CLUTCH":
 				attacker.slowdown = CLUTCH_TIME
@@ -1855,6 +1938,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	else:
 		for i in power:
 			var p := Pending.new()
+			p.from = _entity_of(attacker)
 			p.tier = 0
 			p.prefix = _mint_stamp(word, STAMP_WANT, defender)
 			p.cells = 1
@@ -2125,6 +2209,7 @@ func _process(delta: float) -> void:
 					s.chain_fill = 0.0
 		if mode == Mode.TUTORIAL:
 			_lesson_tick(delta)
+		_tick_focus()
 		_tick_danger(player)
 		_tick_pending(player, delta)
 		_tick_pressure(delta)
@@ -2193,6 +2278,28 @@ func _tick_music(delta: float) -> void:
 			Music.play(want)
 
 
+## Being ganged up on is the one thing in a four-way you have to answer, and it
+## was completely silent — the blocks simply got bigger. Said once when it starts
+## and once when it stops, like the danger alarm, because a warning that repeats
+## every frame is a warning nobody reads.
+func _tick_focus() -> void:
+	if slots_in_play < 3 or not player.alive:
+		return
+	var on_me := 0
+	for s: SideState in sides:
+		if s != player and s.in_match and s.alive and s.target == player.slot:
+			on_me += 1
+	if on_me == player.focused_by:
+		return
+	if on_me >= 2 and player.focused_by < 2:
+		_say("%d ON YOU — their blocks are bigger" % on_me, Color("#ff6b6b"))
+		Sfx.play("danger", 1.15)
+		Haptics.fire("danger")
+	elif on_me < 2 and player.focused_by >= 2:
+		_say("no longer focused", Color("#8892b0"))
+	player.focused_by = on_me
+
+
 ## Sound the alarm once on the way into the red, not every frame you sit there.
 func _tick_danger(side: SideState) -> void:
 	var danger := side.board.stack_top() <= 3
@@ -2228,6 +2335,7 @@ func _tick_pending(side: SideState, delta: float) -> void:
 			if side == player:
 				Haptics.fire("land", 0.7 + 0.12 * float(p.tier))
 			if not fit:
+				_credit_topout(p.from, side)
 				_lose_life(side)
 				return
 
@@ -2553,6 +2661,19 @@ func _end_match(loser: SideState) -> void:
 		winner = "YOU" if loser != player else (
 			ai_side.label if net_active() else "CPU")
 	loser.board.shake = 1.0
+
+	# Taking the match is worth points, and how comfortably you took it is worth
+	# more. Without this a win and a loss scored the same, which is why the
+	# scoreboard could crown somebody who had just lost.
+	if mode == Mode.NORMAL and winner == "YOU" and player.alive:
+		var lives_left: int = maxi(0, player.lives)
+		var spoils: int = Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS
+		player.score += spoils
+		_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
+		score_kick = 1.0
+		_log("victory — +%s (%d %s left)" % [_commas(spoils), lives_left,
+			"life" if lives_left == 1 else "lives"], Color("#ffd166"))
+
 	Sfx.play("win" if winner == "YOU" else "lose")
 	Haptics.fire("win" if winner == "YOU" else "lose")
 	_log("%s wins" % winner, Color("#ffd166"))
@@ -4858,7 +4979,11 @@ func _draw_rules_panel(size: Vector2) -> void:
 			+ "A tenth word cashes the run in as a SALVO of single blocks and resets you to "
 			+ "nothing. Pause or fire a non-word and the run is gone.",
 		"Topping out costs one of THREE LIVES and wipes your board — it does not end the "
-			+ "match. Words score by their letters, times your chain, times what they broke.",
+			+ "match. Words score by their letters, times your chain, times what they broke. "
+			+ "Overfilling somebody's board pays a bonus, and so does winning.",
+		"With three or more boards in play, every attacker past the first aiming at "
+			+ "the same board hits a tier harder. Ganging up works, and being ganged "
+			+ "up on is worth re-aiming over.",
 	]
 
 	# Measured before the panel is drawn, so the panel is the height of what is
@@ -5250,6 +5375,7 @@ func _net_setup() -> void:
 	Link.pressure_received.connect(_seed_pressure)
 	Link.opponent_topped_out.connect(func(): _end_match(ai_side))
 	Link.state_received.connect(_on_net_state)
+	Link.topout_credit.connect(_on_topout_credit)
 
 
 func _on_net_match_begin() -> void:
@@ -5352,6 +5478,9 @@ func _on_net_attack(word: String, tier: int, victim: int) -> void:
 	if side == null:
 		return
 	var p := Pending.new()
+	# Whoever sent the packet. Their machine holds their score, so a topout has
+	# to be reported back to them rather than paid here.
+	p.from = multiplayer.get_remote_sender_id()
 	p.tier = clampi(tier, 0, TIERS.size() - 1)
 	p.prefix = _mint_stamp(word, STAMP_WANT, side)
 	p.cells = _cells(p.tier)

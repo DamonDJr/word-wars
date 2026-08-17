@@ -13,6 +13,11 @@ signal room_changed
 signal match_begin
 signal rematch_agreed
 signal attack_received(word: String, tier: int, victim: int)
+## Somebody's board overfilled, and this attack is why. Sent by the machine that
+## owns the board that just topped out, because that is the only one that knows
+## — a board is simulated on exactly one machine, so the attacker never sees the
+## landing. `culprit` is the entity that sent the block.
+signal topout_credit(culprit: int)
 signal salvo_received(word: String, count: int, victim: int)
 signal pressure_received(source: String)
 signal opponent_topped_out
@@ -807,6 +812,19 @@ func send_topped_out() -> void:
 func send_state(payload: Dictionary) -> void:
 	if connected:
 		net_state.rpc(payload)
+
+
+## Tell whoever caused a topout that they caused it. Their machine holds their
+## score, so the bonus can only be paid there.
+func send_topout(culprit: int) -> void:
+	if not connected or culprit <= 0:
+		return
+	net_topout.rpc_id(culprit)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func net_topout() -> void:
+	topout_credit.emit(multiplayer.get_unique_id())
 
 
 @rpc("any_peer", "call_remote", "reliable")

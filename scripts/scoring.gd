@@ -37,6 +37,24 @@ const COMBO_STEP := 0.60
 ## Flat, on top of the word that cashed the chain in.
 const SALVO_BONUS := 200
 
+## Winning and score used to be able to disagree — you could take the match and
+## still finish second on points, which makes the scoreboard read like it is
+## measuring something other than the game you just played. These are what tie
+## them back together.
+##
+## Overfilling somebody's board is the single hardest thing to do to another
+## player and paid nothing at all: the attack that ends a life scored exactly
+## what the same attack scores when it lands on an empty board. It is worth more
+## than a salvo because it takes everything a salvo takes and has to arrive
+## against a board that is already drowning.
+const TOPOUT_BONUS := 400
+
+## And taking the match. Flat, plus what is left of your own boards — a win with
+## all three lives intact is a different win from one that came down to the wire,
+## and the score should be able to say which it was.
+const WIN_BONUS := 900
+const LIFE_BONUS := 250
+
 
 static func letters(word: String) -> int:
 	var n := 0
