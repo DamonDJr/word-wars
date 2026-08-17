@@ -30,6 +30,7 @@ func _init() -> void:
 	_ads_stop()
 	_free_themes_are_untouched()
 	_premium_theme_actually_differs()
+	_the_menu_knows_every_block_style()
 
 	print("--- %s ---" % ("shop behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -157,6 +158,22 @@ func _premium_theme_actually_differs() -> void:
 	_expect("its grid has nodes", bool(Cosmetics.theme_opt("prism", "nodes")))
 	_expect("it owns its frame",
 		String(Cosmetics.theme_opt("prism", "frame")) != String(free_paint["frame"]))
+
+
+## The menu is built out of blocks now, so a block style has to reach it. The
+## two renderers are separate on purpose — one is tuned to cell-sized tiles and
+## one to a menu gutter — which makes it possible for a style to be added to the
+## board and never drawn on the title. This is the check that stops that.
+func _the_menu_knows_every_block_style() -> void:
+	print("--- the menu can draw every block style ---")
+	var catalogue: Array = []
+	for e: Dictionary in P.entries("blocks"):
+		catalogue.append(String(e["id"]))
+	for id: String in catalogue:
+		_expect("%s is a style the menu handles" % id,
+			Cosmetics.BLOCK_STYLES.has(id))
+	_expect("and the menu claims no style the catalogue lacks",
+		Cosmetics.BLOCK_STYLES.size() == catalogue.size())
 
 
 func _expect(what: String, ok: bool) -> void:

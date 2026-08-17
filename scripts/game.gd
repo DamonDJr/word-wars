@@ -228,7 +228,7 @@ const GRAIN := 0.05
 const VIGNETTE := 0.40
 
 enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
-	COUNTDOWN, PLAY, OVER }
+	COUNTDOWN, PLAY, OVER, COSMETICS }
 
 ## What a match is for. A tutorial and a training run use the whole machine —
 ## real board, real typing, real rules — and differ only in what is switched off
@@ -1392,9 +1392,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	if phase == Phase.MASTERY:
 		match k.keycode:
+			KEY_ESCAPE, KEY_P: _activate("title")
+			KEY_C: _activate("cosmetics")
+		return
+
+	if phase == Phase.COSMETICS:
+		match k.keycode:
 			KEY_LEFT, KEY_A: _activate("slot:-1")
 			KEY_RIGHT, KEY_D: _activate("slot:1")
-			KEY_ESCAPE, KEY_P: _activate("title")
+			KEY_ESCAPE, KEY_C: _activate("title")
 		return
 
 	# The lobby's text fields own the keyboard while it is up.
@@ -1472,7 +1478,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_3: _activate("solo")
 			KEY_4: _activate("versus")
 			KEY_5: _activate("mastery")
-			KEY_6: _activate("settings")
+			KEY_6: _activate("cosmetics")
+			KEY_7: _activate("settings")
 			KEY_V: _activate("versus")
 			KEY_P: _activate("mastery")
 			KEY_H:
@@ -2186,7 +2193,7 @@ func _process(delta: float) -> void:
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
 		and phase != Phase.LOBBY and phase != Phase.MASTERY \
 		and phase != Phase.SOLO and phase != Phase.SETTINGS \
-		and phase != Phase.PRACTICE
+		and phase != Phase.PRACTICE and phase != Phase.COSMETICS
 	for s: SideState in sides:
 		# There is no rival in a lesson or a practice run, so its board is not
 		# drawn at all — an empty playfield sitting there reads as an opponent
@@ -2269,7 +2276,7 @@ func _tick_music(delta: float) -> void:
 	var want := "menu"
 	match phase:
 		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS, \
-				Phase.PRACTICE:
+				Phase.PRACTICE, Phase.COSMETICS:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -2884,7 +2891,8 @@ func _back_action() -> String:
 	if phase == Phase.TITLE and show_rules:
 		return "rules"
 	match phase:
-		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER:
+		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER, \
+				Phase.COSMETICS:
 			return "title"
 		Phase.LOBBY:
 			return "leave" if Link.connected else "title"
@@ -3650,6 +3658,8 @@ func _draw_overlay() -> void:
 		_draw_practice(size)
 	elif phase == Phase.MASTERY:
 		_draw_mastery(size)
+	elif phase == Phase.COSMETICS:
+		_draw_cosmetics(size)
 	elif phase == Phase.LOBBY:
 		_draw_lobby(size)
 	elif phase == Phase.SETTINGS:
@@ -3833,10 +3843,12 @@ func _draw_title(size: Vector2) -> void:
 	# The number keys still work and nothing else says so. Kept to one line and
 	# set quietly, because it is a power-user affordance rather than the way in.
 	if not portrait:
-		var m := _plate_metrics()
-		var foot: float = float(m["top"]) + 6.0 * (float(m["h"]) + float(m["gap"])) \
-			+ 3.0 * float(m["band_gap"]) + 58.0
-		_otext(_font, Vector2(cx, foot), "1 – 6 jumps straight in      F1 %s      ESC quits"
+		# Hung off the last thing drawn rather than recomputed, which is how it
+		# ended up under the bottom edge when a seventh plate arrived.
+		var plates := _title_plates()
+		var last: Rect2 = plates[plates.size() - 1]["rect"]
+		_otext(_font, Vector2(cx, last.end.y + 18.0),
+			"1 – 7 jumps straight in      F1 %s      ESC quits"
 			% ["unmutes" if Sfx.muted else "mutes"], 11, Color("#3d4666"))
 
 
@@ -4508,8 +4520,6 @@ func _draw_mastery(size: Vector2) -> void:
 		"LEVEL %d%s" % [int(prog["level"]), ("  ·  " + title.to_upper()) if title != "" else ""],
 		20, Color("#ffd166"))
 
-	# The bar carries the numbers rather than sitting beside them; one thing to
-	# read instead of three. Its width is capped by the screen, not by 600.
 	var bw: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
 	var bar := Rect2(cx - bw * 0.5, hy + 116.0, bw, 12.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.25), 6.0, 1.0)
@@ -4520,17 +4530,22 @@ func _draw_mastery(size: Vector2) -> void:
 		_commas(int(prog["into"])), _commas(int(prog["need"])), int(prog["level"]) + 1],
 		12, Color("#7c88ad"))
 
-	# Lifetime record, as the things the level is actually made of.
+	# The record. With cosmetics moved out this screen is only about what you
+	# have done, so it can afford to say all of it rather than a strip of eight.
 	var stats := [
 		["MATCHES", str(Profile.matches)],
 		["WINS", str(Profile.wins)],
+		["FLAWLESS", str(Profile.flawless)],
 		["WORDS", _commas(Profile.words)],
 		["BEST WPM", str(int(Profile.best_wpm))],
 		["BEST CHAIN", "x%d" % Profile.best_chain],
+		["BEST COMBO", "x%d" % Profile.best_combo],
 		["MULTI-CLEARS", str(Profile.multi_clears)],
 		["SALVOS", str(Profile.salvos)],
+		["BEST SCORE", _commas(Profile.best_score)],
 		["LONGEST", _show(Profile.longest_word.to_upper())
 			if Profile.longest_word != "" else "—"],
+		["DAILY BEST", _commas(Profile.daily_best)],
 	]
 	var strip := _mastery_stat_rects(stats.size())
 	for i in stats.size():
@@ -4541,12 +4556,56 @@ func _draw_mastery(size: Vector2) -> void:
 		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 41.0),
 			stats[i][1], 18, r.size.x - 20.0, Color("#e6ecff"))
 
+	# Power words earned, which is the one part of the record that says how you
+	# play rather than how much. It had nowhere to live before.
+	var pfoot := _grid_bottom(strip, 222.0 + safe_top) + 40.0
+	_otext(_font_bold, Vector2(cx, pfoot), "POWER WORDS EARNED", 11, Color("#5d6a92"))
+	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0, 52.0, 10.0, 120.0)
+	for i in POWER_ORDER.size():
+		var name: String = POWER_ORDER[i]
+		var r2: Rect2 = pw[i]
+		var tintp := Color(String(POWERS[name]["tint"]))
+		var got := int(Profile.powers.get(name, 0))
+		_panel(r2, Color("#141b33"), Color(tintp, 0.35 if got > 0 else 0.12), 8.0, 1.0)
+		_otext(_font_bold, Vector2(r2.get_center().x, r2.position.y + 17.0), name, 11,
+			tintp if got > 0 else Color("#4d5878"))
+		_otext(_font_bold, Vector2(r2.get_center().x, r2.position.y + 37.0), str(got), 17,
+			Color("#e6ecff") if got > 0 else Color("#3d4666"))
+
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
+
+	if Profile.daily_streak > 1:
+		_otext(_font, Vector2(cx, _grid_bottom(pw, pfoot) + 34.0),
+			"%d daily boards running" % Profile.daily_streak, 12, Color("#ffd166"))
+
+
+## Everything you are wearing, and everything you could be.
+##
+## Split out of Mastery because the two were doing different jobs on one screen:
+## one is a record of what you have done, the other is a wardrobe. Reading your
+## best chain and choosing a victory animation are not the same errand, and the
+## grid was pushing the record down to a strip of eight tiles.
+func _draw_cosmetics(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	var hy := safe_top
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "COSMETICS", 34, Color("#e6ecff"))
+	var worn_title := Profile.title_text()
+	_otext(_font, Vector2(cx, hy + 92.0),
+		"wearing %s" % (worn_title.to_upper() if worn_title != "" else "no title"),
+		13, Color("#7c88ad"))
 
 	var slot: String = Profile.SLOTS[mastery_slot]
 	_otext(_font_bold, Vector2(cx, _mastery_grid_top() - 25.0),
 		String(Profile.SLOT_NAMES[slot]), 15, Color("#7c88ad"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
 
 	var worn := Profile.worn(slot)
 	for c: Dictionary in _mastery_cards():
@@ -4565,8 +4624,6 @@ func _draw_mastery(size: Vector2) -> void:
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"), edge, 10.0,
 			3.0 if on else 2.0)
 
-		# The name is the reward, so it stays bright when earned and goes grey
-		# when not — the state should be readable without finding the tick.
 		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 30.0),
 			String(c["name"]).to_upper(), 19, r.size.x - 30.0,
 			Color("#e6ecff") if got else Color("#4d5878"))
@@ -4581,32 +4638,28 @@ func _draw_mastery(size: Vector2) -> void:
 			var st := Profile.standing(c["need"])
 			_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 55.0),
 				String(st["what"]), 11, r.size.x - 20.0, Color("#5d6a92"), 9)
-			# A sliver of progress along the bottom edge. At a glance you can see
-			# which locks are nearly open, which is what makes them targets.
 			var frac: float = clampf(float(st["have"]) / float(maxi(1, int(st["want"]))),
 				0.0, 1.0)
 			_overlay.draw_rect(Rect2(r.position.x + 8.0, r.end.y - 7.0,
 				(r.size.x - 16.0) * frac, 3.0), Color("#ffd166", 0.55), true)
-	var foot := _mastery_bottom()
-	if not portrait:
-		_otext(_font, Vector2(cx, foot + 122.0),
-			"← → change category · click to equip · ESC back", 13, Color("#5d6a92"))
-	else:
-		_otext(_font, Vector2(cx, foot + 34.0),
-			"‹ › change category", 13, Color("#5d6a92"))
 
-	# Whatever the hovered entry wants, spelled out. Shown under the grid so it
-	# does not jump about as the mouse moves between rows.
+	# Under the Back button rather than on top of it.
+	var foot := _mastery_bottom()
+	var below := foot + (34.0 if portrait else 92.0)
+	_otext(_font, Vector2(cx, below),
+		"‹ › change category" if portrait
+		else "← → change category · click to equip · ESC back", 13, Color("#5d6a92"))
+
 	var hint := ""
 	for e: Dictionary in _mastery_cards():
 		if _hover_action == String(e["action"]):
 			var need: Dictionary = e["need"]
 			if not need.is_empty() and not Profile.meets(need):
-				var st := Profile.standing(need)
-				hint = "%s — %s / %s" % [String(st["what"]).capitalize(),
-					_commas(int(st["have"])), _commas(int(st["want"]))]
+				var st2 := Profile.standing(need)
+				hint = "%s — %s / %s" % [String(st2["what"]).capitalize(),
+					_commas(int(st2["have"])), _commas(int(st2["want"]))]
 	if hint != "":
-		_otext(_font, Vector2(cx, foot + 94.0), hint, 14, Color("#ffd166"))
+		_otext(_font, Vector2(cx, foot + 12.0), hint, 14, Color("#ffd166"))
 
 
 ## The unlock grid for the category on show. Doubles as the hit-test source, so
@@ -4633,10 +4686,22 @@ func _mastery_stat_rects(count: int) -> Array:
 	return _grid_rects(count, 166.0 + safe_top, 8, 138.0, 56.0, 8.0, 140.0, 8.0)
 
 
+## The bottom of the record screen — the stat grid, then the power tallies. The
+## buttons hang off it, so both have to be measured rather than guessed.
+func _mastery_stats_foot() -> float:
+	var strip := _mastery_stat_rects(12)
+	var pfoot := _grid_bottom(strip, 222.0 + safe_top) + 40.0
+	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0, 52.0, 10.0, 120.0)
+	return _grid_bottom(pw, pfoot) + 56.0
+
+
 ## Where the unlock grid starts, once the record strip above it has taken as many
 ## rows as it needs. On a desktop that is one row and this is the old constant.
 func _mastery_grid_top() -> float:
-	return _grid_bottom(_mastery_stat_rects(8), 222.0) + 54.0
+	# A constant again. It used to be measured off the record strip because the
+	# two shared a screen; the wardrobe has the screen to itself now, so the grid
+	# sits under its own header instead of under somebody else's stats.
+	return 186.0 + safe_top
 
 
 ## The bottom of the unlock grid. Everything below it — the back button, the
@@ -5766,6 +5831,18 @@ func _menu_buttons() -> Array:
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.MASTERY:
+		var mw: float = minf(300.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		var mfoot := _mastery_stats_foot()
+		out.append({
+			"rect": Rect2(cx - mw * 0.5, mfoot, mw, 46.0), "key": "C",
+			"label": "Cosmetics", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#64dfdf"), "action": "cosmetics"})
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - 90.0, mfoot + 54.0, 180.0, 40.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.COSMETICS:
 		# The category arrows straddle the label, which sits just above the grid
 		# — so they travel with it when the record strip above wraps to two rows.
 		var arrow_y := _mastery_grid_top() - 38.0
@@ -5861,19 +5938,31 @@ func _title_modes() -> Array:
 	var fresh: bool = not bool(Profile.pref("taught"))
 	var dkey := daily_key()
 	var spent: bool = Profile.daily_done(dkey)
-	var dsub := "one run, the same board for everyone"
+	var dsub := "One run, the same board for everyone"
 	if spent:
-		dsub = "played — %s. A new board at midnight." % _commas(
+		dsub = "Played — %s. New board at midnight." % _commas(
 			int(Profile.daily_result(dkey).get("score", 0)))
-	# stamp, tail, sub, action, tint, band
+	# stamp, word, sub, action, tint, band
+	#
+	# The stamp is the fragment on the block; the word is the whole word that
+	# answers it. Splitting the name across the two — PRAC in the gutter and
+	# TICE on the plate — was clever and did not read: neither half was a word,
+	# and "SUS" and "TINGS" are not what those buttons are called. This is the
+	# game's actual loop instead. A block carries a fragment, and the word that
+	# clears it starts with those letters.
 	return [
-		["PRAC", "TICE", "Learn it, or drill it", "practice", Color("#90be6d"), 0],
-		["DAI", "LY", dsub, "daily",
+		["PRAC", "PRACTICE", "Learn it, or drill it", "practice",
+			Color("#90be6d"), 0],
+		["DAI", "DAILY", dsub, "daily",
 			Color("#5d6a92") if spent else Color("#ffd166"), 1],
-		["SOLO", "", "You against the machines", "solo", Color("#7bdff2"), 1],
-		["VER", "SUS", "Room codes, up to four", "versus", Color("#c77dff"), 1],
-		["MAS", "TERY", "Level %d" % Profile.level(), "mastery", Color("#f8961e"), 2],
-		["SET", "TINGS", "Sound, effects, name", "settings", Color("#8d99bd"), 2],
+		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 1],
+		["VER", "VERSUS", "Room codes, up to four", "versus", Color("#c77dff"), 1],
+		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
+			Color("#f8961e"), 2],
+		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
+			Color("#64dfdf"), 2],
+		["SET", "SETTINGS", "Sound, effects, name", "settings",
+			Color("#8d99bd"), 2],
 	]
 
 
@@ -5885,9 +5974,9 @@ func _plate_metrics() -> Dictionary:
 	# Landscape is 720 tall and has to hold six plates, three band rules and the
 	# rules line; portrait has half as much again to spend and is being hit with
 	# a thumb, so it gets the taller plate.
-	var h: float = 84.0 if portrait else 54.0
-	var gap: float = 10.0 if portrait else 7.0
-	var band_gap: float = 30.0 if portrait else 16.0
+	var h: float = 80.0 if portrait else 48.0
+	var gap: float = 9.0 if portrait else 6.0
+	var band_gap: float = 26.0 if portrait else 14.0
 	var rows := _title_modes()
 	var block: float = 0.0
 	var last := -1
@@ -5896,8 +5985,10 @@ func _plate_metrics() -> Dictionary:
 			block += band_gap
 			last = int(m[5])
 		block += h + gap
-	var head: float = (196.0 if portrait else 232.0) + safe_top
-	var avail: float = size.y - safe_bottom - head - (96.0 if portrait else 24.0)
+	var head: float = (196.0 if portrait else 196.0) + safe_top
+	# The bottom margin is reserved space, not slack: the shortcut line hangs off
+	# the last plate and lives in it.
+	var avail: float = size.y - safe_bottom - head - (96.0 if portrait else 46.0)
 	# Biased up rather than centred. Centring left a band of nothing between the
 	# wordmark and the first plate on a tall screen, which read as a mistake
 	# rather than as space.
@@ -5917,10 +6008,10 @@ func _title_plates() -> Array:
 			last = int(row[5])
 		out.append({
 			"rect": Rect2(float(m["x"]), y, float(m["w"]), float(m["h"])),
-			"key": "", "label": String(row[0]) + String(row[1]),
+			"key": "", "label": String(row[1]),
 			"sub": String(row[2]), "note": "", "rating": 0,
 			"accent": row[4], "action": String(row[3]),
-			"stamp": String(row[0]), "tail": String(row[1]), "band": int(row[5]),
+			"stamp": String(row[0]), "word": String(row[1]), "band": int(row[5]),
 		})
 		y += float(m["h"]) + float(m["gap"])
 	# The rules are not a mode, so they are not a plate. A quiet line under the
@@ -5928,20 +6019,23 @@ func _title_plates() -> Array:
 	out.append({
 		"rect": Rect2(float(m["x"]), y + 14.0, float(m["w"]), 34.0),
 		"key": "", "label": "Full rules", "sub": "", "note": "", "rating": 0,
-		"accent": Color("#5d6a92"), "action": "rules", "stamp": "", "tail": "",
+		"accent": Color("#5d6a92"), "action": "rules", "stamp": "", "word": "",
 		"band": -1})
 	return out
 
 
-## One plate. The gutter is the signature: a block, branded, exactly as it looks
-## when one lands on you.
+## One plate.
+##
+## The gutter is a block, drawn by the same four styles the playfield uses — so
+## equipping Wireframe reskins the menu as well as the match, which is what
+## stops a block style being a thing you only see while playing.
 func _draw_title_plate(b: Dictionary) -> void:
 	var r: Rect2 = b["rect"]
 	var tint: Color = b["accent"]
 	var hot: bool = _hover_action == String(b["action"])
 	var stamp := String(b.get("stamp", ""))
 
-	# The rules line is not a block and must not pretend to be one.
+	# The rules line is not a mode and must not pretend to be a block.
 	if stamp == "":
 		_draw_tracked(_font, Vector2(r.get_center().x, r.get_center().y),
 			String(b["label"]).to_upper(), 11, 2.0,
@@ -5951,45 +6045,55 @@ func _draw_title_plate(b: Dictionary) -> void:
 	if hot:
 		r = Rect2(r.position - Vector2(3.0, 0.0), r.size + Vector2(6.0, 0.0))
 
-	var gw: float = maxf(96.0, r.size.x * 0.24)
-	var gutter := Rect2(r.position, Vector2(gw, r.size.y))
+	var gw: float = maxf(92.0, r.size.x * 0.22)
+	var gutter := Rect2(r.position, Vector2(gw, r.size.y)).grow(-4.0)
 
-	# The plate: quiet, so the gutter is the thing you see.
+	# The plate. Quiet, and carrying the board's own ruling rather than being a
+	# flat slab — a hairline grid at the pitch the playfield uses, which is what
+	# ties the right-hand two thirds to the game instead of leaving it blank.
 	_ui_sb.bg_color = Color("#141b33") if not hot else Color("#1b2444")
 	_ui_sb.set_corner_radius_all(4)
 	_ui_sb.set_border_width_all(1)
-	_ui_sb.border_color = Color(tint, 0.45 if hot else 0.16)
+	_ui_sb.border_color = Color(tint, 0.5 if hot else 0.18)
 	_ui_sb.shadow_size = 0
 	_overlay.draw_style_box(_ui_sb, r)
 
-	# The gutter, drawn the way a garbage block is drawn — a filled face with a
-	# lighter top edge, which is what makes it read as the same object.
-	_ui_sb.bg_color = Color(tint, 0.92 if hot else 0.78)
-	_ui_sb.set_corner_radius_all(3)
-	_ui_sb.set_border_width_all(0)
-	_overlay.draw_style_box(_ui_sb, gutter.grow(-4.0))
-	_overlay.draw_rect(Rect2(gutter.position + Vector2(4.0, 4.0),
-		Vector2(gutter.size.x - 8.0, 2.0)), Color(1, 1, 1, 0.30), true)
+	var body := Rect2(r.position.x + gw, r.position.y, r.size.x - gw, r.size.y)
+	var step := 26.0
+	var gx := body.position.x + step
+	while gx < body.end.x - 2.0:
+		_overlay.draw_rect(Rect2(gx, body.position.y + 3.0, 1.0, body.size.y - 6.0),
+			Color(tint, 0.055), true)
+		gx += step
+	# A wash bleeding out of the block, so the two halves belong to each other.
+	for i in 6:
+		var f := float(i) / 5.0
+		_overlay.draw_rect(Rect2(body.position.x + f * 70.0, body.position.y + 1.0,
+			70.0 / 6.0 + 1.0, body.size.y - 2.0), Color(tint, 0.075 * (1.0 - f)), true)
 
-	# The fragment, tracked out. Letter spacing is what makes a stamp read as
-	# stamped rather than as a word set small.
+	var ink := Cosmetics.draw_block_face(_overlay, gutter, tint,
+		Profile.worn("blocks"), hot)
 	_draw_tracked(_font_bold, gutter.get_center(), stamp,
-		20 if r.size.y < 70.0 else 21, 3.0, Color("#0b1020"))
+		19 if r.size.y < 70.0 else 20, 3.0, ink)
 
-	# The tail continues out of the block, dimmer — the seam is the point.
-	var tx: float = r.position.x + gw + 18.0
-	var tail := String(b.get("tail", ""))
-	if tail != "":
-		_otext_left(_font_bold, Vector2(tx, r.position.y + r.size.y * 0.37), tail,
-			20 if r.size.y < 70.0 else 21,
-			Color("#e6ecff") if hot else Color("#aab4d4"))
+	# The whole word, with the fragment the block carries picked out. This is
+	# the same treatment the tutorial card uses for SHIPMENTS, and it reads as
+	# one word rather than as two halves.
+	var word := String(b["word"])
+	var tx: float = r.position.x + gw + 20.0
+	var size: int = 20 if r.size.y < 70.0 else 22
+	var head := word.substr(0, stamp.length())
+	var tail := word.substr(stamp.length())
+	var hw: float = _font_bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size).x
+	var ty: float = r.position.y + r.size.y * (0.37 if String(b["sub"]) != "" else 0.5)
+	_otext_left(_font_bold, Vector2(tx, ty), head, size,
+		Color.WHITE if hot else Color("#e6ecff"))
+	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size,
+		Color("#8d99bd") if hot else Color("#6b769b"))
+	if String(b["sub"]) != "":
 		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72),
 			String(b["sub"]), 12, Color("#aab4d4") if hot else Color("#7c88ad"))
-	else:
-		# The stamp is the whole word. An em-dash in the tail slot read as a
-		# placeholder rather than as an absence, so the line simply centres.
-		_otext_left(_font, Vector2(tx, r.get_center().y), String(b["sub"]), 13,
-			Color("#aab4d4") if hot else Color("#7c88ad"))
 
 
 ## Text with a fixed extra advance between characters. Godot has no tracking, so
@@ -6293,7 +6397,7 @@ func _action_at(p: Vector2) -> String:
 		for row: Dictionary in _settings_rows():
 			if (row["rect"] as Rect2).has_point(p):
 				return String(row["action"])
-	if phase == Phase.MASTERY:
+	if phase == Phase.COSMETICS:
 		for c: Dictionary in _mastery_cards():
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
@@ -6415,6 +6519,10 @@ func _activate(action: String) -> void:
 			return
 		Link.leave()
 		start_match("Daily", 0, [], Mode.DAILY)
+	elif action == "cosmetics":
+		phase = Phase.COSMETICS
+		_hover_action = ""
+		Sfx.play("count", 1.1)
 	elif action == "rules":
 		show_rules = not show_rules
 		_hover_action = ""

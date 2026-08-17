@@ -192,3 +192,62 @@ static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color
 		node.draw_set_transform(p, a + t * 3.0, Vector2.ONE)
 		node.draw_rect(Rect2(-s * 0.5, -s * 0.5, s, s), Color(tint, 0.7 * fade), true)
 	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+# ------------------------------------------------------------- the block face
+#
+# The four block styles, drawn somewhere that is not the playfield.
+#
+# The menu is built out of branded blocks, so the equipped block style has to
+# reach it — otherwise "Wireframe" repaints the thing you look at during a match
+# and leaves the thing you look at between matches alone, which is exactly the
+# half-measure that made a theme feel like a filter.
+#
+# Deliberately a separate implementation from `board.gd`, because that one is
+# tuned to cell-sized tiles: its bevel, its trace spacing and its type ramp are
+# all in units of CELL. This one is tuned to a menu gutter. What they share is
+# the vocabulary and the style ids, and `shoptest` checks that neither grows a
+# style the other has never heard of.
+
+const BLOCK_STYLES := ["solid", "outline", "glass", "circuit"]
+
+
+## Paint one, and report what colour its label should be — the ink has to be
+## decided per style rather than assumed dark, because two of the four are
+## mostly transparent.
+static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
+		style: String, hot: bool) -> Color:
+	match style:
+		"outline":
+			node.draw_rect(rect, Color(col, 0.10), true)
+			node.draw_rect(rect, Color(col.lightened(0.2) if not hot else Color.WHITE,
+				0.95), false, 2.0 if not hot else 3.0)
+			node.draw_rect(rect.grow(-5.0), Color(col, 0.35), false, 1.0)
+			return col.lightened(0.55)
+		"glass":
+			node.draw_rect(rect, Color(col, 0.34), true)
+			node.draw_rect(Rect2(rect.position + Vector2(3, 3),
+				Vector2(rect.size.x - 6.0, rect.size.y * 0.38)),
+				Color(1, 1, 1, 0.13), true)
+			node.draw_rect(rect, Color(col.lightened(0.4) if not hot else Color.WHITE,
+				0.9), false, 2.0 if not hot else 3.0)
+			return Color.WHITE
+		"circuit":
+			node.draw_rect(rect, Color(col, 0.92 if hot else 0.80), true)
+			var pad := rect.get_center()
+			var span: float = minf(rect.size.x, rect.size.y) * 0.5 - 4.0
+			for i in 4:
+				var a := TAU * float(i) / 4.0 + 0.6
+				var out := pad + Vector2(cos(a), sin(a)) * span
+				node.draw_line(pad, out, Color(0, 0, 0, 0.30), 2.0)
+				node.draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
+			node.draw_circle(pad, 7.0, Color(0, 0, 0, 0.22))
+			return Color("#0b1020")
+		_:
+			node.draw_rect(rect, Color(col, 0.92 if hot else 0.80), true)
+			# The lighter top edge is most of what makes a filled rectangle read
+			# as a block with a face rather than as a swatch.
+			node.draw_rect(Rect2(rect.position + Vector2(4.0, 4.0),
+				Vector2(rect.size.x - 8.0, 2.0)), Color(1, 1, 1, 0.30), true)
+			node.draw_rect(rect.grow(-5.0), Color(1, 1, 1, 0.10), false, 1.0)
+			return Color("#0b1020")
