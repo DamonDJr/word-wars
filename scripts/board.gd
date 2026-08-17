@@ -101,6 +101,8 @@ class Bit extends RefCounted:
 var accent := Color("#7bdff2")
 ## Set by the equipped board theme and block style; see `set_theme`.
 var grid_color := Color(1.0, 1.0, 1.0, 0.035)
+var grid_nodes := false
+var _frame_owned := false
 var style := "solid"
 var blocks: Array = []
 var bits: Array = []
@@ -164,8 +166,22 @@ func set_theme(panel: Color, grid: Color, grid_alpha: float, block_style: String
 
 func set_accent(c: Color) -> void:
 	accent = c
-	if _panel_sb:
+	if _panel_sb and not _frame_owned:
 		_panel_sb.border_color = Color(accent, 0.28)
+
+
+## A frame colour the theme owns rather than the player accent. Once set, the
+## accent stops driving the border — otherwise re-aiming would repaint it.
+func set_frame(c: Color, alpha: float) -> void:
+	_frame_owned = true
+	if _panel_sb:
+		_panel_sb.border_color = Color(c, alpha)
+
+
+## Bright points where the ruling crosses, which turns a sheet of ruled paper
+## into a lattice. Off for every theme that does not ask.
+func set_grid_nodes(on: bool) -> void:
+	grid_nodes = on
 
 
 func board_size() -> Vector2:
@@ -732,6 +748,13 @@ func _draw() -> void:
 		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, size.y), grid_color, 1.0)
 	for y in range(1, ROWS):
 		draw_line(Vector2(0, y * CELL), Vector2(size.x, y * CELL), grid_color, 1.0)
+	if grid_nodes:
+		# Brighter than the lines they sit on, so the eye reads points rather
+		# than a denser ruling.
+		var node := Color(grid_color, minf(1.0, grid_color.a * 3.4))
+		for x in range(1, COLS):
+			for y in range(1, ROWS):
+				draw_circle(Vector2(x * CELL, y * CELL), 1.6, node)
 
 	_draw_danger_zone(size)
 

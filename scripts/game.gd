@@ -189,6 +189,15 @@ const SLOT_ACCENTS := [
 ## cosmetic change the whole world without touching a single drawing routine.
 var bg_top := Color("#0b1020")
 var bg_bottom := Color("#141a36")
+## Theme-owned paint for the surfaces that used to be hardcoded. Defaults match
+## what was there before, so an unthemed build looks exactly as it did.
+var _key_bg := Color("#141b33")
+var _key_edge := Color("#7bdff2")
+var _key_ink := Color("#e6ecff")
+var _fire_bg := Color("#1b2f4a")
+var _fire_edge := Color("#7bdff2")
+var _glow := Color.BLACK
+var _glow_a := 0.0
 
 ## The whole scene shifts when something heavy lands, so the background is drawn
 ## this far past the viewport on every side to keep the edges covered.
@@ -608,12 +617,30 @@ func _apply_theme() -> void:
 	var id := Profile.worn("theme")
 	bg_top = Cosmetics.theme_color(id, "top")
 	bg_bottom = Cosmetics.theme_color(id, "bottom")
-	var panel := Cosmetics.theme_color(id, "panel")
+	var panel := Color(Cosmetics.theme_color(id, "panel"),
+		float(Cosmetics.theme_opt(id, "panel_a")))
 	var grid := Cosmetics.theme_color(id, "grid")
 	var grid_a: float = float(Cosmetics.theme(id)["grid_a"])
 	var style := Profile.worn("blocks")
+	var nodes: bool = bool(Cosmetics.theme_opt(id, "nodes"))
 	for s: SideState in sides:
 		s.board.set_theme(panel, grid, grid_a, style)
+		s.board.set_grid_nodes(nodes)
+		# A frame that a theme can own. Every board wore the player accent
+		# before, which meant the one part of the playfield with a hard edge on
+		# it looked the same whatever was equipped.
+		s.board.set_frame(Cosmetics.theme_tint(id, "frame", s.accent),
+			float(Cosmetics.theme_opt(id, "frame_a")))
+
+	# The keyboard is the largest single surface on a phone and was hardcoded, so
+	# a change of theme left forty percent of the screen untouched.
+	_key_bg = Cosmetics.theme_tint(id, "key_bg", Color("#141b33"))
+	_key_edge = Cosmetics.theme_tint(id, "key_edge", PLAYER_ACCENT)
+	_key_ink = Cosmetics.theme_tint(id, "key_ink", Color("#e6ecff"))
+	_fire_bg = Cosmetics.theme_tint(id, "fire_bg", Color("#1b2f4a"))
+	_fire_edge = Cosmetics.theme_tint(id, "fire_edge", PLAYER_ACCENT)
+	_glow = Cosmetics.theme_tint(id, "glow", Color.BLACK)
+	_glow_a = float(Cosmetics.theme_opt(id, "glow_a"))
 	queue_redraw()
 
 
@@ -2629,6 +2656,18 @@ func _draw() -> void:
 			bg_top.lerp(bg_bottom, t), true)
 	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), bg_bottom, true)
 
+	# A bloom behind the playfield, for themes that carry one. Drawn as a few
+	# soft discs rather than a shader so it costs nothing and works on the
+	# compatibility renderer — the point is that the backdrop is lit rather than
+	# a flat wash, which is most of the difference between a theme and a filter.
+	if _glow_a > 0.0:
+		var at := Vector2(size.x * 0.5, size.y * (0.44 if portrait else 0.46))
+		var reach: float = maxf(size.x, size.y) * 0.55
+		for i in 7:
+			var f := float(i) / 6.0
+			draw_circle(at, reach * (0.30 + f * 0.70),
+				Color(_glow, _glow_a * 0.10 * (1.0 - f)))
+
 	if phase != Phase.COUNTDOWN and phase != Phase.PLAY and phase != Phase.OVER:
 		return
 
@@ -2838,15 +2877,15 @@ func _draw_keyboard() -> void:
 		if down:
 			r = Rect2(r.position + Vector2(0, 3), r.size - Vector2(0, 3))
 
-		var bg := Color("#141b33")
-		var edge := Color(accent, 0.18)
-		var ink := Color("#e6ecff")
+		var bg := _key_bg
+		var edge := Color(_key_edge, 0.18)
+		var ink := _key_ink
 		match id:
 			"fire":
-				bg = Color("#1b2f4a") if not down else Color("#27456b")
-				edge = Color(accent, 0.75)
+				bg = _fire_bg if not down else _fire_bg.lightened(0.18)
+				edge = Color(_fire_edge, 0.75)
 			"back":
-				bg = Color("#241626") if not down else Color("#33203a")
+				bg = _key_bg.darkened(0.25) if not down else _key_bg.lightened(0.10)
 				edge = Color("#c77dff", 0.5)
 		if down:
 			bg = bg.lightened(0.12)

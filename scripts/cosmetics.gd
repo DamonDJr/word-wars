@@ -32,20 +32,73 @@ const THEMES := {
 		"top": "#11100c", "bottom": "#262019", "panel": "#1c1813",
 		"grid": "#ffe9c2", "grid_a": 0.05,
 	},
-	# The premium one, and it has to look bought.
-	#
-	# Every other theme is a dark wash with a grid you can barely see, which is
-	# right for the game and means they all read as the same board in a different
-	# hue. This one goes the other way: a lit playfield. The grid runs at four
-	# times the alpha of anything else here, on a panel light enough to sit
-	# forward of the backdrop rather than sink into it, so the board reads as
-	# glass on a table instead of a hole in the screen. Different at a glance
-	# from across a room, which is the entire job of a thing somebody paid for.
+	# The premium one, and it is the only entry that uses more than the five keys
+	# above — see the note under THEME_EXTRAS for why that had to change.
 	"prism": {
-		"top": "#05060f", "bottom": "#1b1040", "panel": "#241a4d",
-		"grid": "#8ff5ff", "grid_a": 0.20,
+		"top": "#04030c", "bottom": "#160a33", "panel": "#1a1140",
+		"grid": "#7df5ff", "grid_a": 0.16,
+		# Translucent, so the bloom behind it comes through the playfield. This
+		# is the difference between a lit backdrop with a dark slab sitting on
+		# it and a sheet of glass over a light — and it is the one property that
+		# makes the board read as a different material rather than a different
+		# colour.
+		"panel_a": 0.62,
+		# A frame that is not the same teal every other board wears.
+		"frame": "#ffd8a8", "frame_a": 0.85,
+		"accent": "#ffc46b",
+		# The keyboard is roughly forty percent of a phone screen and every
+		# theme left it identical, which is most of why a "new theme" read as a
+		# filter. Prism repaints it.
+		"key_bg": "#251a4e", "key_edge": "#c9a4ff", "key_ink": "#fff3d6",
+		"fire_bg": "#4a2d7a", "fire_edge": "#ffd8a8",
+		# A bloom behind the board, so the backdrop is lit rather than flat.
+		"glow": "#7b3fe4", "glow_a": 0.30,
+		# Bright points where the grid crosses. Cheap, and it makes the
+		# playfield read as a lattice instead of ruled paper.
+		"nodes": true,
 	},
 }
+
+## What a theme may set beyond the five originals, and what it falls back to.
+##
+## The five were `top`, `bottom`, `panel`, `grid` and `grid_a` — a backdrop
+## wash and a ruling. That is a colour filter, and no amount of picking better
+## colours makes a filter feel like an overhaul: two themes built from it differ
+## in hue and in nothing else, which is exactly the complaint a paid one earns.
+##
+## So the surfaces that actually cover the screen are addressable now. The
+## keyboard especially: it is about forty percent of a phone display and every
+## theme in the game left it the same dark slab.
+##
+## Every default here reproduces what was hardcoded before, so the five free
+## themes render byte-identically and only a theme that asks for more gets more.
+const THEME_EXTRAS := {
+	"frame": "", "frame_a": 0.28,
+	"panel_a": 1.0,
+	"accent": "",
+	"key_bg": "#141b33", "key_edge": "", "key_ink": "#e6ecff",
+	"fire_bg": "#1b2f4a", "fire_edge": "",
+	"glow": "", "glow_a": 0.0,
+	"nodes": false,
+}
+
+
+## An optional theme value, falling back to what the game did before themes
+## could express it.
+static func theme_opt(id: String, key: String):
+	var t := theme(id)
+	if t.has(key):
+		return t[key]
+	return THEME_EXTRAS.get(key, null)
+
+
+## Same, as a colour, with a caller-supplied fallback for the keys whose default
+## is "whatever the accent happens to be".
+static func theme_tint(id: String, key: String, fallback: Color) -> Color:
+	var v = theme_opt(id, key)
+	if typeof(v) == TYPE_STRING and String(v) != "":
+		return Color(String(v))
+	return fallback
 
 
 static func theme(id: String) -> Dictionary:

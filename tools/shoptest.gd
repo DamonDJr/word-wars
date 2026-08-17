@@ -28,6 +28,8 @@ func _init() -> void:
 	_buying_grants_all_three()
 	_it_survives_a_save()
 	_ads_stop()
+	_free_themes_are_untouched()
+	_premium_theme_actually_differs()
 
 	print("--- %s ---" % ("shop behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -114,6 +116,47 @@ func _ads_stop() -> void:
 	for i in P.ADS_EVERY * 3:
 		P.note_match_for_ads()
 	_expect("an owner never has one due", not P.ad_due())
+
+
+## Widening what a theme may set must not change what the existing ones do.
+##
+## Every new property defaults to whatever was hardcoded before it existed, so
+## the five free themes have to resolve to exactly those defaults. If one of
+## them starts picking up premium paint, the paid theme stops being worth
+## paying for and nobody would necessarily notice.
+func _free_themes_are_untouched() -> void:
+	print("--- the free themes are unchanged ---")
+	for id in ["midnight", "ember", "chlorophyll", "vapor", "bone"]:
+		var ok := true
+		ok = ok and Cosmetics.theme_opt(id, "frame") == ""
+		ok = ok and is_equal_approx(float(Cosmetics.theme_opt(id, "panel_a")), 1.0)
+		ok = ok and is_equal_approx(float(Cosmetics.theme_opt(id, "glow_a")), 0.0)
+		ok = ok and not bool(Cosmetics.theme_opt(id, "nodes"))
+		ok = ok and String(Cosmetics.theme_opt(id, "key_bg")) == "#141b33"
+		_expect("%s still uses the stock paint" % id, ok)
+
+
+## And the paid one has to differ in more than hue, which is the whole
+## complaint that prompted this: two themes built from a backdrop wash and a
+## ruling can only ever be the same board in a different colour.
+func _premium_theme_actually_differs() -> void:
+	print("--- prism is more than a colour filter ---")
+	var free_paint := {
+		"key_bg": Cosmetics.theme_opt("chlorophyll", "key_bg"),
+		"panel_a": float(Cosmetics.theme_opt("chlorophyll", "panel_a")),
+		"glow_a": float(Cosmetics.theme_opt("chlorophyll", "glow_a")),
+		"nodes": bool(Cosmetics.theme_opt("chlorophyll", "nodes")),
+		"frame": Cosmetics.theme_opt("chlorophyll", "frame"),
+	}
+	_expect("it repaints the keyboard",
+		Cosmetics.theme_opt("prism", "key_bg") != free_paint["key_bg"])
+	_expect("its playfield is translucent",
+		float(Cosmetics.theme_opt("prism", "panel_a")) < free_paint["panel_a"])
+	_expect("it lights the backdrop",
+		float(Cosmetics.theme_opt("prism", "glow_a")) > free_paint["glow_a"])
+	_expect("its grid has nodes", bool(Cosmetics.theme_opt("prism", "nodes")))
+	_expect("it owns its frame",
+		String(Cosmetics.theme_opt("prism", "frame")) != String(free_paint["frame"]))
 
 
 func _expect(what: String, ok: bool) -> void:
