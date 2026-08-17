@@ -40,6 +40,81 @@ var powers: Dictionary = {}
 ## Slot -> cosmetic id.
 var equipped: Dictionary = {}
 
+# ------------------------------------------------------------------ purchases
+#
+# What has been bought, as a set of pack ids. Kept as its own thing rather than
+# as another unlock rule because it is not earned and never will be: no amount
+# of play reaches it, and no change to the XP formula should ever hand it out by
+# accident.
+#
+# There is no store here yet. `grant` is what a real purchase callback would
+# call once a receipt validated, and the test button in settings calls the same
+# function — so the thing being tested is the thing that will ship.
+
+const PACK_PREMIUM := "premium"
+
+var owned: Dictionary = {}
+## Matches played since the last ad break. Counted here rather than in the match
+## so it survives a restart — otherwise quitting to the title is a way to never
+## see one.
+var since_ad := 0
+
+## How many matches go by between breaks.
+const ADS_EVERY := 3
+
+
+## Whether a break is due. Asked at the end of a match, before the summary is
+## left, so the answer is about the match that just finished.
+func ad_due() -> bool:
+	return not ads_removed() and since_ad >= ADS_EVERY
+
+
+func note_match_for_ads() -> void:
+	if ads_removed():
+		return
+	since_ad += 1
+	save()
+
+
+func clear_ad() -> void:
+	since_ad = 0
+	save()
+
+
+func owns(pack: String) -> bool:
+	return bool(owned.get(pack, false))
+
+
+## Ads are the other half of the pack. Nothing here shows one — this is the flag
+## the ad break asks before it decides to exist.
+func ads_removed() -> bool:
+	return owns(PACK_PREMIUM)
+
+
+## Hand over a pack. Idempotent, because a restore-purchases flow will call it
+## again for something already owned and that must not be an error.
+func grant(pack: String) -> void:
+	if owns(pack):
+		return
+	owned[pack] = true
+	save()
+	changed.emit()
+
+
+## For testing the flow more than once.
+func revoke(pack: String) -> void:
+	if not owns(pack):
+		return
+	owned.erase(pack)
+	# Anything worn from that pack has to come off, or a revoked purchase stays
+	# on screen until something else happens to re-equip.
+	for slot: String in SLOTS:
+		var id := String(equipped.get(slot, ""))
+		if id != "" and not is_unlocked(slot, id):
+			equipped.erase(slot)
+	save()
+	changed.emit()
+
 ## Settings and remembered choices. Kept in the same file as the record because
 ## it is all "this player's stuff", and one file is one thing that can go wrong.
 var prefs: Dictionary = {}
@@ -179,6 +254,7 @@ const COSMETICS := {
 		{"id": "salvo_king", "name": "SALVO KING", "need": {"salvos": 12}},
 		{"id": "undefeated", "name": "Undefeated", "need": {"wins": 15}},
 		{"id": "centurion", "name": "Centurion", "need": {"matches": 100}},
+		{"id": "founder", "name": "FOUNDER", "need": {"buy": PACK_PREMIUM}},
 	],
 	"theme": [
 		{"id": "midnight", "name": "Midnight", "need": {}},
@@ -186,6 +262,7 @@ const COSMETICS := {
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
 		{"id": "vapor", "name": "Vapour", "need": {"level": 10}},
 		{"id": "bone", "name": "Bone", "need": {"level": 16}},
+		{"id": "prism", "name": "Prism", "need": {"buy": PACK_PREMIUM}},
 	],
 	"blocks": [
 		{"id": "solid", "name": "Solid", "need": {}},
@@ -216,6 +293,7 @@ const COSMETICS := {
 		{"id": "confetti", "name": "Confetti", "need": {"wins": 3}},
 		{"id": "rays", "name": "Sunburst", "need": {"wins": 8}},
 		{"id": "shatter", "name": "Shatter", "need": {"flawless": 3}},
+		{"id": "supernova", "name": "Supernova", "need": {"buy": PACK_PREMIUM}},
 	],
 }
 
@@ -276,6 +354,11 @@ func standing(need: Dictionary) -> Dictionary:
 		"chain": have = best_chain; what = "reach a x%d chain" % want
 		"combo": have = best_combo; what = "break %d blocks with one word" % want
 		"longest": have = longest_word.length(); what = "play a %d-letter word" % want
+		"buy":
+			# `want` is unused here; owning it is the whole test.
+			have = 1 if owns(String(need[key])) else 0
+			want = 1
+			what = "in the premium pack"
 		_:
 			if key.begins_with("power:"):
 				var name := key.substr(6)
@@ -467,6 +550,8 @@ func _read(path: String) -> Error:
 	best_score = int(cfg.get_value("record", "best_score", 0))
 	longest_word = String(cfg.get_value("record", "longest_word", ""))
 	powers = cfg.get_value("record", "powers", {})
+	owned = cfg.get_value("shop", "owned", {})
+	since_ad = int(cfg.get_value("shop", "since_ad", 0))
 	daily = cfg.get_value("daily", "runs", {})
 	daily_best = int(cfg.get_value("daily", "best", 0))
 	daily_streak = int(cfg.get_value("daily", "streak", 0))
@@ -494,6 +579,8 @@ func save() -> void:
 	cfg.set_value("record", "best_score", best_score)
 	cfg.set_value("record", "longest_word", longest_word)
 	cfg.set_value("record", "powers", powers)
+	cfg.set_value("shop", "owned", owned)
+	cfg.set_value("shop", "since_ad", since_ad)
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
 	cfg.set_value("daily", "streak", daily_streak)

@@ -85,6 +85,19 @@ if ! grep -q "net state behaves" <<<"$NET"; then
 	exit 1
 fi
 
+# A premium cosmetic that any amount of playing can reach is a sale given away,
+# and one that a purchase fails to deliver is worse. Every other unlock here is
+# a pure function of the record, and that formula gets re-tuned — so the check
+# is that a maxed-out career still cannot reach the paid entries.
+echo "==> Shop check"
+SHOP=$("$(command -v godot)" --headless --script tools/shoptest.gd 2>&1 || true)
+if ! grep -q "shop behaves" <<<"$SHOP"; then
+	echo "FAILED: the premium pack is not behaving." >&2
+	grep -E "FAILED" <<<"$SHOP" >&2 || true
+	echo "        Run: godot --headless --script tools/shoptest.gd" >&2
+	exit 1
+fi
+
 # The daily makes two promises that both fail quietly: the same board for
 # everyone, and one run a day. A daily that deals different boards still looks
 # like a working daily — it just is not a contest — and a second attempt at a

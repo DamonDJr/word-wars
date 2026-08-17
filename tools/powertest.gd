@@ -24,6 +24,7 @@ func _init() -> void:
 	game.phase = game.Phase.PLAY
 	await process_frame
 
+	_long_words_are_worth_more()
 	_combo_and_perfect()
 	_combo_without_chain()
 	_counter()
@@ -39,6 +40,45 @@ func _init() -> void:
 ## Three blocks stamped AL, a word that reaches all three, and a run already
 ## going. That is COMBO and PERFECT together: the tier owed to the next attack,
 ## and a whole extra block out the door now.
+## A long word has to move the chain further than a short one.
+##
+## It did not, for the whole life of the game: the ladder counted how often you
+## fired and nothing about what you fired, so CAT and CONSTELLATION were the
+## same move. Reaching for a long word costs time, and if it buys nothing then
+## the optimal play is to spam the shortest valid word forever — which is both
+## boring and, for a game about vocabulary, the wrong lesson entirely.
+func _long_words_are_worth_more() -> void:
+	print("--- a long word fills more of the meter ---")
+	var short_gain: float = game._chain_gain("cat")
+	var long_gain: float = game._chain_gain("constellation")
+	_expect("a minimum word is worth exactly one", is_equal_approx(short_gain, 1.0))
+	_expect("a long word is worth more", long_gain > short_gain + 0.5)
+
+	# The part that matters at the table: the same number of words gets you
+	# further up the ladder when the words are longer.
+	game.start_match("Rookie", 1)
+	game.phase = game.Phase.PLAY
+	var me = game.sides[0]
+	me.chain_fill = 0.0
+	me.chain = 0
+	me.chain_timer = 99.0
+	for i in 3:
+		me.chain_fill += game._chain_gain("cat")
+	var short_tier: int = game._chain_tier(int(floor(me.chain_fill)))
+
+	me.chain_fill = 0.0
+	for i in 3:
+		me.chain_fill += game._chain_gain("shipment")
+	var long_tier: int = game._chain_tier(int(floor(me.chain_fill)))
+	_expect("three long words outrank three short ones", long_tier > short_tier)
+
+	# And a run still has to be a run — one enormous word must not skip the
+	# ladder outright, or the chain stops meaning consecutive play.
+	me.chain_fill = game._chain_gain("antidisestablishmentarianism")
+	_expect("one word alone cannot reach the top tier",
+		game._chain_tier(int(floor(me.chain_fill))) < game.TIERS.size() - 1)
+
+
 func _combo_and_perfect() -> void:
 	var p = _fresh()
 	for i in 3:

@@ -72,6 +72,18 @@ const STAMP_WANT := 4
 ## in a row. Combos stack on top, so a big clear mid-run is the shortcut.
 const CHAIN_TIER_AT := [1, 2, 3, 5, 7, 9]
 
+## What one word is worth to that ladder.
+##
+## It used to be one word, one step, which made CAT and CONSTELLATION the same
+## move — the ladder measured how often you fired and nothing about what you
+## fired. A three-letter word is still worth exactly one, because the ladder was
+## built around that; every letter past the minimum adds a quarter.
+##
+## Three short words and three long ones are no longer the same run. Three
+## threes reach 3.0 and a 2x2; three sevens reach 6.0 and a 3x2. Reaching for a
+## long word costs time, and now it buys something.
+const CHAIN_GAIN_PER_CHAR := 0.25
+
 ## Past the top of the ladder the chain does not simply keep paying out a 4x3
 ## forever — one flawless run would just end the match. The tenth word cashes the
 ## whole thing in as a scatter of single cells and puts you back to nothing.
@@ -303,6 +315,10 @@ class SideState extends RefCounted:
 	var best_word_score := 0
 	var best_combo := 0
 	var chain := 0
+	## The meter behind the number. A word is worth one plus a quarter for every
+	## letter past the minimum, so `chain` is what the meter has filled to rather
+	## than how many words have been fired — see `_chain_gain`.
+	var chain_fill := 0.0
 	var chain_timer := 0.0
 	var chain_window := 1.0
 	var best_chain := 0
@@ -340,6 +356,9 @@ var splash_time := 0.0
 ## the first moment of it nothing is listening, keys or taps.
 var over_age := 0.0
 const OVER_LOCKOUT := 1.1
+## Whether the premium row is waiting for its second tap. Deliberately not
+## saved: an armed purchase should not survive leaving the screen.
+var _buy_armed := false
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
@@ -679,12 +698,12 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	var top := safe_top
 
 	var clock: float = daily_left() if mode == Mode.DAILY else match_time
-	_text_centered(_font_bold, Vector2(cx - 96.0, top + 34.0),
-		"%d:%02d" % [int(clock) / 60, int(clock) % 60], 26,
-		Color("#ff6b6b") if (mode == Mode.DAILY and clock <= 15.0) else Color("#e6ecff"))
 	var kick := score_kick * score_kick
-	_text_centered(_font_bold, Vector2(cx + 62.0, top + 34.0), _commas(int(round(score_shown))),
-		int(26 + 8.0 * kick), Color("#ffd166").lerp(Color.WHITE, kick * 0.7))
+	_text_pair(_font_bold, _font_bold, Vector2(cx, top + 34.0),
+		"%d:%02d" % [int(clock) / 60, int(clock) % 60],
+		_commas(int(round(score_shown))), 26, int(26 + 8.0 * kick),
+		Color("#ff6b6b") if (mode == Mode.DAILY and clock <= 15.0) else Color("#e6ecff"),
+		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 34.0)
 	_text_centered(_font, Vector2(cx, top + 60.0),
 		"pressure in %ds" % int(ceil(pressure_timer)), 11, Color("#5d6a92"))
 
@@ -962,6 +981,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		s.best_word_score = 0
 		s.best_combo = 0
 		s.chain = 0
+		s.chain_fill = 0.0
 		s.chain_timer = 0.0
 		s.best_chain = 0
 		s.lives = LIVES
@@ -1416,6 +1436,7 @@ func _submit_player() -> void:
 func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 	var lost := player.chain
 	player.chain = 0
+	player.chain_fill = 0.0
 	player.chain_timer = 0.0
 	Sfx.play("reject", pitch)
 	# Harder the more it cost. A rejection that broke a nine-word run and one
@@ -1478,9 +1499,10 @@ func _play_word(attacker: SideState, word: String) -> void:
 	# Rhythm decides the size of the hit. Fire again before the chain lapses and
 	# it steps up a tier; the word you just played earns the time for the next.
 	if attacker.chain_timer > 0.0:
-		attacker.chain += 1
+		attacker.chain_fill += _chain_gain(word)
 	else:
-		attacker.chain = 1
+		attacker.chain_fill = _chain_gain(word)
+	attacker.chain = int(floor(attacker.chain_fill))
 	attacker.chain_window = (CHAIN_BASE + word.length() * CHAIN_PER_CHAR) * attacker.grace
 	attacker.chain_timer = attacker.chain_window
 	attacker.best_chain = maxi(attacker.best_chain, attacker.chain)
@@ -1825,6 +1847,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 		_pop_score("SALVO +%s" % _commas(bounty), "", bounty)
 		score_kick = 1.0
 	attacker.chain = 0
+	attacker.chain_fill = 0.0
 	attacker.chain_timer = 0.0
 
 	_log("%s: %s — SALVO (%d blocks)" % [attacker.label, word.to_upper(), power],
@@ -1872,6 +1895,11 @@ func _report(attacker: SideState, word: String, cleared: int, intercepted: int,
 		_say("sent %s" % _tier_name(out_tier), PLAYER_ACCENT)
 	else:
 		_say("absorbed", Color("#8892b0"))
+
+
+## What a word adds to the chain meter.
+func _chain_gain(word: String) -> float:
+	return 1.0 + CHAIN_GAIN_PER_CHAR * float(maxi(0, word.length() - MIN_WORD_LEN))
 
 
 ## Highest tier a chain of this length has earned on its own.
@@ -2067,6 +2095,7 @@ func _process(delta: float) -> void:
 					if s == player and s.chain >= 2:
 						Sfx.play("lapse")
 					s.chain = 0
+					s.chain_fill = 0.0
 		if mode == Mode.TUTORIAL:
 			_lesson_tick(delta)
 		_tick_danger(player)
@@ -2249,6 +2278,7 @@ func _tick_bots(delta: float) -> void:
 			if s.chain >= 2:
 				_log("%s fumbled — chain x%d broken" % [s.label, s.chain], Color("#8892b0"))
 			s.chain = 0
+			s.chain_fill = 0.0
 			s.chain_timer = 0.0
 		if word != "":
 			_play_word(s, word)
@@ -2306,6 +2336,7 @@ func _lesson_begin() -> void:
 		"chain":
 			player.board.reset()
 			player.chain = 0
+			player.chain_fill = 0.0
 			player.chain_timer = 0.0
 		"danger":
 			player.board.reset()
@@ -2415,6 +2446,7 @@ func _lose_life(side: SideState) -> void:
 	if mode == Mode.DAILY:
 		side.lives -= 1
 		side.chain = 0
+		side.chain_fill = 0.0
 		side.chain_timer = 0.0
 		side.pending.clear()
 		side.board.reset()
@@ -2427,6 +2459,7 @@ func _lose_life(side: SideState) -> void:
 		return
 	if mode != Mode.NORMAL:
 		side.chain = 0
+		side.chain_fill = 0.0
 		side.chain_timer = 0.0
 		side.pending.clear()
 		side.respite = RESPITE
@@ -2438,6 +2471,7 @@ func _lose_life(side: SideState) -> void:
 		return
 	side.lives -= 1
 	side.chain = 0
+	side.chain_fill = 0.0
 	side.chain_timer = 0.0
 	side.pending.clear()
 	side.respite = RESPITE
@@ -2504,6 +2538,9 @@ func _end_match(loser: SideState) -> void:
 ## match abandoned halfway banks nothing — the level has to mean matches played
 ## through, or it means nothing.
 func _record_mastery() -> void:
+	# Counted alongside the record, so it moves for exactly the matches that
+	# count as matches — a tutorial or a practice run is not an ad break.
+	Profile.note_match_for_ads()
 	var was_xp := Profile.xp_total()
 	var was_level := Profile.level()
 	var was_unlocked := Profile.unlocked_set()
@@ -2769,6 +2806,8 @@ func _press_back() -> void:
 	var act := _back_action()
 	if act == "":
 		return
+	if phase == Phase.SETTINGS:
+		_buy_armed = false
 	if phase == Phase.SETTINGS and settings_editing:
 		# The name field has the keyboard; back closes that before it closes the
 		# screen, or a rename is thrown away by the gesture that confirms it.
@@ -3049,7 +3088,11 @@ func _draw_chain_meter(side: SideState) -> void:
 		if i == earned + 1 and side.chain > 0:
 			var from: float = float(CHAIN_TIER_AT[i - 1]) if i > 0 else 0.0
 			var span: float = maxf(1.0, float(CHAIN_TIER_AT[i]) - from)
-			var p := clampf((side.chain - from) / span, 0.0, 1.0)
+			# Off the meter rather than the whole-word count, so a long word is
+			# visibly a bigger push toward the next tier than a short one. That
+			# is the entire feedback for reaching, and it was invisible while
+			# this read an integer.
+			var p := clampf((side.chain_fill - from) / span, 0.0, 1.0)
 			draw_rect(Rect2(r.position, Vector2(r.size.x * p, r.size.y)), Color(col, 0.45), true)
 
 	# Time left on the run, spanning the whole meter.
@@ -3710,6 +3753,23 @@ func _draw_settings(size: Vector2) -> void:
 				_otext(_font_bold, Vector2(sw.position.x + (26.0 if on else 66.0),
 					sw.get_center().y), "ON" if on else "OFF", 11,
 					Color("#e6ecff") if on else Color("#7c88ad"))
+			"buy":
+				# Two states before it is owned, because a purchase that goes
+				# through on the first tap is a purchase somebody made by
+				# accident. Once owned the same control hands it back, which is
+				# the only way to test the flow more than once.
+				var got2: bool = bool(row["value"])
+				var armed: bool = _buy_armed and not got2
+				var label := "OWNED" if got2 else (
+					"CONFIRM?" if armed else "BUY  ·  TEST")
+				var bw2 := 168.0
+				var br := Rect2(r.end.x - bw2 - 36.0, r.get_center().y - 17.0, bw2, 34.0)
+				_panel(br,
+					Color("#1f8a70") if got2 else (
+						Color("#5a2233") if armed else Color("#241626")),
+					Color("#ffd166") if (got2 or armed) else Color("#c77dff"),
+					9.0, 2.0)
+				_otext(_font_bold, br.get_center(), label, 13, Color("#e6ecff"))
 			"text":
 				var field := Rect2(r.end.x - 336.0, r.get_center().y - 18.0, 300.0, 36.0)
 				var editing: bool = settings_editing
@@ -3774,6 +3834,12 @@ func _settings_rows() -> Array:
 			bool(Profile.pref("fullscreen"))])
 	defs.append(["name", "text", "Your name", "shown to other players",
 		Link.my_name])
+	# The store, such as it is. One row, and the same `Profile.grant` a real
+	# purchase callback would call once a receipt validated — so what is being
+	# tested here is the thing that will ship, minus the receipt.
+	var got: bool = Profile.owns(Profile.PACK_PREMIUM)
+	defs.append(["premium", "buy", "Premium pack",
+		"no ads · FOUNDER · Prism board · Supernova win", got])
 	var out: Array = []
 	# 720 was the row width and 720 is also the whole of a portrait screen, so
 	# the rows ran edge to edge with no margin at all. Capped by the screen now.
@@ -3809,6 +3875,30 @@ func _change_setting(key: String) -> void:
 		else:
 			_hide_keyboard()
 		Sfx.play("key", 1.2)
+		return
+	if key == "premium":
+		# Two taps, because a purchase that happens on the first one is a
+		# purchase somebody made by accident. The second tap is where a real
+		# store sheet would open instead.
+		if Profile.owns(Profile.PACK_PREMIUM):
+			# Owned already — the row becomes a way to hand it back, which is the
+			# only way to test the flow more than once.
+			Profile.revoke(Profile.PACK_PREMIUM)
+			_buy_armed = false
+			_say("premium pack removed", Color("#8d99bd"))
+			Sfx.play("reject", 1.1)
+			return
+		if not _buy_armed:
+			_buy_armed = true
+			_say("tap again to confirm", Color("#ffd166"))
+			Sfx.play("count", 1.2)
+			return
+		_buy_armed = false
+		Profile.grant(Profile.PACK_PREMIUM)
+		_apply_theme()
+		_say("premium unlocked — three cosmetics in Mastery", Color("#ffd166"))
+		Sfx.play("salvo", 1.15)
+		Haptics.fire("level")
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
 			or key == "haptics":
@@ -3933,10 +4023,10 @@ func _draw_coaching(size: Vector2) -> void:
 		]
 		var y2 := 356.0
 		for r: Array in rows2:
-			_otext(_font, Vector2(cx - 70.0, y2), r[0], 11, Color("#5d6a92"))
-			_otext(_font_bold, Vector2(cx + 60.0, y2), r[1], 16,
+			_otext_pair(_font, _font_bold, Vector2(cx, y2), r[0], r[1], 11, 16,
+				Color("#5d6a92"),
 				Color("#ff6b6b") if (r[0] == "TIME LEFT" and left <= 15.0)
-					else Color("#e6ecff"))
+					else Color("#e6ecff"), 30.0)
 			y2 += 28.0
 		_otext(_font, Vector2(cx, y2 + 14.0), "one run — no second go", 11,
 			Color("#4d5878"))
@@ -3952,8 +4042,8 @@ func _draw_coaching(size: Vector2) -> void:
 		]
 		var y := 332.0
 		for r: Array in rows:
-			_otext(_font, Vector2(cx - 70.0, y), r[0], 11, Color("#5d6a92"))
-			_otext(_font_bold, Vector2(cx + 60.0, y), r[1], 16, Color("#e6ecff"))
+			_otext_pair(_font, _font_bold, Vector2(cx, y), r[0], r[1], 11, 16,
+				Color("#5d6a92"), Color("#e6ecff"), 30.0)
 			y += 28.0
 		_otext(_font, Vector2(cx, y + 14.0), "ESC to stop", 11, Color("#4d5878"))
 		return
@@ -4862,6 +4952,8 @@ func _draw_gameover(size: Vector2) -> void:
 				Cosmetics.victory_rays(_overlay, Vector2(cx, 150.0), t, tint)
 			"shatter":
 				Cosmetics.victory_shatter(_overlay, Vector2(cx, 150.0), t, tint)
+			"supernova":
+				Cosmetics.victory_supernova(_overlay, size, Vector2(cx, 200.0), t, tint)
 
 	_otext(_font_bold, Vector2(cx, 132), "YOU WIN" if win else "YOU LOSE", 68, tint)
 	var wm := _font_bold.get_string_size("YOU WIN" if win else "YOU LOSE",
@@ -4903,6 +4995,15 @@ func _draw_gameover(size: Vector2) -> void:
 			line = "a new best      " + line
 		_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0), line, 14,
 			size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
+
+	# Where an ad would go, and the only thing standing in for one is a line
+	# saying so. The placement is the part worth having early: it is at the end
+	# of a match, on a screen the player is already reading, rather than
+	# interrupting anything — and it asks the same `ad_due` a real one would.
+	if Profile.ad_due() and mode == Mode.NORMAL:
+		_text_fit_overlay(_font, Vector2(cx, _over_foot() + 4.0),
+			"[ ad break would play here — Premium pack removes them ]", 12,
+			size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
@@ -5051,17 +5152,27 @@ func _draw_mastery_strip(cx: float) -> float:
 	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
 		Vector2((bar.size.x - 4.0) * float(prog["frac"]), bar.size.y - 4.0)),
 		Color("#ffd166"), true)
-	_otext(_font_bold, Vector2(bar.position.x - 56.0, strip_y + 4.0),
-		"+%s XP" % _commas(gained), 15, Color("#ffd166"))
+	# Hung off the bar's own edges rather than at a fixed offset each side: the
+	# left label was 56 out and the right one 72, which put the whole row a few
+	# units left of the bar it belongs to.
+	var xp_text := "+%s XP" % _commas(gained)
+	var xp_w := _font_bold.get_string_size(xp_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x
+	_otext(_font_bold, Vector2(bar.position.x - 14.0 - xp_w * 0.5, strip_y + 4.0),
+		xp_text, 15, Color("#ffd166"))
 
 	if to_lv > from_lv:
 		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 170.0)
-		_otext(_font_bold, Vector2(bar.end.x + 72.0, strip_y + 4.0), "LEVEL %d" % to_lv, 19,
-			Color("#ffd166") * Color(1, 1, 1, pulse))
+		var lv_text := "LEVEL %d" % to_lv
+		var lv_w := _font_bold.get_string_size(lv_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x
+		_otext(_font_bold, Vector2(bar.end.x + 14.0 + lv_w * 0.5, strip_y + 4.0),
+			lv_text, 19, Color("#ffd166") * Color(1, 1, 1, pulse))
 	else:
-		_text_fit_overlay(_font, Vector2(bar.end.x + 64.0, strip_y + 4.0),
-			"%s to level %d" % [_commas(int(prog["need"]) - int(prog["into"])), to_lv + 1],
-			12, 108.0, Color("#8d99bd"), 9)
+		var to_text := "%s to level %d" % [
+			_commas(int(prog["need"]) - int(prog["into"])), to_lv + 1]
+		var to_w: float = minf(120.0,
+			_font.get_string_size(to_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x)
+		_text_fit_overlay(_font, Vector2(bar.end.x + 14.0 + to_w * 0.5, strip_y + 4.0),
+			to_text, 12, 120.0, Color("#8d99bd"), 9)
 
 	if not fresh.is_empty():
 		# Two at most. A wall of unlocks reads as a patch note; two reads as a
@@ -5933,6 +6044,7 @@ func _activate(action: String) -> void:
 	elif action == "settings":
 		phase = Phase.SETTINGS
 		settings_editing = false
+		_buy_armed = false
 		_hover_action = ""
 		Sfx.play("count", 1.1)
 	elif action == "daily":
@@ -6025,6 +6137,50 @@ func _text_centered(font: Font, center: Vector2, text: String, size: int, color:
 	var m := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
 	draw_string(font, Vector2(center.x - m.x * 0.5, center.y - m.y * 0.5 + font.get_ascent(size)),
 		text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+## A label and a value either side of a centre line, the label ending just left
+## of it and the value starting just right of it.
+##
+## Written because the alternative kept going wrong. Pairs like these were laid
+## out by centring each half at a hand-picked offset — the clock at cx - 96 and
+## the score at cx + 62 — which centres each piece on its own guess and leaves
+## the pair as a whole sitting off to one side. Seventeen units off, in that
+## case, on a screen 720 wide. Measuring puts the gap in the middle where it
+## belongs and does it for any string.
+func _text_pair(left_font: Font, right_font: Font, centre: Vector2,
+		left_text: String, right_text: String, left_size: int, right_size: int,
+		left_color: Color, right_color: Color, gap: float = 26.0) -> void:
+	var lw: float = left_font.get_string_size(
+		left_text, HORIZONTAL_ALIGNMENT_LEFT, -1, left_size).x if left_text != "" else 0.0
+	var rw: float = right_font.get_string_size(
+		right_text, HORIZONTAL_ALIGNMENT_LEFT, -1, right_size).x if right_text != "" else 0.0
+	var total := lw + gap + rw
+	var left := centre.x - total * 0.5
+	if left_text != "":
+		_text_centered(left_font, Vector2(left + lw * 0.5, centre.y), left_text,
+			left_size, left_color)
+	if right_text != "":
+		_text_centered(right_font, Vector2(left + lw + gap + rw * 0.5, centre.y),
+			right_text, right_size, right_color)
+
+
+## Overlay twin of the above.
+func _otext_pair(left_font: Font, right_font: Font, centre: Vector2,
+		left_text: String, right_text: String, left_size: int, right_size: int,
+		left_color: Color, right_color: Color, gap: float = 26.0) -> void:
+	var lw: float = left_font.get_string_size(
+		left_text, HORIZONTAL_ALIGNMENT_LEFT, -1, left_size).x if left_text != "" else 0.0
+	var rw: float = right_font.get_string_size(
+		right_text, HORIZONTAL_ALIGNMENT_LEFT, -1, right_size).x if right_text != "" else 0.0
+	var total := lw + gap + rw
+	var left := centre.x - total * 0.5
+	if left_text != "":
+		_otext(left_font, Vector2(left + lw * 0.5, centre.y), left_text, left_size,
+			left_color)
+	if right_text != "":
+		_otext(right_font, Vector2(left + lw + gap + rw * 0.5, centre.y), right_text,
+			right_size, right_color)
 
 
 ## Same, but shrinks the type until the line sits inside `max_width`. Words like

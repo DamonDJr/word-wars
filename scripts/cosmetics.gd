@@ -32,6 +32,19 @@ const THEMES := {
 		"top": "#11100c", "bottom": "#262019", "panel": "#1c1813",
 		"grid": "#ffe9c2", "grid_a": 0.05,
 	},
+	# The premium one, and it has to look bought.
+	#
+	# Every other theme is a dark wash with a grid you can barely see, which is
+	# right for the game and means they all read as the same board in a different
+	# hue. This one goes the other way: a lit playfield. The grid runs at four
+	# times the alpha of anything else here, on a panel light enough to sit
+	# forward of the backdrop rather than sink into it, so the board reads as
+	# glass on a table instead of a hole in the screen. Different at a glance
+	# from across a room, which is the entire job of a thing somebody paid for.
+	"prism": {
+		"top": "#05060f", "bottom": "#1b1040", "panel": "#241a4d",
+		"grid": "#8ff5ff", "grid_a": 0.20,
+	},
 }
 
 
@@ -75,6 +88,42 @@ static func victory_rays(node: CanvasItem, at: Vector2, t: float, tint: Color) -
 			at + Vector2(cos(a - wide), sin(a - wide)) * far,
 			at + Vector2(cos(a + wide), sin(a + wide)) * far,
 		]), Color(tint, 0.055 + 0.03 * sin(t * 1.7 + float(i))))
+
+
+## The premium one. A shockwave that keeps going out, a core that keeps
+## pulsing, and embers rising through both — three things happening at once
+## rather than one, which is what makes it read as more than the others rather
+## than merely different from them.
+static func victory_supernova(node: CanvasItem, size: Vector2, at: Vector2,
+		t: float, tint: Color) -> void:
+	# Rings, each one a little behind the last, fading as they widen.
+	for i in 4:
+		var phase: float = fmod(t * 0.55 + float(i) * 0.25, 1.0)
+		var r: float = 40.0 + phase * maxf(size.x, size.y) * 0.75
+		var a: float = (1.0 - phase) * 0.5
+		if a <= 0.01:
+			continue
+		node.draw_arc(at, r, 0.0, TAU, 96, Color(tint, a), 3.0 + (1.0 - phase) * 5.0)
+
+	# A core that breathes rather than sits.
+	var pulse: float = 0.5 + 0.5 * sin(t * 3.1)
+	for i in 3:
+		var rr: float = 26.0 + float(i) * 15.0 + pulse * 9.0
+		node.draw_circle(at, rr, Color(tint, 0.16 - float(i) * 0.045))
+	node.draw_circle(at, 18.0 + pulse * 5.0, Color(1, 1, 1, 0.55))
+
+	# Embers, on the same deterministic hash the other effects use — no state to
+	# seed and none to leak.
+	for i in 70:
+		var sx := fmod(sin(float(i) * 12.9898) * 43758.5453, 1.0)
+		var ss := fmod(sin(float(i) * 78.233) * 24634.6345, 1.0)
+		var x: float = absf(sx) * size.x
+		var speed: float = 55.0 + absf(ss) * 120.0
+		var y: float = size.y - fmod(t * speed + absf(sx) * 1200.0, size.y + 80.0)
+		var w: float = 2.0 + absf(ss) * 3.5
+		var flick: float = 0.35 + 0.65 * absf(sin(t * 4.0 + float(i)))
+		node.draw_circle(Vector2(x + sin(t * 1.6 + float(i)) * 12.0, y), w,
+			Color(tint, 0.5 * flick))
 
 
 static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color) -> void:
