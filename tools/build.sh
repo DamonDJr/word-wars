@@ -72,6 +72,19 @@ if ! grep -q "practice behaves" <<<"$PRACTICE"; then
 	exit 1
 fi
 
+# The scoreboard reads six numbers off every board in the match, and only two of
+# them were ever on the wire. Against a CPU it looked perfect — a CPU is
+# simulated here, so its state is the real one — and against a person four
+# columns read zero. Nothing but a finished networked match could show it.
+echo "==> Net state check"
+NET=$("$(command -v godot)" --headless --script tools/nettest.gd 2>&1 || true)
+if ! grep -q "net state behaves" <<<"$NET"; then
+	echo "FAILED: the network state is dropping something the scoreboard shows." >&2
+	grep -E "FAILED" <<<"$NET" >&2 || true
+	echo "        Run: godot --headless --script tools/nettest.gd" >&2
+	exit 1
+fi
+
 # Haptics fail silently by construction: there is no taptic engine on this
 # machine, so a call naming an event that does not exist does exactly what a
 # correct one does here — nothing. Nobody would find out until a phone did.

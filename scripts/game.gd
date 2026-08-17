@@ -1237,9 +1237,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if phase == Phase.OVER:
 		if over_age < OVER_LOCKOUT:
 			return
+		# One key, and it is the one nobody presses by accident.
+		#
+		# R started a rematch, and R is a letter — you finish a match with a word
+		# half typed and the rest of it lands here, so the scoreboard vanished
+		# into a new match before anyone read it. The lockout was not enough,
+		# because people do not stop typing for a whole second. ENTER was worse
+		# still: it fires a word during play, so it is the single most likely key
+		# to be in flight at the moment a match ends.
+		#
+		# Rematch is a button now. It is the one action on this screen with a
+		# cost, and it should take a deliberate click rather than a letter.
 		match k.keycode:
-			KEY_R: _activate("rematch")
-			KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER: _activate("title")
+			KEY_ESCAPE: _activate("title")
 		return
 
 	if phase == Phase.TITLE:
@@ -4751,8 +4761,8 @@ func _draw_gameover(size: Vector2) -> void:
 	# summary impossible to read — and it was pinned at 674, which the buttons
 	# now sit on top of.
 	if not portrait:
-		_otext(_font, Vector2(cx, strip_bottom + 26.0), "R — rematch      ESC — title",
-			13, Color("#4d5878"))
+		_otext(_font, Vector2(cx, strip_bottom + 26.0),
+			"click Rematch to go again      ESC — title", 13, Color("#4d5878"))
 
 
 const SCORE_ROW_H := 34.0
@@ -5066,6 +5076,14 @@ func _on_net_state(payload: Dictionary) -> void:
 	ai_side.chain_window = maxf(0.001, float(payload.get("cw", 1.0)))
 	ai_side.words_played = int(payload.get("w", 0))
 	ai_side.blocks_cleared = int(payload.get("cl", 0))
+	# Defaulted to what is already held rather than to zero, so a payload from an
+	# older build leaves these alone instead of blanking them every tick.
+	ai_side.score = int(payload.get("sc", ai_side.score))
+	ai_side.best_chain = int(payload.get("bc", ai_side.best_chain))
+	ai_side.best_combo = int(payload.get("bk", ai_side.best_combo))
+	ai_side.powers_fired = int(payload.get("pw", ai_side.powers_fired))
+	ai_side.salvos = int(payload.get("sv", ai_side.salvos))
+	ai_side.longest_word = String(payload.get("lw", ai_side.longest_word))
 	ai_side.salvo_flash = float(payload.get("sf", 0.0))
 	ai_side.lives = int(payload.get("lv", LIVES))
 	ai_side.respite = float(payload.get("rs", 0.0))
@@ -5101,6 +5119,13 @@ func _state_of(who: SideState, own: int) -> Dictionary:
 		"w": who.words_played, "cl": who.blocks_cleared,
 		"sf": who.salvo_flash, "lv": who.lives, "rs": who.respite,
 		"lf": who.life_flash, "al": who.alive,
+		# Everything the end-of-match scoreboard reads. Only words and clears
+		# used to be sent, because only words and clears were ever shown live —
+		# so against a real person every other column was the local default of
+		# zero, and a peer who had just won on score appeared to have scored
+		# nothing. A CPU looked right because a CPU is simulated on this machine.
+		"sc": who.score, "bc": who.best_chain, "bk": who.best_combo,
+		"pw": who.powers_fired, "sv": who.salvos, "lw": who.longest_word,
 	}
 
 
@@ -5330,7 +5355,7 @@ func _menu_buttons() -> Array:
 	elif phase == Phase.OVER:
 		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
 		out.append({
-			"rect": over[0], "key": "R",
+			"rect": over[0], "key": "",
 			"label": "Rematch", "sub": difficulty, "note": "", "rating": 0,
 			"accent": PLAYER_ACCENT, "action": "rematch"})
 		out.append({
