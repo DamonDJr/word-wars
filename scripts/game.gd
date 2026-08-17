@@ -4580,6 +4580,117 @@ func _draw_mastery(size: Vector2) -> void:
 			"%d daily boards running" % Profile.daily_streak, 12, Color("#ffd166"))
 
 
+## What a cosmetic actually looks like, before you commit to it.
+##
+## Drawn with the same functions the game uses rather than with an illustration
+## of them, so the panel cannot drift from the thing it is advertising — the
+## victory effects are the real effects, the block face is the real face, and a
+## theme is previewed by building a small board out of its own colours.
+##
+## `id` is whatever is under the cursor, falling back to what is equipped, so
+## the panel answers "what am I about to pick" and "what am I wearing" with one
+## control.
+func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
+	_panel(box, Color("#0e142a"), Color(PLAYER_ACCENT, 0.18), 10.0, 1.0)
+	var t := Time.get_ticks_msec() / 1000.0
+	var mid := box.get_center()
+
+	match slot:
+		"theme":
+			# A board in miniature: the theme's wash, its bloom, its panel at
+			# its own alpha, its ruling and its nodes.
+			var top := Cosmetics.theme_color(id, "top")
+			var bot := Cosmetics.theme_color(id, "bottom")
+			for i in 12:
+				var f := float(i) / 12.0
+				_overlay.draw_rect(Rect2(box.position.x + 2.0,
+					box.position.y + 2.0 + f * (box.size.y - 4.0),
+					box.size.x - 4.0, box.size.y / 12.0 + 1.0),
+					top.lerp(bot, f), true)
+			var ga: float = float(Cosmetics.theme_opt(id, "glow_a"))
+			if ga > 0.0:
+				var gcol := Cosmetics.theme_tint(id, "glow", Color.BLACK)
+				for i in 5:
+					var f2 := float(i) / 4.0
+					_overlay.draw_circle(mid, box.size.x * (0.16 + f2 * 0.42),
+						Color(gcol, ga * 0.13 * (1.0 - f2)))
+			# Taller than wide, because that is the shape of a playfield — a
+			# landscape rectangle reads as a swatch rather than as a board.
+			var ph2: float = box.size.y * 0.76
+			var pan := Rect2(mid - Vector2(ph2 * 0.30, ph2 * 0.5),
+				Vector2(ph2 * 0.60, ph2))
+			_overlay.draw_rect(pan, Color(Cosmetics.theme_color(id, "panel"),
+				float(Cosmetics.theme_opt(id, "panel_a"))), true)
+			var grid := Color(Cosmetics.theme_color(id, "grid"),
+				float(Cosmetics.theme(id)["grid_a"]))
+			var step: float = pan.size.x / 3.0
+			var rows := int(pan.size.y / step)
+			for i in range(1, 3):
+				_overlay.draw_rect(Rect2(pan.position.x + step * i, pan.position.y,
+					1.0, pan.size.y), grid, true)
+			for i in range(1, rows + 1):
+				_overlay.draw_rect(Rect2(pan.position.x, pan.position.y + step * i,
+					pan.size.x, 1.0), grid, true)
+			if bool(Cosmetics.theme_opt(id, "nodes")):
+				for a in range(1, 3):
+					for b2 in range(1, rows + 1):
+						_overlay.draw_circle(pan.position + Vector2(step * a, step * b2),
+							1.6, Color(grid, minf(1.0, grid.a * 3.4)))
+			# Two blocks sitting in it, so the theme is judged against the thing
+			# it has to stay readable behind.
+			for i in 2:
+				var br := Rect2(pan.position.x + step * float(i) + 3.0,
+					pan.end.y - step * float(2 - i) - step + 3.0,
+					step - 6.0, step - 6.0)
+				var bink := Cosmetics.draw_block_face(_overlay, br,
+					WWBoard.TIER_COLORS[i * 3], Profile.worn("blocks"), false)
+				_text_fit_overlay(_font_bold, br.get_center(), ["AL", "ENT"][i], 11,
+					br.size.x - 4.0, bink)
+			_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame",
+				PLAYER_ACCENT), false, 1.5)
+		"blocks":
+			# Three tiers, so a style is judged on more than one swatch.
+			var w: float = box.size.x / 4.2
+			for i in 3:
+				var rr := Rect2(mid.x - w * 1.65 + float(i) * (w + 8.0),
+					mid.y - w * 0.4, w, w * 0.8)
+				var ink := Cosmetics.draw_block_face(_overlay, rr,
+					WWBoard.TIER_COLORS[i * 2], id, false)
+				_text_fit_overlay(_font_bold, rr.get_center(),
+					["AL", "SHIP", "ENT"][i], 15, rr.size.x - 8.0, ink)
+		"victory":
+			match id:
+				"confetti":
+					Cosmetics.victory_confetti(_overlay, box.size, t, Color("#ffd166"))
+				"rays":
+					Cosmetics.victory_rays(_overlay, mid, t, Color("#ffd166"))
+				"shatter":
+					Cosmetics.victory_shatter(_overlay, mid, t, Color("#ffd166"))
+				"supernova":
+					Cosmetics.victory_supernova(_overlay, box.size, mid, t,
+						Color("#ffd166"))
+				_:
+					_otext(_font, mid, "no effect", 13, Color("#5d6a92"))
+		"title":
+			var e := Profile.entry("title", id)
+			var name := String(e.get("name", ""))
+			_otext(_font, Vector2(mid.x, mid.y - 16.0), "shown under your name",
+				11, Color("#5d6a92"))
+			_otext(_font_bold, Vector2(mid.x, mid.y + 10.0),
+				"LEVEL %d%s" % [Profile.level(),
+					("  ·  " + name.to_upper()) if name != "—" else ""],
+				18, Color("#ffd166"))
+		_:
+			# typing, attack and cursor are motion inside a match and cannot be
+			# shown honestly in a still box, so the panel says what it is rather
+			# than faking a demonstration.
+			var e2 := Profile.entry(slot, id)
+			_otext(_font_bold, Vector2(mid.x, mid.y - 10.0),
+				String(e2.get("name", "")).to_upper(), 20, Color("#e6ecff"))
+			_otext(_font, Vector2(mid.x, mid.y + 16.0), "seen in play", 11,
+				Color("#5d6a92"))
+
+
 ## Everything you are wearing, and everything you could be.
 ##
 ## Split out of Mastery because the two were doing different jobs on one screen:
@@ -4603,6 +4714,17 @@ func _draw_cosmetics(size: Vector2) -> void:
 	var slot: String = Profile.SLOTS[mastery_slot]
 	_otext(_font_bold, Vector2(cx, _mastery_grid_top() - 25.0),
 		String(Profile.SLOT_NAMES[slot]), 15, Color("#7c88ad"))
+
+	# What is under the cursor, or what is on. Answering both with one panel
+	# means it is never blank and never lying about what you are wearing.
+	var showing := Profile.worn(slot)
+	for e: Dictionary in _mastery_cards():
+		if _hover_action == String(e["action"]) and Profile.meets(e["need"]):
+			showing = String(e["id"])
+	var pw: float = minf(330.0, size.x - GRID_MARGIN * 2.0)
+	var ph: float = 150.0 if not portrait else 132.0
+	_draw_cosmetic_preview(Rect2(cx - pw * 0.5, _preview_top(), pw, ph), slot,
+		showing)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -4697,11 +4819,16 @@ func _mastery_stats_foot() -> float:
 
 ## Where the unlock grid starts, once the record strip above it has taken as many
 ## rows as it needs. On a desktop that is one row and this is the old constant.
+## The preview sits under the category label, and the grid under the preview.
+func _preview_top() -> float:
+	return 186.0 + safe_top
+
+
 func _mastery_grid_top() -> float:
-	# A constant again. It used to be measured off the record strip because the
+	# Under the preview panel. It used to be measured off the record strip because the
 	# two shared a screen; the wardrobe has the screen to itself now, so the grid
 	# sits under its own header instead of under somebody else's stats.
-	return 186.0 + safe_top
+	return _preview_top() + (150.0 if not portrait else 132.0) + 46.0
 
 
 ## The bottom of the unlock grid. Everything below it — the back button, the
@@ -6024,76 +6151,89 @@ func _title_plates() -> Array:
 	return out
 
 
-## One plate.
-##
-## The gutter is a block, drawn by the same four styles the playfield uses — so
-## equipping Wireframe reskins the menu as well as the match, which is what
-## stops a block style being a thing you only see while playing.
-func _draw_title_plate(b: Dictionary) -> void:
-	var r: Rect2 = b["rect"]
-	var tint: Color = b["accent"]
-	var hot: bool = _hover_action == String(b["action"])
-	var stamp := String(b.get("stamp", ""))
+## The fragment a word would be branded with. Three letters is what most
+## garbage carries, so it is what a plate carries when nobody has chosen one.
+func _stamp_for(word: String) -> String:
+	var clean := word.strip_edges().to_upper()
+	var out := ""
+	for i in clean.length():
+		var c := clean[i]
+		if c >= "A" and c <= "Z":
+			out += c
+		if out.length() >= 3:
+			break
+	return out if out != "" else "..."
 
-	# The rules line is not a mode and must not pretend to be a block.
+
+## One plate: a branded block, and the word that answers it.
+##
+## Lifted out of the title screen because every other menu was still made of
+## rounded cards with centred text, and next to a screen built out of the game's
+## own blocks they looked like a different product. One renderer, so a change to
+## the language reaches all of them at once.
+##
+## `stamp` empty draws a plain row instead — for the things that are not modes.
+func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color,
+		hot: bool, on: bool = false, locked: bool = false) -> void:
 	if stamp == "":
-		_draw_tracked(_font, Vector2(r.get_center().x, r.get_center().y),
-			String(b["label"]).to_upper(), 11, 2.0,
+		_draw_tracked(_font, r.get_center(), word.to_upper(), 11, 2.0,
 			Color("#aab4d4") if hot else Color("#6b769b"))
 		return
 
 	if hot:
 		r = Rect2(r.position - Vector2(3.0, 0.0), r.size + Vector2(6.0, 0.0))
 
-	var gw: float = maxf(92.0, r.size.x * 0.22)
+	var gw: float = clampf(r.size.x * 0.22, 78.0, 128.0)
 	var gutter := Rect2(r.position, Vector2(gw, r.size.y)).grow(-4.0)
 
-	# The plate. Quiet, and carrying the board's own ruling rather than being a
-	# flat slab — a hairline grid at the pitch the playfield uses, which is what
-	# ties the right-hand two thirds to the game instead of leaving it blank.
 	_ui_sb.bg_color = Color("#141b33") if not hot else Color("#1b2444")
 	_ui_sb.set_corner_radius_all(4)
-	_ui_sb.set_border_width_all(1)
-	_ui_sb.border_color = Color(tint, 0.5 if hot else 0.18)
+	_ui_sb.set_border_width_all(2 if on else 1)
+	_ui_sb.border_color = Color("#ffd166") if on else Color(tint, 0.5 if hot else 0.18)
 	_ui_sb.shadow_size = 0
 	_overlay.draw_style_box(_ui_sb, r)
 
+	# The board's own ruling, at the pitch the playfield uses, plus a wash
+	# bleeding out of the block so the two halves belong to each other.
 	var body := Rect2(r.position.x + gw, r.position.y, r.size.x - gw, r.size.y)
-	var step := 26.0
-	var gx := body.position.x + step
+	var gx := body.position.x + 26.0
 	while gx < body.end.x - 2.0:
 		_overlay.draw_rect(Rect2(gx, body.position.y + 3.0, 1.0, body.size.y - 6.0),
 			Color(tint, 0.055), true)
-		gx += step
-	# A wash bleeding out of the block, so the two halves belong to each other.
+		gx += 26.0
 	for i in 6:
 		var f := float(i) / 5.0
 		_overlay.draw_rect(Rect2(body.position.x + f * 70.0, body.position.y + 1.0,
 			70.0 / 6.0 + 1.0, body.size.y - 2.0), Color(tint, 0.075 * (1.0 - f)), true)
 
-	var ink := Cosmetics.draw_block_face(_overlay, gutter, tint,
+	var face: Color = tint if not locked else Color("#39415f")
+	var ink := Cosmetics.draw_block_face(_overlay, gutter, face,
 		Profile.worn("blocks"), hot)
 	_draw_tracked(_font_bold, gutter.get_center(), stamp,
-		19 if r.size.y < 70.0 else 20, 3.0, ink)
+		17 if r.size.y < 60.0 else (19 if r.size.y < 70.0 else 20), 3.0, ink)
 
-	# The whole word, with the fragment the block carries picked out. This is
-	# the same treatment the tutorial card uses for SHIPMENTS, and it reads as
-	# one word rather than as two halves.
-	var word := String(b["word"])
+	var size: int = 18 if r.size.y < 60.0 else (20 if r.size.y < 70.0 else 22)
+	var head := word.substr(0, stamp.length()) if word.to_upper().begins_with(stamp) else ""
+	var tail := word.substr(head.length())
 	var tx: float = r.position.x + gw + 20.0
-	var size: int = 20 if r.size.y < 70.0 else 22
-	var head := word.substr(0, stamp.length())
-	var tail := word.substr(stamp.length())
 	var hw: float = _font_bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT,
 		-1, size).x
-	var ty: float = r.position.y + r.size.y * (0.37 if String(b["sub"]) != "" else 0.5)
-	_otext_left(_font_bold, Vector2(tx, ty), head, size,
+	var ty: float = r.position.y + r.size.y * (0.37 if sub != "" else 0.5)
+	var bright: Color = Color("#4d5878") if locked else (
 		Color.WHITE if hot else Color("#e6ecff"))
-	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size,
+	var dim: Color = Color("#3d4666") if locked else (
 		Color("#8d99bd") if hot else Color("#6b769b"))
-	if String(b["sub"]) != "":
-		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72),
-			String(b["sub"]), 12, Color("#aab4d4") if hot else Color("#7c88ad"))
+	_otext_left(_font_bold, Vector2(tx, ty), head, size, bright)
+	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size, dim)
+	if sub != "":
+		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72), sub, 12,
+			Color("#aab4d4") if hot else Color("#7c88ad"))
+
+
+func _draw_title_plate(b: Dictionary) -> void:
+	_draw_plate(b["rect"], String(b.get("stamp", "")), String(b["word"])
+		if b.has("word") else String(b["label"]), String(b["sub"]), b["accent"],
+		_hover_action == String(b["action"]))
 
 
 ## Text with a fixed extra advance between characters. Godot has no tracking, so
@@ -6145,74 +6285,33 @@ func _otext_left(font: Font, at: Vector2, text: String, size: int,
 
 
 func _draw_menu_button(b: Dictionary) -> void:
+	# Everything that is not the playfield is a plate now. The rounded card with
+	# a key badge and centred text was the generic half of every other screen,
+	# and next to a title built out of blocks it read as a different product.
 	var r: Rect2 = b["rect"]
-	var accent: Color = b["accent"]
+	var label := String(b["label"])
 	var hot: bool = _hover_action == String(b["action"])
-	if hot:
-		# A small lift is enough to say "this one".
-		r = Rect2(r.position - Vector2(0, 4), r.size)
 
-	_panel(r, Color("#1b2444") if hot else Color("#141b33"),
-		Color(accent, 0.9 if hot else 0.26), 12.0, 3.0 if hot else 2.0)
-
-	var key: String = b["key"]
-	# An empty key means the button is click-only, and a badge with nothing in it
-	# would promise a shortcut that does not exist. In portrait every one of them
-	# is that: there is no ESC, no ENTER and no CTRL on a phone, and a badge
-	# naming a key the device does not have is worse than no badge at all.
-	if portrait:
-		key = ""
-	var badge := Rect2(r.position.x + 14.0, r.position.y + 14.0,
-		18.0 + 9.0 * key.length(), 22.0)
-	if key != "":
-		_panel(badge, Color(accent, 0.35 if hot else 0.18), Color(accent, 0.55), 6.0, 1.0)
-		_otext(_font_bold, badge.get_center(), key, 12, accent)
-	else:
-		badge = Rect2(r.position.x + 8.0, r.position.y, 0.0, 0.0)
-
-	var cx := r.get_center().x
-	var rating: int = b["rating"]
-	# Short buttons have no room for stacked lines. Centre the label in what is
-	# left beside the key badge, or the two collide.
-	if r.size.y < 70.0:
-		_otext(_font_bold, Vector2((badge.end.x + r.end.x) * 0.5, r.get_center().y),
-			String(b["label"]).to_upper(), 20, Color.WHITE if hot else Color("#e6ecff"))
+	# Short, wide and wordless — the category arrows and the like. A plate needs
+	# a word to brand, so these keep a plain treatment.
+	# A plate needs room for a block and a word beside it. Below that it draws
+	# the stamp on top of the label — BACK came out as "BAC" and "BACK" at once.
+	if label == "" or r.size.y < 38.0 or r.size.x < 230.0:
+		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
+			Color(b["accent"], 0.9 if hot else 0.26), 8.0, 2.0)
+		var key0 := String(b["key"])
+		_otext(_font_bold, r.get_center(), label if label != "" else key0,
+			15, Color.WHITE if hot else Color("#e6ecff"))
 		return
 
-	# Opponent cards: name, pace, and what it actually does to you. The rating
-	# pips sit up on the badge line, since the third line is spoken for.
-	if r.size.y < 120.0:
-		# The name shares its line with the key badge and the rating pips, so it
-		# is centred in the gap between them rather than on the card — otherwise
-		# a long one like METRONOME runs straight into the pips.
-		var pip_x := r.end.x - 56.0
-		_text_fit_overlay(_font_bold,
-			Vector2((badge.end.x + pip_x) * 0.5, r.position.y + 32.0),
-			String(b["label"]).to_upper(), 20, pip_x - badge.end.x - 12.0,
-			Color.WHITE if hot else Color("#e6ecff"))
-		_text_fit_overlay(_font, Vector2(cx, r.position.y + 54.0), String(b["sub"]), 12,
-			r.size.x - 22.0, accent, 9)
-		_text_fit_overlay(_font, Vector2(cx, r.position.y + 71.0), String(b["note"]), 11,
-			r.size.x - 20.0, Color("#8d99bd") if hot else Color("#7c88ad"), 8)
-		if rating > 0:
-			for k in 3:
-				_overlay.draw_rect(Rect2(pip_x + k * 16.0, r.position.y + 22.0,
-					10.0, 5.0), accent if k < rating else Color("#2a3355"), true)
-		return
-
-	_otext(_font_bold, Vector2(cx, r.position.y + 60.0), String(b["label"]).to_upper(), 26,
-		Color.WHITE if hot else Color("#e6ecff"))
-	# Fitted rather than fixed: six doors are narrower than five were, and a
-	# subtitle that overhangs its own card reads as a rendering fault.
-	_text_fit_overlay(_font, Vector2(cx, r.position.y + 86.0), String(b["sub"]), 14,
-		r.size.x - 24.0, accent, 10)
-	if String(b["note"]) != "":
-		_otext(_font, Vector2(cx, r.position.y + 108.0), b["note"], 12, Color("#7c88ad"))
-
-	if rating > 0:
-		for k in 3:
-			_overlay.draw_rect(Rect2(cx - 23.0 + k * 16.0, r.position.y + 128.0, 10.0, 5.0),
-				accent if k < rating else Color("#2a3355"), true)
+	var stamp := String(b["stamp"]) if b.has("stamp") and String(b["stamp"]) != "" \
+		else _stamp_for(label)
+	var sub := String(b["sub"])
+	# Opponent cards carry a rating rather than a sentence; keep it in the sub.
+	if int(b.get("rating", 0)) > 0 and sub == "":
+		sub = "%d wpm" % int(b["rating"])
+	_draw_plate(r, stamp, label.to_upper(), sub, b["accent"], hot,
+		bool(b.get("on", false)), bool(b.get("locked", false)))
 
 
 func _panel(r: Rect2, bg: Color, border: Color, radius: float, width: float = 2.0) -> void:
