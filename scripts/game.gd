@@ -3819,24 +3819,27 @@ func _draw_title(size: Vector2) -> void:
 				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 		return
 
-	if not portrait:
+	# The explainer cards are for somebody who has not been taught yet. Shown to
+	# everyone on every launch they were three more generic cards between the
+	# player and the game, which is most of what made this screen feel like a
+	# template rather than a title.
+	if not portrait and not bool(Profile.pref("taught")):
 		_draw_how_cards(cx)
-	for b: Dictionary in _menu_buttons():
-		_draw_menu_button(b)
 
-	if portrait:
-		# None of the keyboard hints mean anything here — there are no number
-		# keys, no F1 and no Escape, and on iOS you leave with the home gesture
-		# rather than by quitting. What the line has to say instead is that the
-		# doors are tappable, which is the one thing a stack of panels does not
-		# make obvious on its own.
-		_otext(_font, Vector2(cx, _portrait_menu_top(5) + 540.0), "tap to choose",
-			13, Color("#5d6a92"))
-	else:
-		_otext(_font, Vector2(cx, 578), "click, or press 1 – 6", 13, Color("#5d6a92"))
-		_otext(_font, Vector2(cx, 674),
-			"H — full rules      F1 — %s      ESC — quit" % [
-				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
+	_draw_title_bands()
+	for b: Dictionary in _menu_buttons():
+		_draw_title_plate(b)
+
+	# The number keys still work and nothing else says so. Kept to one line and
+	# set quietly, because it is a power-user affordance rather than the way in.
+	if not portrait:
+		var m := _plate_metrics()
+		var foot: float = float(m["top"]) + 6.0 * (float(m["h"]) + float(m["gap"])) \
+			+ 3.0 * float(m["band_gap"]) + 58.0
+		_otext(_font, Vector2(cx, foot), "1 – 6 jumps straight in      F1 %s      ESC quits"
+			% ["unmutes" if Sfx.muted else "mutes"], 11, Color("#3d4666"))
+
+
 
 
 ## Three worked examples instead of a wall of instructions. Each one shows the
@@ -5643,72 +5646,9 @@ func _menu_buttons() -> Array:
 		# Nothing behind the rules screen is clickable; see `_draw_title`.
 		if show_rules and phase == Phase.TITLE:
 			return out
-		# Four doors, and that is the entire title screen. It used to carry the
-		# whole opponent roster plus two mode buttons plus the rules toggle,
-		# which meant the first thing anybody saw was fourteen choices at once.
-		# Choosing an opponent is a decision that belongs *inside* single player,
-		# not in front of it.
-		# Practice sits first for anyone who has not been taught yet, because a
-		# first-time player opening Single Player and being buried by a Duelist
-		# is a player who does not come back.
-		var green: bool = not bool(Profile.pref("taught"))
-		var doors := [
-			["1", "Practice", "learn it, or drill it", "practice",
-				Color("#90be6d") if green else Color("#8d99bd")],
-			["3", "Single player", "you against the machines", "solo", Color("#7bdff2")],
-			["4", "Multiplayer", "room codes, up to four", "versus", Color("#c77dff")],
-			["5", "Mastery", "level %d" % Profile.level(), "mastery", Color("#ffd166")],
-			["6", "Settings", "sound, effects, name", "settings", Color("#8d99bd")],
-		]
-		# The daily sits with the modes rather than off on its own, and says its
-		# state on the door: there is no point walking into a room you have
-		# already used up today.
-		var dkey := daily_key()
-		var spent: bool = Profile.daily_done(dkey)
-		var dsub := "one run, everyone gets the same board"
-		if spent:
-			dsub = "done — %s, back tomorrow" % _commas(
-				int(Profile.daily_result(dkey).get("score", 0)))
-		doors.insert(1, ["2", "Daily board", dsub, "daily",
-			Color("#5d6a92") if spent else Color("#ffd166")])
-		# Five across needs 1248px and a phone has 720, so portrait stacks them.
-		# The rest of the menus are still laid out for landscape and are the next
-		# piece of work; the title at least has to be reachable, or nothing else
-		# on a phone can be got at in the first place.
-		if portrait:
-			var pw := get_viewport_rect().size.x - 72.0
-			var ptop := _portrait_menu_top(doors.size())
-			for i in doors.size():
-				var d2: Array = doors[i]
-				out.append({
-					"rect": Rect2(cx - pw * 0.5, ptop + i * PORTRAIT_DOOR_PITCH,
-						pw, PORTRAIT_DOOR_H),
-					"key": String(d2[0]), "label": String(d2[1]), "sub": String(d2[2]),
-					"note": "", "rating": 0, "accent": d2[4], "action": String(d2[3]),
-				})
-			# The rules were on H and nothing else, so on a phone — where the
-			# title screen has no keyboard drawn at all — they could not be
-			# opened. A door of their own is the only way in.
-			var stack := doors.size() * PORTRAIT_DOOR_PITCH \
-				- (PORTRAIT_DOOR_PITCH - PORTRAIT_DOOR_H)
-			out.append({
-				"rect": Rect2(cx - 120.0, ptop + stack + 62.0, 240.0, 46.0),
-				"key": "", "label": "Full rules", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#5d6a92"), "action": "rules"})
-			return out
-		# Six of these need 1500px and the screen has 1280, so they are fitted
-		# rather than laid out from a constant — the same helper every other grid
-		# in the game uses. Five used to fit exactly, which is why this was a
-		# constant until the daily arrived.
-		var wide := _grid_rects(doors.size(), 428.0, doors.size(), 240.0, 112.0,
-			12.0, 150.0)
-		for i in doors.size():
-			var d: Array = doors[i]
-			out.append({
-				"rect": wide[i],
-				"key": String(d[0]), "label": String(d[1]), "sub": String(d[2]),
-				"note": "", "rating": 0, "accent": d[4], "action": String(d[3]),
-			})
+		for d: Dictionary in _title_plates():
+			out.append(d)
+		return out
 	elif phase == Phase.SOLO:
 		# Under the switches rather than at 596, which the roster now overruns on
 		# anything narrower than a desktop.
@@ -5872,6 +5812,232 @@ func _menu_buttons() -> Array:
 			"label": "Title", "sub": "pick a new opponent", "note": "", "rating": 0,
 			"accent": Color("#8d99bd"), "action": "title"})
 	return out
+
+
+## The seam between bands. A hairline and a word, set in the gutter column so it
+## lines up with the stamps rather than floating over the middle of the screen.
+func _draw_title_bands() -> void:
+	var m := _plate_metrics()
+	var x: float = float(m["x"])
+	var w: float = float(m["w"])
+	var y: float = float(m["top"])
+	var last := -1
+	for row: Array in _title_modes():
+		if int(row[5]) != last:
+			y += float(m["band_gap"])
+			last = int(row[5])
+			var label: String = TITLE_BANDS[last]
+			var lw: float = _font_bold.get_string_size(label,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x + 2.0 * float(label.length())
+			_draw_tracked_left(_font_bold, Vector2(x, y - 15.0), label, 10, 2.0,
+				Color("#7c88ad"))
+			# The rule starts after the label and runs to the plate's edge, so
+			# the two read as one line rather than as a caption above a divider.
+			_overlay.draw_rect(Rect2(x + lw + 10.0, y - 16.0, w - lw - 10.0, 1.0),
+				Color("#232c4d"), true)
+		y += float(m["h"]) + float(m["gap"])
+
+
+## The title screen, as the thing the game is actually made of.
+##
+## It used to be six rounded cards in a row, each with a number badge, which is
+## the shape every menu in every engine ships with — and the numbers encoded
+## nothing, because the modes are a set and not a sequence. Meanwhile the most
+## characteristic object in this game, the letter-stamped block, appeared only in
+## the tutorial cards.
+##
+## So every mode is a branded block now. A coloured stamp gutter carrying a
+## three or four letter fragment, with the rest of the word continuing out of it
+## — PRAC·TICE, VER·SUS — which is exactly the FRIENDSHIP → SHIPMENTS grammar the
+## game already teaches on the same screen. Reading down the menu is reading the
+## same artifact you read all match.
+##
+## The bands are real grouping rather than decoration: one place to learn, three
+## to play, two that are about you rather than about a match.
+const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
+
+
+func _title_modes() -> Array:
+	var fresh: bool = not bool(Profile.pref("taught"))
+	var dkey := daily_key()
+	var spent: bool = Profile.daily_done(dkey)
+	var dsub := "one run, the same board for everyone"
+	if spent:
+		dsub = "played — %s. A new board at midnight." % _commas(
+			int(Profile.daily_result(dkey).get("score", 0)))
+	# stamp, tail, sub, action, tint, band
+	return [
+		["PRAC", "TICE", "Learn it, or drill it", "practice", Color("#90be6d"), 0],
+		["DAI", "LY", dsub, "daily",
+			Color("#5d6a92") if spent else Color("#ffd166"), 1],
+		["SOLO", "", "You against the machines", "solo", Color("#7bdff2"), 1],
+		["VER", "SUS", "Room codes, up to four", "versus", Color("#c77dff"), 1],
+		["MAS", "TERY", "Level %d" % Profile.level(), "mastery", Color("#f8961e"), 2],
+		["SET", "TINGS", "Sound, effects, name", "settings", Color("#8d99bd"), 2],
+	]
+
+
+## Where the stack starts, and how tall each plate is. Portrait gets the taller
+## plate because it is being hit with a thumb.
+func _plate_metrics() -> Dictionary:
+	var size := get_viewport_rect().size
+	var wide: float = minf(560.0 if portrait else 620.0, size.x - GRID_MARGIN * 2.0)
+	# Landscape is 720 tall and has to hold six plates, three band rules and the
+	# rules line; portrait has half as much again to spend and is being hit with
+	# a thumb, so it gets the taller plate.
+	var h: float = 84.0 if portrait else 54.0
+	var gap: float = 10.0 if portrait else 7.0
+	var band_gap: float = 30.0 if portrait else 16.0
+	var rows := _title_modes()
+	var block: float = 0.0
+	var last := -1
+	for m: Array in rows:
+		if int(m[5]) != last:
+			block += band_gap
+			last = int(m[5])
+		block += h + gap
+	var head: float = (196.0 if portrait else 232.0) + safe_top
+	var avail: float = size.y - safe_bottom - head - (96.0 if portrait else 24.0)
+	# Biased up rather than centred. Centring left a band of nothing between the
+	# wordmark and the first plate on a tall screen, which read as a mistake
+	# rather than as space.
+	var top: float = head + maxf(0.0, (avail - block) * 0.34)
+	return {"x": size.x * 0.5 - wide * 0.5, "w": wide, "h": h, "gap": gap,
+		"band_gap": band_gap, "top": top}
+
+
+func _title_plates() -> Array:
+	var m := _plate_metrics()
+	var out: Array = []
+	var y: float = float(m["top"])
+	var last := -1
+	for row: Array in _title_modes():
+		if int(row[5]) != last:
+			y += float(m["band_gap"])
+			last = int(row[5])
+		out.append({
+			"rect": Rect2(float(m["x"]), y, float(m["w"]), float(m["h"])),
+			"key": "", "label": String(row[0]) + String(row[1]),
+			"sub": String(row[2]), "note": "", "rating": 0,
+			"accent": row[4], "action": String(row[3]),
+			"stamp": String(row[0]), "tail": String(row[1]), "band": int(row[5]),
+		})
+		y += float(m["h"]) + float(m["gap"])
+	# The rules are not a mode, so they are not a plate. A quiet line under the
+	# stack, which is also the only way in on a phone — H is not a key it has.
+	out.append({
+		"rect": Rect2(float(m["x"]), y + 14.0, float(m["w"]), 34.0),
+		"key": "", "label": "Full rules", "sub": "", "note": "", "rating": 0,
+		"accent": Color("#5d6a92"), "action": "rules", "stamp": "", "tail": "",
+		"band": -1})
+	return out
+
+
+## One plate. The gutter is the signature: a block, branded, exactly as it looks
+## when one lands on you.
+func _draw_title_plate(b: Dictionary) -> void:
+	var r: Rect2 = b["rect"]
+	var tint: Color = b["accent"]
+	var hot: bool = _hover_action == String(b["action"])
+	var stamp := String(b.get("stamp", ""))
+
+	# The rules line is not a block and must not pretend to be one.
+	if stamp == "":
+		_draw_tracked(_font, Vector2(r.get_center().x, r.get_center().y),
+			String(b["label"]).to_upper(), 11, 2.0,
+			Color("#aab4d4") if hot else Color("#6b769b"))
+		return
+
+	if hot:
+		r = Rect2(r.position - Vector2(3.0, 0.0), r.size + Vector2(6.0, 0.0))
+
+	var gw: float = maxf(96.0, r.size.x * 0.24)
+	var gutter := Rect2(r.position, Vector2(gw, r.size.y))
+
+	# The plate: quiet, so the gutter is the thing you see.
+	_ui_sb.bg_color = Color("#141b33") if not hot else Color("#1b2444")
+	_ui_sb.set_corner_radius_all(4)
+	_ui_sb.set_border_width_all(1)
+	_ui_sb.border_color = Color(tint, 0.45 if hot else 0.16)
+	_ui_sb.shadow_size = 0
+	_overlay.draw_style_box(_ui_sb, r)
+
+	# The gutter, drawn the way a garbage block is drawn — a filled face with a
+	# lighter top edge, which is what makes it read as the same object.
+	_ui_sb.bg_color = Color(tint, 0.92 if hot else 0.78)
+	_ui_sb.set_corner_radius_all(3)
+	_ui_sb.set_border_width_all(0)
+	_overlay.draw_style_box(_ui_sb, gutter.grow(-4.0))
+	_overlay.draw_rect(Rect2(gutter.position + Vector2(4.0, 4.0),
+		Vector2(gutter.size.x - 8.0, 2.0)), Color(1, 1, 1, 0.30), true)
+
+	# The fragment, tracked out. Letter spacing is what makes a stamp read as
+	# stamped rather than as a word set small.
+	_draw_tracked(_font_bold, gutter.get_center(), stamp,
+		20 if r.size.y < 70.0 else 21, 3.0, Color("#0b1020"))
+
+	# The tail continues out of the block, dimmer — the seam is the point.
+	var tx: float = r.position.x + gw + 18.0
+	var tail := String(b.get("tail", ""))
+	if tail != "":
+		_otext_left(_font_bold, Vector2(tx, r.position.y + r.size.y * 0.37), tail,
+			20 if r.size.y < 70.0 else 21,
+			Color("#e6ecff") if hot else Color("#aab4d4"))
+		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72),
+			String(b["sub"]), 12, Color("#aab4d4") if hot else Color("#7c88ad"))
+	else:
+		# The stamp is the whole word. An em-dash in the tail slot read as a
+		# placeholder rather than as an absence, so the line simply centres.
+		_otext_left(_font, Vector2(tx, r.get_center().y), String(b["sub"]), 13,
+			Color("#aab4d4") if hot else Color("#7c88ad"))
+
+
+## Text with a fixed extra advance between characters. Godot has no tracking, so
+## it is drawn a glyph at a time.
+func _draw_tracked(font: Font, centre: Vector2, text: String, size: int,
+		track: float, color: Color) -> void:
+	if font == null or text == "":
+		return
+	var total := 0.0
+	var widths: Array = []
+	for i in text.length():
+		var w: float = font.get_string_size(text[i], HORIZONTAL_ALIGNMENT_LEFT,
+			-1, size).x
+		widths.append(w)
+		total += w + (track if i < text.length() - 1 else 0.0)
+	var x: float = centre.x - total * 0.5
+	var y: float = centre.y - font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size).y * 0.5 + font.get_ascent(size)
+	for i in text.length():
+		_overlay.draw_string(font, Vector2(x, y), text[i],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+		x += float(widths[i]) + track
+
+
+## Tracked text hung off a left edge. The band labels get the same letter
+## spacing as the stamps, so the two read as the same system.
+func _draw_tracked_left(font: Font, at: Vector2, text: String, size: int,
+		track: float, color: Color) -> void:
+	if font == null or text == "":
+		return
+	var y: float = at.y - font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, size).y * 0.5 + font.get_ascent(size)
+	var x := at.x
+	for i in text.length():
+		_overlay.draw_string(font, Vector2(x, y), text[i],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+		x += font.get_string_size(text[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + track
+
+
+## Left-aligned overlay text, for anything that hangs off an edge rather than a
+## centre line.
+func _otext_left(font: Font, at: Vector2, text: String, size: int,
+		color: Color) -> void:
+	if font == null or text == "":
+		return
+	var m := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	_overlay.draw_string(font, Vector2(at.x, at.y - m.y * 0.5 + font.get_ascent(size)),
+		text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
 
 func _draw_menu_button(b: Dictionary) -> void:
