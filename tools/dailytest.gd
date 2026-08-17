@@ -30,6 +30,7 @@ func _init() -> void:
 	_the_seed_reproduces()
 	_the_day_is_stable()
 	_one_run_a_day()
+	_the_day_is_the_players_own()
 
 	print("--- %s ---" % ("daily behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -104,6 +105,38 @@ func _one_run_a_day() -> void:
 	p.record_daily("2026-05-09", 100, 10, 5, 1)
 	_expect("a gap starts the streak again", p.daily_streak == 1)
 	_expect("the best is still the best", p.daily_best == 6000)
+
+
+## The board turns over at the player's midnight, and the date is the whole of
+## the seed — those two together are what let a daily work with no server, no
+## sync and no clock to agree on.
+func _the_day_is_the_players_own() -> void:
+	print("--- the day is the player's own ---")
+	var loc := Time.get_datetime_dict_from_system(false)
+	var want := "%04d-%02d-%02d" % [int(loc["year"]), int(loc["month"]), int(loc["day"])]
+	_expect("the key follows local time, not UTC", game.daily_key() == want)
+
+	# The seed is a pure function of the date string, which is the entire reason
+	# two machines deal the same board without ever talking to each other.
+	_expect("a date always seeds the same board",
+		game.seed_for("2026-01-01") == game.seed_for("2026-01-01"))
+	_expect("a different date seeds a different one",
+		game.seed_for("2026-01-01") != game.seed_for("2026-01-02"))
+
+	# Hashed rather than raw, so consecutive days are not near-identical boards.
+	# Compared as the thing that actually matters — the letters dealt — rather
+	# than as the seeds themselves.
+	var a := _deal(game.seed_for("2026-03-04"))
+	var b := _deal(game.seed_for("2026-03-05"))
+	var shared := 0
+	for i in a.size():
+		if a[i] == b[i]:
+			shared += 1
+	_expect("consecutive days deal unrelated boards", shared < a.size() / 3)
+
+	# And the settings travel with the date too, not just the letters.
+	_expect("a date always picks the same block kinds",
+		game.daily_kinds("2026-07-07") == game.daily_kinds("2026-07-07"))
 
 
 func _expect(what: String, ok: bool) -> void:

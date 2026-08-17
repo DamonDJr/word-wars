@@ -1162,24 +1162,49 @@ func _aim(shooter: SideState, mark: SideState) -> void:
 
 
 ## Step your aim to the next living rival. What Tab does.
-## Today, as a number, in UTC — so a board changes over at the same instant for
-## everyone rather than at each player's local midnight.
+## Today, as a date, in the player's own timezone — so the board turns over at
+## their midnight rather than at some arbitrary hour of their evening.
+##
+## The trade is worth stating, because the two things asked of a daily pull
+## against each other. Seeding from the local date means everybody playing a
+## given calendar date plays the same board, which is the sense of "the same
+## one" that matters — but two players either side of a date line are on
+## different boards for a few hours, because it is genuinely a different date
+## where they are standing. The alternative, UTC, keeps the whole world in step
+## at the cost of rolling the board over mid-afternoon for some of them.
+##
+## Local wins because a daily is a thing you do as part of your day. It is also
+## what Wordle does, so the behaviour is already familiar.
 func daily_key() -> String:
-	var d := Time.get_datetime_dict_from_system(true)
+	var d := Time.get_datetime_dict_from_system(false)
 	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
 
 
-## The seed for today. Hashed rather than used raw so consecutive days do not
-## deal near-identical boards.
+## The seed for today.
+##
+## It is the date and nothing else, which is the whole trick: no server, no
+## sync, no clock to agree on. Two machines that think it is the same day deal
+## the same board because they compute the same number from the same string.
+##
+## Hashed rather than used raw because consecutive dates are consecutive
+## integers, and consecutive seeds deal recognisably similar sequences — the
+## hash makes yesterday and today unrelated.
 func daily_seed() -> int:
-	return hash("wordwars-daily-" + daily_key())
+	return seed_for(daily_key())
+
+
+## The seed a given date deals. Split out from the clock so it can be checked
+## against a fixed date — the promise that two machines agree is a promise about
+## this function, and it cannot be tested through something that reads `now`.
+func seed_for(key: String) -> int:
+	return hash("wordwars-daily-" + key)
 
 
 ## Which special blocks are in play today. Two of them, picked by the seed, so
 ## the setting varies day to day and is still the same setting for everyone.
-func daily_kinds() -> Array:
+func daily_kinds(key: String = "") -> Array:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = daily_seed()
+	rng.seed = seed_for(key if key != "" else daily_key())
 	var pool := DAILY_KIND_POOL.duplicate()
 	for i in range(pool.size() - 1, 0, -1):
 		var j := rng.randi_range(0, i)
@@ -5834,7 +5859,7 @@ func _menu_buttons() -> Array:
 			var only := _grid_rects(1, _over_foot() + 54.0, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
 			out.append({
 				"rect": only[0], "key": "ESC",
-				"label": "Title", "sub": "a new board at midnight UTC", "note": "",
+				"label": "Title", "sub": "a new board at midnight", "note": "",
 				"rating": 0, "accent": Color("#ffd166"), "action": "title"})
 			return out
 		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
@@ -6218,7 +6243,7 @@ func _activate(action: String) -> void:
 	elif action == "daily":
 		if Profile.daily_done(daily_key()):
 			# Said rather than silently ignored, or the door looks broken.
-			_say("today's board is spent — a new one at midnight UTC",
+			_say("today's board is spent — a new one at midnight",
 				Color("#8d99bd"))
 			Sfx.play("reject", 1.2)
 			return

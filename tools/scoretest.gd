@@ -125,7 +125,11 @@ func _focus_stacks_with_attackers() -> void:
 		game.sides[i].in_match = true
 		game.sides[i].alive = true
 
-	# Everyone aims somewhere else: nobody is ganged up on.
+	# Every target pinned, including your own. `start_match` aims everyone, and
+	# an unaimed board is aimed at whoever `_pick_target_for` happened to roll —
+	# so leaving side 0 alone made this a coin flip on whether the player was
+	# also pointing at the board under test. It passed for a while by luck.
+	game.sides[0].target = 1
 	game.sides[1].target = 2
 	game.sides[2].target = 3
 	game.sides[3].target = 1
