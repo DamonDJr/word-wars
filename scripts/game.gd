@@ -2913,6 +2913,63 @@ const PORTRAIT_DOOR_H := 92.0
 const GRID_MARGIN := 36.0
 
 
+## How much bigger a menu's rows can afford to be.
+##
+## Every screen here was laid out in design units tuned for a 720px landscape
+## window, and portrait then hands it a space twice as tall. In a match that is
+## fine — the keyboard takes the bottom third — but Practice, Solo, Mastery and
+## Cosmetics have no keyboard, so a layout built for 720 sat in the top third of
+## the phone with a band of nothing under it.
+##
+## Rather than a second set of constants per screen, each one states how tall it
+## naturally is and gets back a factor. Card heights and gaps are multiplied by
+## it, and because `_draw_plate` already picks its type size from the height it
+## is given, the text grows with the plate rather than needing its own pass.
+##
+## Capped, because a screen with two rows on it should fill the space, not turn
+## into two slabs the size of a hand.
+func _menu_fill(natural: float, cap: float = 1.3) -> float:
+	if not portrait or natural <= 1.0:
+		return 1.0
+	var top: float = 214.0 + safe_top
+	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 48.0
+	return clampf(avail / natural, 1.0, cap)
+
+
+## Where a menu's content should start so it sits in the middle of what is left,
+## rather than at the top of it.
+##
+## The factors above make the rows bigger and push them apart, but a factor
+## cannot know where the block actually ended up — the first attempt spread the
+## gaps by a number that looked right and still left a third of the phone empty
+## underneath. This measures the laid-out block instead and centres it, which is
+## the part that makes a short screen stop looking like it fell to the top.
+##
+## Biased slightly high, because a menu that sits dead centre reads as floating
+## while one a little above centre reads as placed.
+func _menu_offset(laid: float) -> float:
+	if not portrait:
+		return 0.0
+	var top: float = 214.0 + safe_top
+	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 40.0
+	return maxf(0.0, (avail - laid) * 0.30)
+
+
+## The other half of filling a screen, and the half that was wrong first time.
+##
+## Inflating every row until the content reached the bottom turned two doors
+## into two letterboxes with small text stranded in them. A row has a natural
+## proportion and wants to grow a little; the space left over belongs in the
+## gaps between rows, which is what spreads a short menu down a tall phone
+## without making any single thing absurd.
+func _menu_spread(natural: float, cap: float = 3.2) -> float:
+	if not portrait or natural <= 1.0:
+		return 1.0
+	var top: float = 214.0 + safe_top
+	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 48.0
+	return clampf(avail / natural, 1.0, cap)
+
+
 ## Fit `count` cards into the width actually available, centred, in as many rows
 ## as that takes.
 ##
@@ -4148,19 +4205,41 @@ func _apply_prefs() -> void:
 
 
 ## Tutorial and Training, side by side or stacked.
+const PRACTICE_NATURAL := 2.0 * 104.0 + 16.0 + 84.0 + 62.0 + 74.0
+
+
+func _practice_fill() -> float:
+	return _menu_fill(PRACTICE_NATURAL)
+
+
+func _practice_spread() -> float:
+	return _menu_spread(PRACTICE_NATURAL)
+
+
+## Everything on the screen, once the fill and spread have had their say.
+func _practice_laid() -> float:
+	var f := _practice_fill()
+	var sp := _practice_spread()
+	var rows: float = 2.0 if portrait else 1.0
+	return rows * 104.0 * f + (rows - 1.0) * 16.0 * sp + 84.0 * sp \
+		+ 62.0 * f + 74.0
+
+
 func _practice_door_rects() -> Array:
-	return _grid_rects(2, 214.0 + safe_top, 2, 320.0, 104.0, 20.0, 340.0, 16.0)
+	var f := _practice_fill()
+	return _grid_rects(2, 214.0 + safe_top + _menu_offset(_practice_laid()), 2,
+		320.0, 104.0 * f, 20.0, 340.0, 16.0 * _practice_spread())
 
 
 ## The three pace cards. They wrap on a phone, which is the right answer here —
 ## three across at 720 leaves each of them too narrow for its own note.
 func _practice_pace_rects() -> Array:
-	return _grid_rects(TRAINING_PACE.size(), _practice_pace_top(), 3, 214.0, 62.0,
-		12.0, 200.0, 10.0)
+	return _grid_rects(TRAINING_PACE.size(), _practice_pace_top(), 3, 214.0,
+		62.0 * _practice_fill(), 12.0, 200.0, 10.0)
 
 
 func _practice_pace_top() -> float:
-	return _grid_bottom(_practice_door_rects(), 318.0) + 84.0
+	return _grid_bottom(_practice_door_rects(), 318.0) + 84.0 * _practice_spread()
 
 
 ## Learn it or drill it. Two doors, and a pace for the second one.
@@ -4171,7 +4250,10 @@ func _draw_practice(size: Vector2) -> void:
 		Color(bg_top, 0.93), true)
 	_draw_decor()
 
-	var hy := safe_top
+	# The header travels with the block. Centring the content and leaving the
+	# title pinned to the top left it orphaned, with a band of nothing between
+	# the two — the screen has to move as one composition or not at all.
+	var hy := safe_top + _menu_offset(_practice_laid())
 	_otext(_font_bold, Vector2(cx, hy + 78.0), "PRACTICE", 32, Color("#e6ecff"))
 	if not bool(Profile.pref("taught")):
 		var pulse := 0.6 + 0.4 * sin(Time.get_ticks_msec() / 420.0)
@@ -4296,7 +4378,7 @@ func _draw_solo(size: Vector2) -> void:
 		Color(bg_top, 0.93), true)
 	_draw_decor()
 
-	var hy := safe_top
+	var hy := safe_top + _menu_offset(_solo_laid())
 	_otext(_font_bold, Vector2(cx, hy + 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
 	_otext(_font, Vector2(cx, hy + 96.0), "add up to three, and pick who they are", 14,
 		Color("#8d99bd"))
@@ -4373,7 +4455,9 @@ func _draw_solo(size: Vector2) -> void:
 ## differently.
 func _kind_cards(top: float) -> Array:
 	var out: Array = []
-	var rects := _grid_rects(KIND_ORDER.size(), top, 3, 254.0, 56.0, 10.0, 240.0, 8.0)
+	var kf: float = _solo_fill() if phase == Phase.SOLO else 1.0
+	var rects := _grid_rects(KIND_ORDER.size(), top, 3, 254.0, 56.0 * kf, 10.0,
+		240.0, 8.0 * kf)
 	for i in KIND_ORDER.size():
 		var id: String = KIND_ORDER[i]
 		out.append({
@@ -4420,11 +4504,32 @@ func _draw_kind_cards(top: float, editable: bool) -> float:
 	return bottom
 
 
+const SOLO_NATURAL := 76.0 + 40.0 + 3.0 * 76.0 + 42.0 + 3.0 * 64.0 + 90.0
+
+
+func _solo_fill() -> float:
+	return _menu_fill(SOLO_NATURAL, 1.2)
+
+
+func _solo_spread() -> float:
+	return _menu_spread(SOLO_NATURAL, 2.0)
+
+
+func _solo_laid() -> float:
+	var f := _solo_fill()
+	var sp := _solo_spread()
+	var roster: float = 3.0 if portrait else 2.0
+	var kinds: float = 3.0 if portrait else 2.0
+	return 76.0 * f + 40.0 * sp + roster * 66.0 * f + (roster - 1.0) * 10.0 * sp \
+		+ 42.0 * sp + kinds * 56.0 + 90.0
+
+
 func _solo_seat_rects() -> Array:
 	# Four across at whatever width fits, never wrapped: the point of the row is
 	# that it is the table, and a table that goes 3 + 1 stops reading as one.
 	# `min_w` of zero is what forbids the wrap.
-	return _grid_rects(4, 118.0 + safe_top, 4, 168.0, 76.0, 12.0, 0.0)
+	return _grid_rects(4, 118.0 + safe_top + _menu_offset(_solo_laid()), 4, 168.0,
+		76.0 * _solo_fill(), 12.0, 0.0, 10.0)
 
 
 ## Everything that can go in a seat: nothing, a random pick, or one of the
@@ -4443,7 +4548,8 @@ func _solo_cards() -> Array:
 			"accent": Color(String(d["tint"]))})
 
 	var out: Array = []
-	var rects := _grid_rects(list.size(), _solo_roster_top(), 5, 202.0, 66.0, 10.0, 190.0)
+	var rects := _grid_rects(list.size(), _solo_roster_top(), 5, 202.0,
+		66.0 * _solo_fill(), 10.0, 190.0, 10.0 * _solo_spread())
 	for i in list.size():
 		var e: Dictionary = list[i]
 		e["rect"] = rects[i]
@@ -4454,7 +4560,7 @@ func _solo_cards() -> Array:
 
 ## Under the seats and the line of instructions beneath them.
 func _solo_roster_top() -> float:
-	return _grid_bottom(_solo_seat_rects(), 194.0) + 40.0
+	return _grid_bottom(_solo_seat_rects(), 194.0) + 40.0 * _solo_spread()
 
 
 ## Under the roster. The special-block switches are the last thing on the screen
@@ -4464,7 +4570,7 @@ func _solo_kinds_top() -> float:
 	var out := _solo_roster_top()
 	for c: Dictionary in _solo_cards():
 		out = maxf(out, (c["rect"] as Rect2).end.y)
-	return out + 42.0
+	return out + 42.0 * _solo_spread()
 
 
 ## The bottom of the last thing on the single-player screen, which the Start and
@@ -4512,7 +4618,7 @@ func _draw_mastery(size: Vector2) -> void:
 		Color(bg_top, 0.94), true)
 	_draw_decor()
 
-	var hy := safe_top
+	var hy := safe_top + _menu_offset(_mastery_laid())
 	var prog := Profile.level_progress()
 	_otext(_font_bold, Vector2(cx, hy + 58.0), "MASTERY", 34, Color("#e6ecff"))
 	var title := Profile.title_text()
@@ -4560,7 +4666,8 @@ func _draw_mastery(size: Vector2) -> void:
 	# play rather than how much. It had nowhere to live before.
 	var pfoot := _grid_bottom(strip, 222.0 + safe_top) + 40.0
 	_otext(_font_bold, Vector2(cx, pfoot), "POWER WORDS EARNED", 11, Color("#5d6a92"))
-	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0, 52.0, 10.0, 120.0)
+	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0,
+		52.0 * _mastery_fill(), 10.0, 120.0, 10.0 * _mastery_fill())
 	for i in POWER_ORDER.size():
 		var name: String = POWER_ORDER[i]
 		var r2: Rect2 = pw[i]
@@ -4704,7 +4811,7 @@ func _draw_cosmetics(size: Vector2) -> void:
 		Color(bg_top, 0.94), true)
 	_draw_decor()
 
-	var hy := safe_top
+	var hy := safe_top + _menu_offset(_cosmetics_laid())
 	_otext(_font_bold, Vector2(cx, hy + 58.0), "COSMETICS", 34, Color("#e6ecff"))
 	var worn_title := Profile.title_text()
 	_otext(_font, Vector2(cx, hy + 92.0),
@@ -4722,9 +4829,8 @@ func _draw_cosmetics(size: Vector2) -> void:
 		if _hover_action == String(e["action"]) and Profile.meets(e["need"]):
 			showing = String(e["id"])
 	var pw: float = minf(330.0, size.x - GRID_MARGIN * 2.0)
-	var ph: float = 150.0 if not portrait else 132.0
-	_draw_cosmetic_preview(Rect2(cx - pw * 0.5, _preview_top(), pw, ph), slot,
-		showing)
+	_draw_cosmetic_preview(Rect2(cx - pw * 0.5, _preview_top(), pw,
+		_preview_height()), slot, showing)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -4790,7 +4896,8 @@ func _mastery_cards() -> Array:
 	var slot: String = Profile.SLOTS[mastery_slot]
 	var list: Array = Profile.entries(slot)
 	var out: Array = []
-	var rects := _grid_rects(list.size(), _mastery_grid_top(), 5, 202.0, 70.0, 10.0, 190.0)
+	var rects := _grid_rects(list.size(), _mastery_grid_top(), 5, 202.0,
+		70.0 * _cosmetics_fill(), 10.0, 190.0, 10.0 * _cosmetics_spread())
 	for i in list.size():
 		var e: Dictionary = list[i]
 		out.append({
@@ -4804,8 +4911,29 @@ func _mastery_cards() -> Array:
 
 
 ## The record strip above the grid, which is itself a grid and wraps first.
+const MASTERY_NATURAL := 3.0 * 64.0 + 40.0 + 22.0 + 2.0 * 62.0 + 120.0
+
+
+func _mastery_fill() -> float:
+	return _menu_fill(MASTERY_NATURAL, 1.3)
+
+
+func _mastery_spread() -> float:
+	return _menu_spread(MASTERY_NATURAL, 2.2)
+
+
+func _mastery_laid() -> float:
+	var f := _mastery_fill()
+	var sp := _mastery_spread()
+	var rows: float = 3.0 if portrait else 2.0
+	var prows: float = 2.0 if portrait else 1.0
+	return rows * 56.0 * f + (rows - 1.0) * 8.0 * sp + 62.0 + 22.0 \
+		+ prows * 52.0 * f + 120.0
+
+
 func _mastery_stat_rects(count: int) -> Array:
-	return _grid_rects(count, 166.0 + safe_top, 8, 138.0, 56.0, 8.0, 140.0, 8.0)
+	return _grid_rects(count, 166.0 + safe_top + _menu_offset(_mastery_laid()), 8,
+		138.0, 56.0 * _mastery_fill(), 8.0, 140.0, 8.0 * _mastery_spread())
 
 
 ## The bottom of the record screen — the stat grid, then the power tallies. The
@@ -4813,22 +4941,46 @@ func _mastery_stat_rects(count: int) -> Array:
 func _mastery_stats_foot() -> float:
 	var strip := _mastery_stat_rects(12)
 	var pfoot := _grid_bottom(strip, 222.0 + safe_top) + 40.0
-	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0, 52.0, 10.0, 120.0)
+	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0,
+		52.0 * _mastery_fill(), 10.0, 120.0, 10.0 * _mastery_fill())
 	return _grid_bottom(pw, pfoot) + 56.0
 
 
 ## Where the unlock grid starts, once the record strip above it has taken as many
 ## rows as it needs. On a desktop that is one row and this is the old constant.
 ## The preview sits under the category label, and the grid under the preview.
+const COSMETICS_NATURAL := 150.0 + 46.0 + 4.0 * 80.0 + 110.0
+
+
+func _cosmetics_fill() -> float:
+	return _menu_fill(COSMETICS_NATURAL, 1.25)
+
+
+func _cosmetics_spread() -> float:
+	return _menu_spread(COSMETICS_NATURAL, 1.9)
+
+
+func _preview_height() -> float:
+	return (132.0 if portrait else 150.0) * _cosmetics_fill()
+
+
+func _cosmetics_laid() -> float:
+	var f := _cosmetics_fill()
+	var sp := _cosmetics_spread()
+	var rows: float = 4.0 if portrait else 3.0
+	return _preview_height() + 46.0 + rows * 70.0 * f + (rows - 1.0) * 10.0 * sp \
+		+ 110.0
+
+
 func _preview_top() -> float:
-	return 186.0 + safe_top
+	return 186.0 + safe_top + _menu_offset(_cosmetics_laid())
 
 
 func _mastery_grid_top() -> float:
 	# Under the preview panel. It used to be measured off the record strip because the
 	# two shared a screen; the wardrobe has the screen to itself now, so the grid
 	# sits under its own header instead of under somebody else's stats.
-	return _preview_top() + (150.0 if not portrait else 132.0) + 46.0
+	return _preview_top() + _preview_height() + 46.0
 
 
 ## The bottom of the unlock grid. Everything below it — the back button, the
@@ -5958,7 +6110,9 @@ func _menu_buttons() -> Array:
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.MASTERY:
-		var mw: float = minf(300.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		# Wide enough for a block and a word beside it without crowding either.
+		var mw: float = minf(420.0 if portrait else 300.0,
+			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 		var mfoot := _mastery_stats_foot()
 		out.append({
 			"rect": Rect2(cx - mw * 0.5, mfoot, mw, 46.0), "key": "C",
@@ -6209,10 +6363,11 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 	var face: Color = tint if not locked else Color("#39415f")
 	var ink := Cosmetics.draw_block_face(_overlay, gutter, face,
 		Profile.worn("blocks"), hot)
-	_draw_tracked(_font_bold, gutter.get_center(), stamp,
-		17 if r.size.y < 60.0 else (19 if r.size.y < 70.0 else 20), 3.0, ink)
-
-	var size: int = 18 if r.size.y < 60.0 else (20 if r.size.y < 70.0 else 22)
+	# Continuous with the plate rather than stepping at two thresholds, so a
+	# taller row carries bigger type instead of stranding small text in it.
+	var size: int = int(clampf(16.0 + (r.size.y - 40.0) * 0.11, 16.0, 26.0))
+	_draw_tracked(_font_bold, gutter.get_center(), stamp, maxi(15, size - 2), 3.0,
+		ink)
 	var head := word.substr(0, stamp.length()) if word.to_upper().begins_with(stamp) else ""
 	var tail := word.substr(head.length())
 	var tx: float = r.position.x + gw + 20.0
