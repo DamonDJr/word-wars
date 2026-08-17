@@ -9,6 +9,25 @@
 # Build output — regenerate with tools/build.sh
 build/
 
+# EOS native binaries — ~240 MB of prebuilt libraries plus Epic's own SDK.
+#
+# The GDScript half of the addon IS committed; only bin/ is ignored, because a
+# quarter of a gigabyte of platform binaries bloats the repo permanently and git
+# cannot forget them afterwards. Restore on a fresh clone, and in CI before any
+# export, with:
+#
+#   tools/fetch-eos.sh
+#
+# Git LFS is the alternative, but it spends bandwidth quota on every clone for
+# files that are already published, versioned and immutable upstream.
+addons/epic-online-services-godot/bin/
+
+# A folder of screenshots that ended up inside the project. Godot imports
+# anything under the project root, so these acquired .import files and started
+# looking like assets — 2.7 GB of them. Ignored rather than deleted: they are
+# not the project's to throw away.
+scripts/Documents/
+
 # export_presets.cfg is deliberately NOT ignored. Godot's default template
 # excludes it because it can hold signing keys and passwords; ours holds
 # neither, and it carries the include_filter that puts the word lists in the

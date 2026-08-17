@@ -33,6 +33,23 @@ boot_splash/use_filter=true
 
 [autoload]
 
+; EOSG's own singletons. The plugin adds these itself when toggled on in the
+; editor, but they are written out explicitly so a fresh clone works without
+; anyone having to open the editor and flip the checkbox first.
+;
+; Order matters: the runtime and platform have to exist before anything calls
+; HAuth or HLobbies, and `Link` below depends on all of them.
+EOSGRuntime="*res://addons/epic-online-services-godot/runtime.gd"
+HPlatform="*res://addons/epic-online-services-godot/heos/hplatform.gd"
+HAuth="*res://addons/epic-online-services-godot/heos/hauth.gd"
+HAchievements="*res://addons/epic-online-services-godot/heos/hachievements.gd"
+HFriends="*res://addons/epic-online-services-godot/heos/hfriends.gd"
+HStats="*res://addons/epic-online-services-godot/heos/hstats.gd"
+HLeaderboards="*res://addons/epic-online-services-godot/heos/hleaderboards.gd"
+HLobbies="*res://addons/epic-online-services-godot/heos/hlobbies.gd"
+HP2P="*res://addons/epic-online-services-godot/heos/hp2p.gd"
+HSessions="*res://addons/epic-online-services-godot/heos/hsessions.gd"
+
 WordBank="*res://scripts/word_bank.gd"
 Sfx="*res://scripts/audio.gd"
 Noray="*res://addons/netfox.noray/noray.gd"
@@ -41,6 +58,14 @@ Music="*res://scripts/music.gd"
 Link="*res://scripts/net_link.gd"
 Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
+
+[editor_plugins]
+
+; EOSG ships an export plugin that copies Epic's SDK libraries into exported
+; builds. The GDExtension itself loads without this, but an export made with the
+; plugin disabled is missing those libraries and fails on the player's machine
+; rather than at export time — so it has to stay enabled.
+enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg")
 
 [netfox]
 
