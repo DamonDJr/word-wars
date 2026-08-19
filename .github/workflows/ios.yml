@@ -49,17 +49,24 @@ jobs:
           unzip -q templates.zip
           mv templates "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
           echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
-
-      - name: Fetch the EOS binaries
+          
+      - name: Disable EOS native extension for iOS
         run: |
-          set -euo pipefail
-          # addons/.../bin is gitignored — a quarter of a gigabyte of prebuilt
-          # libraries does not belong in the repo — so the checkout has the
-          # GDScript half of the addon and none of the native half. Without this
-          # the export writes an Xcode project that references three
-          # xcframeworks that are not there, and the build fails at link.
-          tools/fetch-eos.sh
-          test -d addons/epic-online-services-godot/bin/ios
+          python3 - <<'PY'
+          from pathlib import Path
+      
+          p = Path("addons/epic-online-services-godot/eosg.gdextension")
+          s = p.read_text()
+      
+          lines = [
+              line for line in s.splitlines()
+              if not line.startswith("ios.debug =")
+              and not line.startswith("ios.release =")
+          ]
+      
+          p.write_text("\n".join(lines) + "\n")
+          PY
+      
 
       - name: Import the project
         run: |
