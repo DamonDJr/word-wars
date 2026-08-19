@@ -90,17 +90,66 @@ jobs:
               exit 1
             }
           done
-
-      - name: Build unsigned
+          
+      - name: Install Apple signing credentials
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          PP_PATH="$RUNNER_TEMP/build_pp.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > "$PP_PATH"
+
+          security create-keychain \
+            -p "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security set-keychain-settings \
+            -lut 21600 \
+            "$KEYCHAIN_PATH"
+
+          security unlock-keychain \
+            -p "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security import "$CERTIFICATE_PATH" \
+            -P "$P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security list-keychain \
+            -d user \
+            -s "$KEYCHAIN_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+
+          cp "$PP_PATH" \
+            "$HOME/Library/MobileDevice/Provisioning Profiles/"
+
+      - name: Build signed App Store app
+        run: |
+          set -euo pipefail
+
           proj="$(find build/ios -maxdepth 2 -name '*.xcodeproj' | head -1)"
           scheme="$(basename "$proj" .xcodeproj)"
-          # Godot writes the project with automatic signing and a team, which is
-          # right for a Mac with an Xcode account and wrong here — automatic
-          # signing resolves a provisioning profile before it ever reads
-          # CODE_SIGNING_ALLOWED, and fails on a runner that has no account.
-          # Forcing manual with an empty team is what actually turns it off.
+
+          echo "Project: $proj"
+          echo "Scheme: $scheme"
+
           xcodebuild \
             -project "$proj" \
             -scheme "$scheme" \
@@ -108,47 +157,97 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/dd \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="226Y8RZFKG" \
             CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            build
-
-      - name: Package the ipa
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="Word Wars App Store Distribution" \
+            archive \
+            -archivePath build/WordWars.xcarchive
+            
+      - name: Export App Store IPA
         run: |
           set -euo pipefail
-          app="$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
-          # Resource copying is a build phase like any other, and an unsigned
-          # build is an unusual enough path to be worth confirming it ran.
-          test -f "$app/WordWars.pck" || {
-            echo "::error::the built app has no pck"; exit 1; }
-          # UIDeviceFamily 1 is iPhone, 2 is iPad. Getting this wrong builds and
-          # signs perfectly and is only rejected by the phone at install time,
-          # because the preset field is a Godot enum index rather than the value
-          # it writes — 0 iPhone, 1 iPad, 2 both. It has been wrong once.
-          fam="$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$app/Info.plist")"
-          echo "$fam"
-          grep -q '^ *1 *$' <<<"$fam" || {
-            echo "::error::UIDeviceFamily has no iPhone — check targeted_device_family"
-            exit 1; }
-          # EOS is a GDExtension, so its framework has to be inside the bundle.
-          # A build that links fine and ships without it starts up and then dies
-          # the moment anything touches multiplayer.
-          test -d "$app/Frameworks/EOSSDK.framework" || {
-            echo "::error::EOSSDK.framework is not in the app bundle"
-            ls "$app/Frameworks" || true
-            exit 1; }
-          # An .ipa is a zip with the app inside a folder called Payload —
-          # the same trick tools/build-ipa.sh uses in the other two projects.
-          rm -rf Payload && mkdir Payload
-          cp -R "$app" Payload/
-          zip -qry WordWars.ipa Payload
+
+          cat > build/exportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+
+              <key>teamID</key>
+              <string>226Y8RZFKG</string>
+
+              <key>signingStyle</key>
+              <string>manual</string>
+
+              <key>signingCertificate</key>
+              <string>Apple Distribution</string>
+
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.damonj.wordwars</key>
+                  <string>Word Wars App Store Distribution</string>
+              </dict>
+
+              <key>compileBitcode</key>
+              <false/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath build/WordWars.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist build/exportOptions.plist
+
+          cp build/export/*.ipa WordWars.ipa
+
           ls -lh WordWars.ipa
+
+      - name: Verify signed IPA
+        run: |
+          set -euo pipefail
+
+          rm -rf verify
+          mkdir verify
+
+          unzip -q WordWars.ipa -d verify
+
+          app="$(find verify/Payload -maxdepth 1 -name '*.app' | head -1)"
+
+          echo "App: $app"
+
+          echo "=== Bundle ID ==="
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            "$app/Info.plist"
+
+          echo "=== Device Families ==="
+          /usr/libexec/PlistBuddy \
+            -c 'Print :UIDeviceFamily' \
+            "$app/Info.plist"
+
+          echo "=== Code Signature ==="
+          codesign -dvv "$app" 2>&1 | head -30
+
+          echo "=== Provisioning Profile ==="
+          security cms -D \
+            -i "$app/embedded.mobileprovision" \
+            > verify/profile.plist
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :Name' \
+            verify/profile.plist
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :Entitlements:application-identifier' \
+            verify/profile.plist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WordWars-ios-unsigned
+          name: WordWars-ios-app-store
           path: WordWars.ipa
