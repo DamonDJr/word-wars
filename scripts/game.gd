@@ -569,11 +569,22 @@ var _chip_sb: StyleBoxFlat
 var _ui_sb: StyleBoxFlat
 var _hover_action := ""
 
+var game_center: GameCenterManager
 
 func _ready() -> void:
-	if Engine.has_singleton("GameCenter"):
-		var game_center = Engine.get_singleton("GameCenter")
-		game_center.authenticate()
+	game_center = GameCenterManager.new()
+	
+	game_center.authentication_error.connect(
+		func(error: String) -> void:
+			print("Game Center error: ", error)
+	)
+	
+	game_center.authentication_result.connect(
+		func(status: bool) -> void:
+			print("Game Center authenticated: ", status)
+	)
+	
+	game_center.authenticate()
 		
 	randomize()
 	_font = ThemeDB.fallback_font
