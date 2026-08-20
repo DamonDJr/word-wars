@@ -62,17 +62,23 @@ jobs:
 
             git clone --recursive https://github.com/godot-sdk-integrations/godot-ios-plugins.git /tmp/godot-ios-plugins
             cd /tmp/godot-ios-plugins
+
             git fetch origin pull/104/head:gamecenter-matchmaking
             git checkout gamecenter-matchmaking
 
             git fetch origin pull/102/head:godot-47-fix
             git merge --no-edit godot-47-fix
 
-            scons platform=ios target=debug
+            cd godot
+            scons platform=ios target=debug arch=arm64
+            cd ..
+
+            scons platform=ios target=debug arch=arm64 plugin=gamecenter version=4.0
 
             ./scripts/generate_xcframework.sh gamecenter release_debug 4.0
 
             cp -R bin/gamecenter.xcframework "$GITHUB_WORKSPACE/ios/plugins/gamecenter/"
+
       - name: Disable EOS native extension for iOS
         run: |
           python3 - <<'PY'
