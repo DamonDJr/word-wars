@@ -372,6 +372,81 @@ var splash_time := 0.0
 ## the first moment of it nothing is listening, keys or taps.
 var over_age := 0.0
 const OVER_LOCKOUT := 1.1
+# ------------------------------------------------------------- scrolling menus
+#
+# A phone screen is a window onto a menu, not a box a menu has to fit inside.
+# Squeezing six rows into 1500 units so nothing ever scrolls is what made these
+# screens small; letting them run past the bottom and be dragged is what lets
+# them be the size a thumb wants.
+#
+# Only the menus. The match is a fixed composition with a keyboard nailed to the
+# bottom, and a board that could be dragged out of view would be a bug.
+
+var _scroll := 0.0
+var _scroll_max := 0.0
+var _drag_from := 0.0
+var _drag_scroll := 0.0
+var _dragging := false
+
+
+## True on the screens that are a list rather than a composition.
+func _scrollable() -> bool:
+	if not portrait:
+		return false
+	match phase:
+		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
+				Phase.SETTINGS, Phase.LOBBY:
+			return true
+	return false
+
+
+## How tall the current screen wants to be, header and footer included.
+func _screen_laid() -> float:
+	match phase:
+		Phase.TITLE:
+			var m := _plate_metrics()
+			return float(m["top"]) + 8.0 * (float(m["h"]) + float(m["gap"])) \
+				+ 3.0 * float(m["band_gap"]) + 80.0
+		Phase.PRACTICE:
+			return 214.0 + _practice_laid()
+		Phase.SOLO:
+			return 118.0 + _solo_laid()
+		Phase.MASTERY:
+			return 166.0 + _mastery_laid()
+		Phase.COSMETICS:
+			return 186.0 + _cosmetics_laid()
+		Phase.SETTINGS:
+			return 124.0 + float(_settings_rows().size()) * 66.0 * _settings_fill() + 150.0
+		Phase.LOBBY:
+			return _lobby_laid()
+	return 0.0
+
+
+## Called every frame a menu is up, so the limit tracks a screen that grew — a
+## drawer opening, a category with more entries in it.
+func _tick_scroll() -> void:
+	if not _scrollable():
+		_scroll = 0.0
+		_scroll_max = 0.0
+		return
+	var view: float = get_viewport_rect().size.y - safe_top - safe_bottom
+	_scroll_max = maxf(0.0, _screen_laid() - view + 40.0)
+	_scroll = clampf(_scroll, 0.0, _scroll_max)
+
+
+## The bar down the right, drawn only when there is somewhere to go.
+func _draw_scrollbar(size: Vector2) -> void:
+	if _scroll_max <= 1.0:
+		return
+	var view: float = size.y - safe_top - safe_bottom
+	var track := Rect2(size.x - 10.0, safe_top + 10.0, 3.0, view - 20.0)
+	_overlay.draw_rect(track, Color("#ffffff", 0.06), true)
+	var frac: float = clampf(view / (view + _scroll_max), 0.15, 1.0)
+	var at: float = (_scroll / _scroll_max) * (track.size.y * (1.0 - frac))
+	_overlay.draw_rect(Rect2(track.position.x, track.position.y + at, 3.0,
+		track.size.y * frac), Color(PLAYER_ACCENT, 0.5), true)
+
+
 ## Whether the premium row is waiting for its second tap. Deliberately not
 ## saved: an armed purchase should not survive leaving the screen.
 var _buy_armed := false
@@ -2188,6 +2263,7 @@ func _process(delta: float) -> void:
 
 	if phase == Phase.OVER:
 		over_age += delta
+	_tick_scroll()
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
@@ -2929,11 +3005,14 @@ const GRID_MARGIN := 36.0
 ## Capped, because a screen with two rows on it should fill the space, not turn
 ## into two slabs the size of a hand.
 func _menu_fill(natural: float, cap: float = 1.3) -> float:
+	# A flat factor now rather than a fit. These screens scroll, so nothing has
+	# to be squeezed into the window — and every version of squeezing produced
+	# rows sized for the screen instead of for a thumb. `natural` and `cap` are
+	# kept so the callers still read as "how tall am I", which is what the
+	# scroll limit needs from them.
 	if not portrait or natural <= 1.0:
 		return 1.0
-	var top: float = 214.0 + safe_top
-	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 48.0
-	return clampf(avail / natural, 1.0, cap)
+	return cap
 
 
 ## Where a menu's content should start so it sits in the middle of what is left,
@@ -2950,6 +3029,10 @@ func _menu_fill(natural: float, cap: float = 1.3) -> float:
 func _menu_offset(laid: float) -> float:
 	if not portrait:
 		return 0.0
+	# Once a screen is taller than the window there is nothing to centre — it is
+	# a list, and the offset is where the reader has dragged it to.
+	if _scroll_max > 1.0:
+		return -_scroll
 	var top: float = 214.0 + safe_top
 	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 40.0
 	return maxf(0.0, (avail - laid) * 0.30)
@@ -2962,12 +3045,11 @@ func _menu_offset(laid: float) -> float:
 ## proportion and wants to grow a little; the space left over belongs in the
 ## gaps between rows, which is what spreads a short menu down a tall phone
 ## without making any single thing absurd.
-func _menu_spread(natural: float, cap: float = 3.2) -> float:
-	if not portrait or natural <= 1.0:
-		return 1.0
-	var top: float = 214.0 + safe_top
-	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 48.0
-	return clampf(avail / natural, 1.0, cap)
+func _menu_spread(_natural: float, _cap: float = 3.2) -> float:
+	# Gaps grow a little, not a lot. Spreading rows apart was a way of filling a
+	# screen that could not scroll; now the rows themselves are the right size,
+	# and a big gap between them is just distance.
+	return 1.45 if portrait else 1.0
 
 
 ## Fit `count` cards into the width actually available, centred, in as many rows
@@ -3141,7 +3223,7 @@ func _hide_keyboard() -> void:
 ## Which key is under a point, or "" for none.
 func _key_at(p: Vector2) -> String:
 	for k: Dictionary in _keyboard():
-		if (k["rect"] as Rect2).grow(2.0).has_point(p):
+		if (k["rect"] as Rect2).grow(8.0).has_point(p):
 			return String(k["id"])
 	return ""
 
@@ -3731,6 +3813,7 @@ func _draw_overlay() -> void:
 	# Last, so it sits over whatever the screen drew — several of these paint a
 	# full-width header straight through the corner it lives in.
 	if portrait:
+		_draw_scrollbar(size)
 		_draw_back_button()
 
 
@@ -3975,7 +4058,8 @@ func _draw_settings(size: Vector2) -> void:
 		Color(bg_top, 0.94), true)
 	_draw_decor()
 
-	_otext(_font_bold, Vector2(cx, safe_top + 78.0), "SETTINGS", 32, Color("#e6ecff"))
+	_otext(_font_bold, Vector2(cx, safe_top + 78.0 + _menu_offset(_settings_laid())),
+		"SETTINGS", 32, Color("#e6ecff"))
 
 	for row: Dictionary in _settings_rows():
 		var r: Rect2 = row["rect"]
@@ -4104,12 +4188,24 @@ func _settings_rows() -> Array:
 	for i in defs.size():
 		var d: Array = defs[i]
 		out.append({
-			"rect": Rect2(cx - rw * 0.5, 124.0 + safe_top + i * 66.0, rw, 54.0),
+			"rect": Rect2(cx - rw * 0.5,
+				124.0 + safe_top + _menu_offset(_settings_laid())
+					+ float(i) * 66.0 * _settings_fill(),
+				rw, 54.0 * _settings_fill()),
 			"action": "set:" + String(d[0]),
 			"kind": String(d[1]), "label": String(d[2]), "note": String(d[3]),
 			"value": d[4],
 		})
 	return out
+
+
+## Settings is a plain list, so it scales and scrolls like one.
+func _settings_fill() -> float:
+	return 1.35 if portrait else 1.0
+
+
+func _settings_laid() -> float:
+	return float(_settings_rows().size()) * 66.0 * _settings_fill() + 150.0
 
 
 ## The slider's track. One definition, because the drawing and the click that
@@ -4209,7 +4305,7 @@ const PRACTICE_NATURAL := 2.0 * 104.0 + 16.0 + 84.0 + 62.0 + 74.0
 
 
 func _practice_fill() -> float:
-	return _menu_fill(PRACTICE_NATURAL)
+	return _menu_fill(PRACTICE_NATURAL, 1.7)
 
 
 func _practice_spread() -> float:
@@ -4508,7 +4604,7 @@ const SOLO_NATURAL := 76.0 + 40.0 + 3.0 * 76.0 + 42.0 + 3.0 * 64.0 + 90.0
 
 
 func _solo_fill() -> float:
-	return _menu_fill(SOLO_NATURAL, 1.2)
+	return _menu_fill(SOLO_NATURAL, 1.45)
 
 
 func _solo_spread() -> float:
@@ -4915,7 +5011,7 @@ const MASTERY_NATURAL := 3.0 * 64.0 + 40.0 + 22.0 + 2.0 * 62.0 + 120.0
 
 
 func _mastery_fill() -> float:
-	return _menu_fill(MASTERY_NATURAL, 1.3)
+	return _menu_fill(MASTERY_NATURAL, 1.5)
 
 
 func _mastery_spread() -> float:
@@ -4953,7 +5049,7 @@ const COSMETICS_NATURAL := 150.0 + 46.0 + 4.0 * 80.0 + 110.0
 
 
 func _cosmetics_fill() -> float:
-	return _menu_fill(COSMETICS_NATURAL, 1.25)
+	return _menu_fill(COSMETICS_NATURAL, 1.5)
 
 
 func _cosmetics_spread() -> float:
@@ -5044,7 +5140,7 @@ func _draw_lobby(size: Vector2) -> void:
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.92), true)
 	_draw_decor()
 
-	var hy := safe_top
+	var hy := safe_top + _menu_offset(_lobby_laid())
 	_text_fit_overlay(_font_bold, Vector2(cx, hy + 104), "VERSUS", 66,
 		size.x - GRID_MARGIN * 2.0, Color("#e6ecff"))
 	_otext(_font, Vector2(cx, hy + 150), "two keyboards, one word chain", 16,
@@ -5061,9 +5157,31 @@ func _draw_lobby(size: Vector2) -> void:
 		# about to play.
 		if not Link.is_host:
 			block_kinds = Link.kinds.duplicate()
-			_otext(_font, Vector2(cx, _lobby_kinds_top() - 32.0), "the host sets these", 11,
-				Color("#5d6a92"))
-		_draw_kind_cards(_lobby_kinds_top(), Link.is_host)
+		var dtop := _lobby_kinds_top()
+		var dw: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
+		var drawer := Rect2(cx - dw * 0.5, dtop - 44.0, dw, 36.0)
+		var dhot: bool = _hover_action == "kinds_drawer"
+		_panel(drawer, Color("#1b2444") if dhot else Color("#141b33"),
+			Color(PLAYER_ACCENT, 0.5 if dhot else 0.2), 8.0, 1.0)
+		var on_now := block_kinds.size()
+		_otext(_font_bold, Vector2(drawer.position.x + 92.0, drawer.get_center().y),
+			"SPECIAL BLOCKS", 12, Color("#aab4d4"))
+		_otext(_font, Vector2(drawer.end.x - 70.0, drawer.get_center().y),
+			("%d on" % on_now) if on_now > 0 else "off", 11,
+			Color("#ffd166") if on_now > 0 else Color("#5d6a92"))
+		# A caret rather than a word, so the control says "there is more under
+		# this" without needing to be read.
+		var cc := Vector2(drawer.end.x - 24.0, drawer.get_center().y)
+		var dir: float = 1.0 if kinds_open else -1.0
+		_overlay.draw_line(cc + Vector2(-6.0, -3.0 * dir), cc + Vector2(0.0, 3.0 * dir),
+			Color("#aab4d4"), 2.0)
+		_overlay.draw_line(cc + Vector2(0.0, 3.0 * dir), cc + Vector2(6.0, -3.0 * dir),
+			Color("#aab4d4"), 2.0)
+		if kinds_open:
+			if not Link.is_host:
+				_otext(_font, Vector2(cx, dtop - 8.0), "the host sets these", 11,
+					Color("#5d6a92"))
+			_draw_kind_cards(dtop, Link.is_host)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -5211,10 +5329,35 @@ func _draw_room(cx: float) -> void:
 		get_viewport_rect().size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
 
 
+## The house rules live in a drawer.
+##
+## Six switches is the longest thing on the versus screen and the least often
+## touched — most rooms play the base game — so it was pushing the buttons that
+## matter, Ready and Leave, off the bottom of a phone. Shut by default, and it
+## says how many are on so nobody has to open it to find out.
+var kinds_open := false
+
+
+func _lobby_fill() -> float:
+	return 1.25 if portrait else 1.0
+
+
+func _lobby_laid() -> float:
+	var f := _lobby_fill()
+	if Link.connected:
+		var seats: float = 2.0 if portrait else 1.0
+		var drawer: float = 44.0 + (3.0 * 64.0 * f if kinds_open else 0.0)
+		return 232.0 + seats * 128.0 * f + 60.0 + 200.0 * f + drawer + 80.0
+	# Name, code, the backend pair and the two buttons, all stacked on a phone.
+	return 234.0 + 2.0 * 52.0 * f + 34.0 + 82.0 + 2.0 * 56.0 * f + 14.0 \
+		+ 24.0 + 2.0 * 66.0 * f + 90.0
+
+
 ## Where everyone in the room sits. Four across on a desktop; on a phone they
 ## wrap to two rows rather than shrinking to a width a name cannot be read at.
 func _room_seat_rects(count: int, w: float) -> Array:
-	return _grid_rects(count, 232.0 + safe_top, count, w, 128.0, 16.0, 240.0, 12.0)
+	return _grid_rects(count, 232.0 + safe_top + _menu_offset(_lobby_laid()), count,
+		w, 128.0 * _lobby_fill(), 16.0, 240.0, 12.0)
 
 
 ## The bottom of the seat grid, which everything else in a connected room hangs
@@ -5305,7 +5448,9 @@ func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
 ## them, so portrait stacks rather than squeezing — a room code being read out
 ## over a call is the one string in this game that has to stay large.
 func _lobby_field_rect(i: int) -> Rect2:
-	return _grid_rects(2, 234.0 + safe_top, 2, 320.0, 52.0, 20.0, 340.0, 34.0)[i]
+	var f := _lobby_fill()
+	return _grid_rects(2, 234.0 + safe_top + _menu_offset(_lobby_laid()), 2, 320.0,
+		52.0 * f, 20.0, 340.0, 34.0)[i]
 
 
 ## Which backends the picker offers, in slot order.
@@ -5329,7 +5474,7 @@ func _backend_uses_codes() -> bool:
 
 func _lobby_backend_rect(i: int) -> Rect2:
 	var top := _lobby_field_rect(1).end.y + 82.0
-	return _grid_rects(2, top, 2, 320.0, 56.0, 20.0, 340.0, 14.0)[i]
+	return _grid_rects(2, top, 2, 320.0, 56.0 * _lobby_fill(), 20.0, 340.0, 14.0)[i]
 
 
 func _draw_rules_panel(size: Vector2) -> void:
@@ -6255,9 +6400,9 @@ func _plate_metrics() -> Dictionary:
 	# Landscape is 720 tall and has to hold six plates, three band rules and the
 	# rules line; portrait has half as much again to spend and is being hit with
 	# a thumb, so it gets the taller plate.
-	var h: float = 80.0 if portrait else 48.0
-	var gap: float = 9.0 if portrait else 6.0
-	var band_gap: float = 26.0 if portrait else 14.0
+	var h: float = 112.0 if portrait else 48.0
+	var gap: float = 12.0 if portrait else 6.0
+	var band_gap: float = 34.0 if portrait else 14.0
 	var rows := _title_modes()
 	var block: float = 0.0
 	var last := -1
@@ -6274,6 +6419,8 @@ func _plate_metrics() -> Dictionary:
 	# wordmark and the first plate on a tall screen, which read as a mistake
 	# rather than as space.
 	var top: float = head + maxf(0.0, (avail - block) * 0.34)
+	if portrait and _scroll_max > 1.0:
+		top = head - _scroll
 	return {"x": size.x * 0.5 - wide * 0.5, "w": wide, "h": h, "gap": gap,
 		"band_gap": band_gap, "top": top}
 
@@ -6578,6 +6725,41 @@ func _unhandled_input(event: InputEvent) -> void:
 			_press_back()
 			return
 
+	# Dragging a menu. Taken before anything else a press could mean, and a press
+	# only becomes a drag once it has moved far enough that it cannot have been
+	# a tap — otherwise every button press would scroll a little.
+	if _scrollable() and _scroll_max > 1.0:
+		if event is InputEventMouseButton:
+			var mbs := event as InputEventMouseButton
+			match mbs.button_index:
+				MOUSE_BUTTON_WHEEL_UP:
+					if mbs.pressed:
+						_scroll = clampf(_scroll - 90.0, 0.0, _scroll_max)
+						return
+				MOUSE_BUTTON_WHEEL_DOWN:
+					if mbs.pressed:
+						_scroll = clampf(_scroll + 90.0, 0.0, _scroll_max)
+						return
+				MOUSE_BUTTON_LEFT:
+					if mbs.pressed:
+						_drag_from = get_viewport().get_mouse_position().y
+						_drag_scroll = _scroll
+						_dragging = false
+					elif _dragging:
+						# It was a drag, so it must not also be a tap on
+						# whatever happens to be under the finger now.
+						_dragging = false
+						return
+		elif event is InputEventMouseMotion:
+			var mm := event as InputEventMouseMotion
+			if mm.button_mask & MOUSE_BUTTON_MASK_LEFT:
+				var moved: float = get_viewport().get_mouse_position().y - _drag_from
+				if absf(moved) > 8.0:
+					_dragging = true
+				if _dragging:
+					_scroll = clampf(_drag_scroll - moved, 0.0, _scroll_max)
+					return
+
 	# The drawn keyboard takes priority over everything else a click could mean
 	# while it is up, because it covers the bottom third of the screen.
 	if portrait and phase == Phase.PLAY and not paused and player.alive:
@@ -6643,7 +6825,12 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _kind_cards(_solo_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
-	if phase == Phase.LOBBY and Link.connected and Link.is_host:
+	if phase == Phase.LOBBY and Link.connected:
+		var dw2: float = minf(560.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		if Rect2(get_viewport_rect().size.x * 0.5 - dw2 * 0.5,
+				_lobby_kinds_top() - 44.0, dw2, 36.0).has_point(p):
+			return "kinds_drawer"
+	if phase == Phase.LOBBY and Link.connected and Link.is_host and kinds_open:
 		for c: Dictionary in _kind_cards(_lobby_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
@@ -6777,6 +6964,9 @@ func _activate(action: String) -> void:
 		phase = Phase.COSMETICS
 		_hover_action = ""
 		Sfx.play("count", 1.1)
+	elif action == "kinds_drawer":
+		kinds_open = not kinds_open
+		Sfx.play("key", 1.2)
 	elif action == "rules":
 		show_rules = not show_rules
 		_hover_action = ""
