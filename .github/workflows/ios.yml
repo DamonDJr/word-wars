@@ -55,7 +55,11 @@ jobs:
 
             git clone --recursive https://github.com/godot-sdk-integrations/godot-ios-plugins.git /tmp/godot-ios-plugins
             cd /tmp/godot-ios-plugins
-            git checkout c63be97
+            git fetch origin pull/104/head:gamecenter-matchmaking
+            git checkout gamecenter-matchmaking
+
+            git fetch origin pull/102/head:godot-47-fix
+            git merge --no-edit godot-47-fix
 
             scons platform=ios target=debug
 
