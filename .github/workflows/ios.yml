@@ -58,26 +58,50 @@ jobs:
 
       - name: Build Game Center plugin
         run: |
-            set -euo pipefail
+          set -euo pipefail
 
-            git clone --recursive https://github.com/godot-sdk-integrations/godot-ios-plugins.git /tmp/godot-ios-plugins
-            cd /tmp/godot-ios-plugins
+          # Install SCons in an isolated Python environment.
+          python3 -m venv "$RUNNER_TEMP/scons-venv"
+          "$RUNNER_TEMP/scons-venv/bin/pip" install scons
+          echo "$RUNNER_TEMP/scons-venv/bin" >> "$GITHUB_PATH"
 
-            git fetch origin pull/104/head:gamecenter-matchmaking
-            git checkout gamecenter-matchmaking
+          # Get the iOS plugin repository.
+          git clone --recursive \
+            https://github.com/godot-sdk-integrations/godot-ios-plugins.git \
+            /tmp/godot-ios-plugins
 
-            git fetch origin pull/102/head:godot-47-fix
-            git merge --no-edit godot-47-fix
+          cd /tmp/godot-ios-plugins
 
-            cd godot
-            scons platform=ios target=debug arch=arm64
-            cd ..
+          # Game Center matchmaking changes.
+          git fetch origin pull/104/head:gamecenter-matchmaking
+          git checkout gamecenter-matchmaking
 
-            scons platform=ios target=debug arch=arm64 plugin=gamecenter version=4.0
+          # Godot 4.7 compatibility fix.
+          git fetch origin pull/102/head:godot-47-fix
+          git merge --no-edit godot-47-fix
 
-            ./scripts/generate_xcframework.sh gamecenter release_debug 4.0
+          # Use the exact Godot version we're building the game with.
+          cd godot
+          git fetch origin 4.7-stable
+          git checkout 4.7-stable
 
-            cp -R bin/gamecenter.xcframework "$GITHUB_WORKSPACE/ios/plugins/gamecenter/"
+          # Generate the headers/libraries required by the iOS plugin.
+          scons platform=ios target=editor
+
+          cd ..
+
+          # Build Game Center for Godot 4.x.
+          ./scripts/generate_xcframework.sh \
+            gamecenter \
+            release_debug \
+            4.0
+
+          # Put the generated framework into the Godot project.
+          rm -rf "$GITHUB_WORKSPACE/ios/plugins/gamecenter/gamecenter.xcframework"
+
+          cp -R \
+            bin/gamecenter.release_debug.xcframework \
+            "$GITHUB_WORKSPACE/ios/plugins/gamecenter/gamecenter.xcframework"
 
       - name: Disable EOS native extension for iOS
         run: |
