@@ -12,33 +12,16 @@ config_version=5
 
 config/name="Word Wars"
 config/description="Type words to blast garbage blocks onto your opponent's board."
-config/version="0.28.0"
+config/version="0.28.1"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
-config/icon="res://icon.svg"
-; The engine paints this before a single script runs, which covers the second or
-; so the dictionary takes to load. It is laid out to match the splash the game
-; then draws itself — same image, same fit, same backdrop — so the hand-off from
-; engine to scene has nothing to see.
 boot_splash/bg_color=Color(0.003922, 0.023529, 0.101961, 1)
 boot_splash/image="res://splashScreen.png"
-; A landscape image on a portrait phone is a stripe across the middle of a black
-; screen, so iOS gets the portrait art instead. Feature overrides like this one
-; are resolved in exported builds and deliberately ignored in the editor, which
-; is worth knowing before trying to test it from a project folder: reading the
-; setting back here always returns the line above.
+config/icon="res://icon.svg"
 boot_splash/image.ios="res://iosSplashScreen.png"
-boot_splash/fullsize=true
-boot_splash/use_filter=true
 
 [autoload]
 
-; EOSG's own singletons. The plugin adds these itself when toggled on in the
-; editor, but they are written out explicitly so a fresh clone works without
-; anyone having to open the editor and flip the checkbox first.
-;
-; Order matters: the runtime and platform have to exist before anything calls
-; HAuth or HLobbies, and `Link` below depends on all of them.
 EOSGRuntime="*res://addons/epic-online-services-godot/runtime.gd"
 HPlatform="*res://addons/epic-online-services-godot/heos/hplatform.gd"
 HAuth="*res://addons/epic-online-services-godot/heos/hauth.gd"
@@ -49,7 +32,6 @@ HLeaderboards="*res://addons/epic-online-services-godot/heos/hleaderboards.gd"
 HLobbies="*res://addons/epic-online-services-godot/heos/hlobbies.gd"
 HP2P="*res://addons/epic-online-services-godot/heos/hp2p.gd"
 HSessions="*res://addons/epic-online-services-godot/heos/hsessions.gd"
-
 WordBank="*res://scripts/word_bank.gd"
 Sfx="*res://scripts/audio.gd"
 Noray="*res://addons/netfox.noray/noray.gd"
@@ -59,44 +41,28 @@ Link="*res://scripts/net_link.gd"
 Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
 
-[editor_plugins]
-
-; EOSG ships an export plugin that copies Epic's SDK libraries into exported
-; builds. The GDExtension itself loads without this, but an export made with the
-; plugin disabled is missing those libraries and fails on the player's machine
-; rather than at export time — so it has to stay enabled.
-enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg")
-
-[netfox]
-
-logging/netfox_noray_log_level=3
-
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
-; "keep" letterboxes anything that is not exactly the design aspect, which on a
-; Pro Max — 1:2.17 against a 1:2 design space — is a black band at each end.
-; "expand" holds the short axis and gives the long one whatever the screen
-; actually has, so the viewport grows to about 720x1564 there instead. Every
-; layout in the game already measures `get_viewport_rect()` rather than assuming
-; the constant, which is the only reason this is a one-line change.
 window/stretch/aspect="expand"
-; Portrait phones and landscape desktops are handled by swapping the content
-; scale size at runtime rather than by letterboxing one into the other; see
-; `_apply_orientation`. Resizable so that swap can be exercised on a desktop.
-window/size/resizable=true
 window/handheld/orientation=1
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg")
 
 [filesystem]
 
 import/blender/enabled=false
 
-;   Universal and arm64 macOS builds refuse to export without it, and the cost
-;   here is one extra variant of a single splash PNG.
+[netfox]
+
+logging/netfox_noray_log_level=3
+
 [rendering]
 
-textures/vram_compression/import_etc2_astc=true
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
