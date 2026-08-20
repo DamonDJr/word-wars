@@ -52,7 +52,9 @@ jobs:
 
       - name: Install SCons
         run: |
-            python3 -m pip install scons
+            python3 -m venv "$RUNNER_TEMP/scons-venv"
+            "$RUNNER_TEMP/scons-venv/bin/pip" install scons
+            echo "$RUNNER_TEMP/scons-venv/bin" >> "$GITHUB_PATH"
 
       - name: Build Game Center plugin
         run: |
