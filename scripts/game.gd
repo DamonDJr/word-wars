@@ -51,6 +51,8 @@ const PRESSURE_START := 22.0
 const PRESSURE_MIN := 8.0
 const PRESSURE_STEP := 1.5
 
+const KEY_TOUCH_PADDING := 8.0
+const DEBUG_TOUCH_HITBOXES := false
 ## Block shapes by tier. Which one you send is decided by your chain, never by
 ## how long the word was.
 const TIERS := [
@@ -569,6 +571,10 @@ var _hover_action := ""
 
 
 func _ready() -> void:
+	if Engine.has_singleton("GameCenter"):
+		var game_center = Engine.get_singleton("GameCenter")
+		game_center.authenticate()
+		
 	randomize()
 	_font = ThemeDB.fallback_font
 	var fv := FontVariation.new()
@@ -2884,6 +2890,8 @@ func _draw() -> void:
 		draw_rect(Rect2(-m, size.y * t, size.x + m * 2.0, size.y / 24.0 + 1.0),
 			bg_top.lerp(bg_bottom, t), true)
 	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), bg_bottom, true)
+	
+	_draw_keyboard_hitboxes()
 
 	# A bloom behind the playfield, for themes that carry one. Drawn as a few
 	# soft discs rather than a shader so it costs nothing and works on the
@@ -3186,7 +3194,14 @@ func _draw_keyboard() -> void:
 		_otext(_font_bold, r.get_center(), String(k["label"]),
 			26 if id.length() == 1 else 19, ink)
 
-
+func _draw_keyboard_hitboxes() -> void:
+	if not DEBUG_TOUCH_HITBOXES:
+		return
+		
+	for k: Dictionary in _keyboard():
+		var rect :=(k["rect"] as Rect2).grow(KEY_TOUCH_PADDING)
+		draw_rect(rect, Color(0.2, 0.8, 1.0, 0.15), true)
+		draw_rect(rect, Color(0.2, 0.8, 1.0, 0.5), false, 1.0)
 # --------------------------------------------------- the system keyboard
 #
 # The drawn keyboard is for the match, and only for the match. The lobby and the
@@ -3223,7 +3238,7 @@ func _hide_keyboard() -> void:
 ## Which key is under a point, or "" for none.
 func _key_at(p: Vector2) -> String:
 	for k: Dictionary in _keyboard():
-		if (k["rect"] as Rect2).grow(8.0).has_point(p):
+		if (k["rect"] as Rect2).grow(KEY_TOUCH_PADDING).has_point(p):
 			return String(k["id"])
 	return ""
 
