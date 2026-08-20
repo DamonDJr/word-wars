@@ -49,6 +49,11 @@ jobs:
           unzip -q templates.zip
           mv templates "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
           echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+
+      - name: Install SCons
+        run: |
+            python3 -m pip install scons
+
       - name: Build Game Center plugin
         run: |
             set -euo pipefail
