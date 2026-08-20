@@ -97,6 +97,8 @@ jobs:
             4.0
 
           # Put the generated framework into the Godot project.
+          mkdir -p "$GITHUB_WORKSPACE/ios/plugins/gamecenter"
+
           rm -rf "$GITHUB_WORKSPACE/ios/plugins/gamecenter/gamecenter.xcframework"
 
           cp -R \
