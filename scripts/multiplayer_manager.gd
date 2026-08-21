@@ -42,7 +42,7 @@ func _matchmaker_finished(match: GKMatch, error: Variant) -> void:
 	print("Match created!")
 	
 	current_match.data_received.connect(_on_data_received)
-	current_match.player_change.connect(_on_player_changed)
+	current_match.player_changed.connect(_on_player_changed)
 	current_match.did_fail_with_error.connect(_on_match_error)
 	
 	match_ready.emit()
