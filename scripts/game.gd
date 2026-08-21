@@ -1081,7 +1081,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		elif s.in_match:
 			var who: String = lineup[s.slot -1]
 			s.label = who.to_upper() if slots_in_play > 2 else "CPU"
-			s.bot.AiOpponent.new()
+			s.bot = AiOpponent.new()
 			s.peer_id = 0
 		if s.bot != null and not s.in_match:
 			s.bot = null
@@ -5766,7 +5766,7 @@ func _on_net_attack(word: String, tier: int) -> void:
 	var p := Pending.new()
 	# Whoever sent the packet. Their machine holds their score, so a topout has
 	# to be reported back to them rather than paid here.
-	p.from = multiplayer.get_remote_sender_id()
+	p.from = 1
 	p.tier = clampi(tier, 0, TIERS.size() - 1)
 	p.prefix = _mint_stamp(word, STAMP_WANT, side)
 	p.cells = _cells(p.tier)
