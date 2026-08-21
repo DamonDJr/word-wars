@@ -64,7 +64,14 @@ func _on_data_received(
 	data: PackedByteArray,
 	player: GKPlayer
 ) -> void:
-	data_received.emit(data, player)
+	var json = JSON.parse_string(
+		data.get_string_from_utf8()
+	)
+	
+	if json == null:
+		return
+	
+	data_received.emit(json, player)
 
 func _on_match_error(error: String) -> void:
 	print("Match error: ", error)
@@ -83,3 +90,19 @@ func leave_match() -> void:
 	if current_match:
 		current_match.disconnect()
 		current_match = null
+
+func send_event(type: String, payload: Dictionary = {}) -> void:
+	if current_match == null:
+		return
+	
+	var packet := {
+		"type": type,
+		"payload": payload
+	}
+	
+	var data := JSON.stringify(packet).to_utf8_buffer()
+	
+	current_match.send_data_to_all_players(
+		data,
+		GKMatch.SendDataMode.RELIABLE
+	)

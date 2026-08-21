@@ -570,8 +570,7 @@ var _hover_action := ""
 func _ready() -> void:
 	MultiplayerManager.match_ready.connect(_on_match_ready)
 	MultiplayerManager.player_connected.connect(_on_player_connected)
-	
-	print("MultiplayerManager exists: ", has_node("/root/MultiplayerManager"))
+	MultiplayerManager.data_received.connect(_on_multiplayer_data)
 	
 	randomize()
 	_font = ThemeDB.fallback_font
@@ -642,7 +641,7 @@ func _ready() -> void:
 	_net_setup()
 
 func _on_match_ready() -> void:
-	print("Match found!")
+	start_match("Duelist", 0, [], Mode.NORMAL)
 
 func _on_player_connected(player: GKPlayer) -> void:
 	print("Opponent connected: ", player.display_name)
@@ -1074,15 +1073,15 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		s.alive = s.in_match
 		if s.slot == 0:
 			s.label = "YOU"
-		elif s.in_match and not net_active():
-			var who: String = lineup[s.slot - 1]
-			# Named by personality rather than "CPU 2". In a four-way, knowing
-			# that the board on the right is BERSERKER and the one beside it is
-			# BULWARK is the difference between three opponents and one opponent
-			# drawn three times.
+		elif s.in_match and MultiplayerManager.current_match != null:
+			s.bot = null
+			s.is_local = false
+			s.label = "OPPONENT"
+			s.peer_id = 1
+		elif s.in_match:
+			var who: String = lineup[s.slot -1]
 			s.label = who.to_upper() if slots_in_play > 2 else "CPU"
-			s.bot = AiOpponent.new()
-			s.bot.configure(who)
+			s.bot.AiOpponent.new()
 			s.peer_id = 0
 		if s.bot != null and not s.in_match:
 			s.bot = null
@@ -1773,10 +1772,21 @@ func _note_best(side: SideState, word: String, earned: int) -> void:
 
 ## One block on its way. The defender mints its own stamp over a network,
 ## because only they can see what their board is already holding.
-func _send_block(defender: SideState, word: String, tier: int, delay: float,
-		from: SideState = null) -> void:
+func _send_block(
+	defender: SideState, 
+	word: String, 
+	tier: int, 
+	delay: float,
+	from: SideState = null
+) -> void:
 	if net_active() and not _owned_here(defender):
-		Link.send_attack(defender.peer_id, word, tier)
+		MultiplayerManager.send_event(
+			"attack",
+			{
+				"word": word,
+				"tier": tier
+			}
+		)
 		defender.flash = 1.0
 		return
 	var p := Pending.new()
@@ -1792,6 +1802,20 @@ func _send_block(defender: SideState, word: String, tier: int, delay: float,
 	defender.pending.append(p)
 	defender.flash = 1.0
 
+func _on_multiplayer_data(
+	packet: Dictionary,
+	player: GKPlayer	
+) -> void:
+	
+	match packet.get("type"):
+		"attack":
+			_on_multiplayer_attack(packet["payload"])
+
+func _on_multiplayer_attack(data: Dictionary) -> void:
+	var word: String = String(data["word"])
+	var tier: int = int(data["tier"])
+	
+	_on_net_attack(word, tier)
 
 ## Which special this block is, if any. Rolled per block on the machine that
 ## owns the board, which is safe over a network because each board is simulated
@@ -5625,7 +5649,7 @@ var _net_state_timer := 0.0
 
 
 func net_active() -> bool:
-	return Link.active
+	return MultiplayerManager.current_match != null
 
 
 func _net_setup() -> void:
@@ -5735,8 +5759,8 @@ func _on_net_rematch() -> void:
 	_hover_action = ""
 
 
-func _on_net_attack(word: String, tier: int, victim: int) -> void:
-	var side := _side_for_entity(victim)
+func _on_net_attack(word: String, tier: int) -> void:
+	var side : SideState = player
 	if side == null:
 		return
 	var p := Pending.new()
