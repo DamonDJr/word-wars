@@ -571,6 +571,8 @@ func _ready() -> void:
 	MultiplayerManager.match_ready.connect(_on_match_ready)
 	MultiplayerManager.player_connected.connect(_on_player_connected)
 	
+	print("MultiplayerManager exists: ", has_node("/root/MultiplayerManager"))
+	
 	randomize()
 	_font = ThemeDB.fallback_font
 	var fv := FontVariation.new()
