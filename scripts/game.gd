@@ -549,10 +549,7 @@ var settings_editing := false
 var earned: Dictionary = {}
 var decor: Array = []
 var join_ip := "127.0.0.1"
-var lobby_field := 1        # 0 = name, 1 = address
-## Link.Backend. Defaults to whichever backend owns the code slot — EOS once
-## credentials exist, noray otherwise.
-var lobby_backend: int = Link.Backend.EOS if EOSConfig.is_configured() else Link.Backend.ROOM
+
 var countdown := 0.0
 var paused := false
 var _last_count_beep := -1
@@ -569,23 +566,11 @@ var _chip_sb: StyleBoxFlat
 var _ui_sb: StyleBoxFlat
 var _hover_action := ""
 
-var game_center: GameCenterManager
 
 func _ready() -> void:
-	game_center = GameCenterManager.new()
+	MultiplayerManager.match_ready.connect(_on_match_ready)
+	MultiplayerManager.player_connected.connect(_on_player_connected)
 	
-	game_center.authentication_error.connect(
-		func(error: String) -> void:
-			print("Game Center error: ", error)
-	)
-	
-	game_center.authentication_result.connect(
-		func(status: bool) -> void:
-			print("Game Center authenticated: ", status)
-	)
-	
-	game_center.authenticate()
-		
 	randomize()
 	_font = ThemeDB.fallback_font
 	var fv := FontVariation.new()
@@ -654,7 +639,12 @@ func _ready() -> void:
 
 	_net_setup()
 
+func _on_match_ready() -> void:
+	print("Match found!")
 
+func _on_player_connected(player: GKPlayer) -> void:
+	print("Opponent connected: ", player.display_name)
+	
 ## Measure the window and pick a design space to match it. Called on boot and on
 ## every resize, so rotating a phone — or dragging a desktop window narrow — lands
 ## in the other layout immediately.
@@ -1050,7 +1040,7 @@ func _bloom(color: Color, amount: float) -> void:
 	flash_color = color
 
 
-## `bots` is how many CPU rivals to line up. Versus passes 0 and fills the extra
+## `bots` is how many CPU rivals to line up. leave_match passes 0 and fills the extra
 ## slots with peers instead.
 ## `lineup` names each CPU outright — that is what single-player setup passes.
 ## Left empty, the roster picks for you, which is what the networked path and a
@@ -1495,47 +1485,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_ESCAPE, KEY_C: _activate("title")
 		return
 
-	# The lobby's text fields own the keyboard while it is up.
-	if phase == Phase.LOBBY:
-		match k.keycode:
-			KEY_ENTER, KEY_KP_ENTER:
-				_activate("ready" if Link.connected else "join")
-			KEY_ESCAPE:
-				_activate("leave" if Link.connected else "title")
-			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD: _activate("addbot")
-			KEY_MINUS, KEY_KP_SUBTRACT: _activate("dropbot")
-			KEY_TAB:
-				lobby_field = 1 - lobby_field
-				Sfx.play("key", 1.2)
-			KEY_V when k.ctrl_pressed:
-				if not Link.connected and lobby_field == 1:
-					var pasted := DisplayServer.clipboard_get().strip_edges().substr(0, 48)
-					# A code copied out of a chat window arrives chunked for
-					# reading. Addresses are pasted exactly as they came.
-					if _backend_uses_codes():
-						pasted = Link.clean_code(pasted, lobby_backend)
-					join_ip = pasted
-					Sfx.play("count", 1.2)
-			KEY_C when k.ctrl_pressed:
-				if Link.room_code != "":
-					DisplayServer.clipboard_set(Link.room_code)
-					Link.status = "code copied to your clipboard"
-					Sfx.play("count", 1.3)
-			# Hosting is CTRL+H, not H. A bare letter cannot be a shortcut while
-			# a text field has the keyboard: H is a perfectly ordinary character
-			# in a room code, and swallowing it would make any code containing
-			# one impossible to type by hand — which is most of them.
-			KEY_H when k.ctrl_pressed:
-				if not Link.connected:
-					_activate("host")
-			KEY_BACKSPACE:
-				_lobby_edit("", true)
-			_:
-				if Link.connected:
-					return
-				if k.unicode > 0:
-					_lobby_edit(String.chr(k.unicode), false)
-		return
 
 	# The summary is the payoff for the match you just played, and it used to
 	# share the title screen's keys — so 1, 2, 3, 4, 5, V, P and H all threw you
@@ -1568,11 +1517,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_1: _activate("practice")
 			KEY_2: _activate("daily")
 			KEY_3: _activate("solo")
-			KEY_4: _activate("versus")
+			KEY_4: _activate("leave_match")
 			KEY_5: _activate("mastery")
 			KEY_6: _activate("cosmetics")
 			KEY_7: _activate("settings")
-			KEY_V: _activate("versus")
+			KEY_V: _activate("leave_match")
 			KEY_P: _activate("mastery")
 			KEY_H:
 				show_rules = not show_rules
@@ -3825,12 +3774,8 @@ func _draw_overlay() -> void:
 		_draw_mastery(size)
 	elif phase == Phase.COSMETICS:
 		_draw_cosmetics(size)
-	elif phase == Phase.LOBBY:
-		_draw_lobby(size)
 	elif phase == Phase.SETTINGS:
 		_draw_settings(size)
-	elif phase == Phase.LOBBY:
-		_draw_lobby(size)
 	elif phase == Phase.COUNTDOWN:
 		_draw_countdown(size)
 	elif phase == Phase.OVER:
@@ -3913,7 +3858,7 @@ func _draw_countdown(size: Vector2) -> void:
 	var pop: float = 1.0 + (1.0 - frac) * 0.35
 	_otext(_font_bold, Vector2(cx, cy), label, int(96 * pop), Color(tint, 0.5 + 0.5 * frac))
 	_otext(_font, Vector2(cx, cy + 96.0),
-		"versus %s" % _show(ai_side.label if net_active() else difficulty), 16,
+		"leave_match %s" % _show(ai_side.label if net_active() else difficulty), 16,
 		Color("#8d99bd"))
 
 
@@ -4173,11 +4118,7 @@ func _draw_settings(size: Vector2) -> void:
 			ProjectSettings.globalize_path(Profile.save_path), 11, size.x - 80.0,
 			Color("#3d4666"), 9)
 
-
-## One table for drawing and hit-testing both, so a control that is on screen is
-## always a control that responds.
-func _settings_rows() -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
+func _settings_defs() -> Array:
 	var defs := [
 		["music", "slider", "Music", "the bed under everything",
 			float(Profile.pref("music"))],
@@ -4207,6 +4148,14 @@ func _settings_rows() -> Array:
 	var got: bool = Profile.owns(Profile.PACK_PREMIUM)
 	defs.append(["premium", "buy", "Premium pack",
 		"no ads · FOUNDER · Prism board · Supernova win", got])
+	
+	return defs
+	
+## One table for drawing and hit-testing both, so a control that is on screen is
+## always a control that responds.
+func _settings_rows() -> Array:
+	var cx := get_viewport_rect().size.x * 0.5
+	var defs := _settings_defs()
 	var out: Array = []
 	# 720 was the row width and 720 is also the whole of a portrait screen, so
 	# the rows ran edge to edge with no margin at all. Capped by the screen now.
@@ -4231,7 +4180,7 @@ func _settings_fill() -> float:
 
 
 func _settings_laid() -> float:
-	return float(_settings_rows().size()) * 66.0 * _settings_fill() + 150.0
+	return float(_settings_defs().size()) * 66.0 * _settings_fill() + 150.0
 
 
 ## The slider's track. One definition, because the drawing and the click that
@@ -4488,7 +4437,7 @@ func _draw_coaching(size: Vector2) -> void:
 			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
 
 
-## Who you are lining up against. Deliberately shaped like the versus lobby:
+## Who you are lining up against. Deliberately shaped like the leave_match lobby:
 ## seats along the top, and a roster underneath that fills whichever seat you
 ## have picked. Choosing an opponent was the title screen's job until it had
 ## seven of them on it — and it never let you choose more than one at a time,
@@ -4573,7 +4522,7 @@ func _draw_solo(size: Vector2) -> void:
 
 
 ## The special-block switches. The same row of cards serves single-player setup
-## and the versus room, so the two can never drift apart or explain themselves
+## and the leave_match room, so the two can never drift apart or explain themselves
 ## differently.
 func _kind_cards(top: float) -> Array:
 	var out: Array = []
@@ -5160,210 +5109,17 @@ func _draw_pause(size: Vector2) -> void:
 		12, Color("#4d5878"))
 
 
-func _draw_lobby(size: Vector2) -> void:
-	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.92), true)
-	_draw_decor()
-
-	var hy := safe_top + _menu_offset(_lobby_laid())
-	_text_fit_overlay(_font_bold, Vector2(cx, hy + 104), "VERSUS", 66,
-		size.x - GRID_MARGIN * 2.0, Color("#e6ecff"))
-	_otext(_font, Vector2(cx, hy + 150), "two keyboards, one word chain", 16,
-		Color("#8d99bd"))
-
-	if Link.connected:
-		_draw_room(cx)
-	else:
-		_draw_lobby_setup(cx)
-
-	if Link.connected:
-		# Everyone sees the house rules, but only the host can change them: a
-		# switch a client could flip would be a lie about the match they are
-		# about to play.
-		if not Link.is_host:
-			block_kinds = Link.kinds.duplicate()
-		var dtop := _lobby_kinds_top()
-		var dw: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
-		var drawer := Rect2(cx - dw * 0.5, dtop - 44.0, dw, 36.0)
-		var dhot: bool = _hover_action == "kinds_drawer"
-		_panel(drawer, Color("#1b2444") if dhot else Color("#141b33"),
-			Color(PLAYER_ACCENT, 0.5 if dhot else 0.2), 8.0, 1.0)
-		var on_now := block_kinds.size()
-		_otext(_font_bold, Vector2(drawer.position.x + 92.0, drawer.get_center().y),
-			"SPECIAL BLOCKS", 12, Color("#aab4d4"))
-		_otext(_font, Vector2(drawer.end.x - 70.0, drawer.get_center().y),
-			("%d on" % on_now) if on_now > 0 else "off", 11,
-			Color("#ffd166") if on_now > 0 else Color("#5d6a92"))
-		# A caret rather than a word, so the control says "there is more under
-		# this" without needing to be read.
-		var cc := Vector2(drawer.end.x - 24.0, drawer.get_center().y)
-		var dir: float = 1.0 if kinds_open else -1.0
-		_overlay.draw_line(cc + Vector2(-6.0, -3.0 * dir), cc + Vector2(0.0, 3.0 * dir),
-			Color("#aab4d4"), 2.0)
-		_overlay.draw_line(cc + Vector2(0.0, 3.0 * dir), cc + Vector2(6.0, -3.0 * dir),
-			Color("#aab4d4"), 2.0)
-		if kinds_open:
-			if not Link.is_host:
-				_otext(_font, Vector2(cx, dtop - 8.0), "the host sets these", 11,
-					Color("#5d6a92"))
-			_draw_kind_cards(dtop, Link.is_host)
-
-	for b: Dictionary in _menu_buttons():
-		_draw_menu_button(b)
-
-	if Link.status != "":
-		var waiting := Link.active and not Link.connected
-		var tint := Color("#ffd166") if waiting else Color("#8d99bd")
-		if Link.status.begins_with("could not") or Link.status.contains("failed") \
-				or Link.status.contains("not installed") or Link.status.contains("not wired"):
-			tint = Color("#ff6b6b")
-		var dots := ".".repeat(1 + int(Time.get_ticks_msec() / 400.0) % 3) if waiting else ""
-		# Pinned near the bottom rather than measured off the rest: this is the
-		# line that says whether the connection is going anywhere, and it should
-		# not move about as rooms fill up and the layout above it grows.
-		_text_fit_overlay(_font_bold, Vector2(cx, size.y - safe_bottom - 28.0),
-			Link.status + dots, 14, size.x - GRID_MARGIN * 2.0, tint, 10)
-
-
-## Before anyone has connected: who you are, where they are, which backend.
-func _draw_lobby_setup(cx: float) -> void:
-	var caret := "_" if fmod(Time.get_ticks_msec() / 1000.0, 1.0) < 0.55 else " "
-
-	for i in 2:
-		var is_name := i == 0
-		var r: Rect2 = _lobby_field_rect(i)
-		var focused: bool = lobby_field == i
-		_panel(r, Color("#111730"), Color(PLAYER_ACCENT, 0.55 if focused else 0.2), 10.0,
-			2.0 if focused else 1.0)
-		var hosting_code: bool = Link.is_host and Link.room_code != ""
-		var label := "YOUR NAME"
-		if not is_name:
-			label = "YOUR ROOM CODE" if hosting_code else (
-				"THEIR ROOM CODE" if _backend_uses_codes() else "THEIR ADDRESS")
-		_otext(_font, Vector2(r.get_center().x, r.position.y - 14.0), label, 11,
-			Color("#7c88ad"))
-
-		var body: String = Link.my_name if is_name else join_ip
-		var tint := Color("#e6ecff")
-		var body_size := 22
-		if not is_name and hosting_code:
-			# Show the code to read out, not the field you type into. A short one
-			# has room to be set large, which is most of the point of shortening
-			# it — this is the thing somebody is squinting at over a call.
-			body = _chunk_code(Link.room_code)
-			tint = Color("#ffd166")
-			focused = false
-			if Link.short_codes():
-				body_size = 34
-		_text_fit_overlay(_font_bold, r.get_center(), body + (caret if focused else ""),
-			body_size, r.size.x - 24.0, tint)
-
-	var hint := "click a field to type in it · TAB switches · CTRL+V pastes"
-	if Link.is_host and Link.room_code != "":
-		hint = "click the code to copy it · they paste with CTRL+V"
-	elif lobby_backend == Link.Backend.ROOM and not Link.short_codes(lobby_backend):
-		# Worth the line while codes are 21 mixed-case characters: getting the
-		# case wrong is the most likely reason a join goes nowhere.
-		hint = "codes are case-sensitive · CTRL+V pastes · TAB switches field"
-	if portrait:
-		# TAB and CTRL+V are not on the drawn keyboard, so the only true half of
-		# any of those lines is the tapping.
-		hint = "tap the code to copy it" if (Link.is_host and Link.room_code != "") \
-			else "tap a field to type in it"
-	_otext(_font, Vector2(cx, _lobby_backend_rect(0).position.y - 38.0), hint, 12,
-		Color("#5d6a92"))
-
-	# Backend picker. Room codes go through the lobby server; direct dials an address.
-	var slots := _backend_slots()
-	var labels := {
-		Link.Backend.EOS: "ROOM CODE",
-		Link.Backend.ROOM: "ROOM CODE",
-		Link.Backend.DIRECT: "DIRECT",
-	}
-	var subs := {
-		Link.Backend.EOS: "five letters, works anywhere",
-		Link.Backend.ROOM: "works anywhere, no port forwarding",
-		Link.Backend.DIRECT: "LAN or a forwarded port",
-	}
-	var tints := {
-		Link.Backend.EOS: Color("#c77dff"),
-		Link.Backend.ROOM: Color("#c77dff"),
-		Link.Backend.DIRECT: PLAYER_ACCENT,
-	}
-	for i in 2:
-		var be: int = slots[i]
-		var r: Rect2 = _lobby_backend_rect(i)
-		var picked: bool = lobby_backend == be
-		_panel(r, Color("#1b2444") if picked else Color("#141b33"),
-			Color(tints[be], 0.9 if picked else 0.25), 10.0, 2.0)
-		_otext(_font_bold, Vector2(r.get_center().x, r.get_center().y - 8.0),
-			labels[be], 16, tints[be])
-		_otext(_font, Vector2(r.get_center().x, r.get_center().y + 14.0), subs[be], 11,
-			Color("#7c88ad"))
-
-
-## Once connected: everyone in the room and who has readied up.
-func _draw_room(cx: float) -> void:
-	var ids := Link.peer_ids()
-	var count := 1 + ids.size() + Link.bot_count
-	var w := 250.0 if count > 2 else 320.0
-	var seats := _room_seat_rects(count, w)
-
-	for i in count:
-		var mine := i == 0
-		var is_bot := i > ids.size()
-		var who: String = _show_name(Link.my_name) if mine else _show_name(
-			"CPU %d" % (i - ids.size()) if is_bot else String(Link.roster[ids[i - 1]]["name"]))
-		var set_up: bool = true if is_bot else (
-			Link.my_ready if mine else bool(Link.roster[ids[i - 1]]["ready"]))
-		var dev: int = Link.Device.KEYS
-		if mine:
-			dev = Link.my_device()
-		elif not is_bot:
-			dev = int(Link.roster[ids[i - 1]].get("device", Link.Device.KEYS))
-		var tint: Color = SLOT_ACCENTS[i % SLOT_ACCENTS.size()]
-		var r: Rect2 = seats[i]
-		_panel(r, Color("#141b33"), Color(tint, 0.7 if set_up else 0.25), 12.0,
-			3.0 if set_up else 2.0)
-		_otext(_font, Vector2(r.get_center().x, r.position.y + 26.0),
-			"YOU" if mine else ("COMPUTER" if is_bot else "CHALLENGER"), 11, Color("#7c88ad"))
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 60.0),
-			who.to_upper(), 26, r.size.x - 26.0, Color("#e6ecff"))
-		_otext(_font_bold, Vector2(r.get_center().x, r.position.y + 98.0),
-			"READY" if set_up else "not ready", 15,
-			tint if set_up else Color("#5d6a92"))
-		# What they are playing on, said before the match rather than worked out
-		# thirty seconds into it. A CPU has no device worth naming.
-		if not is_bot:
-			var touch: bool = dev == Link.Device.TOUCH
-			_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 116.0),
-				Link.device_label(dev), 10, r.size.x - 20.0,
-				Color("#7bdff2") if touch else Color("#5d6a92"), 8)
-
-	var note := "ready up when you are"
-	if Link.my_ready:
-		var waiting: Array = []
-		for id in ids:
-			if not Link.roster[id]["ready"]:
-				waiting.append(_show_name(String(Link.roster[id]["name"]).to_upper()))
-		note = "waiting for %s" % ", ".join(waiting) if not waiting.is_empty() else "starting"
-	var foot := _grid_bottom(seats, 360.0)
-	_otext(_font, Vector2(cx, foot + 32.0), note, 14, Color("#8d99bd"))
-	_text_fit_overlay(_font, Vector2(cx, foot + 54.0),
-		"up to four boards — the host starts when everyone is ready", 12,
-		get_viewport_rect().size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
-
-
 ## The house rules live in a drawer.
 ##
-## Six switches is the longest thing on the versus screen and the least often
+## Six switches is the longest thing on the leave_match screen and the least often
 ## touched — most rooms play the base game — so it was pushing the buttons that
 ## matter, Ready and Leave, off the bottom of a phone. Shut by default, and it
 ## says how many are on so nobody has to open it to find out.
 var kinds_open := false
 
-
+func _on_find_match_pressed() -> void:
+	MultiplayerManager.find_match()
+	
 func _lobby_fill() -> float:
 	return 1.25 if portrait else 1.0
 
@@ -5409,38 +5165,6 @@ func _lobby_portrait_kinds_top() -> float:
 		low = maxf(low, (b["rect"] as Rect2).end.y + 60.0)
 	return low
 
-
-## Both lobby fields go through here: names take anything printable, addresses
-## only what an address can contain.
-func _lobby_edit(ch: String, backspace: bool) -> void:
-	if Link.connected:
-		return
-	if lobby_field == 0:
-		var n := Link.my_name
-		if backspace:
-			n = n.substr(0, maxi(0, n.length() - 1))
-		elif ch.length() == 1 and n.length() < 14 and ch.unicode_at(0) >= 32:
-			n += ch.to_upper()
-		else:
-			return
-		Link.set_name_and_save(n)
-	else:
-		if backspace:
-			join_ip = join_ip.substr(0, maxi(0, join_ip.length() - 1))
-		elif ch.length() == 1 and join_ip.length() < 40 and (
-				ch.is_valid_int() or ch == "." or ch == ":" or ch == "-"
-				or (ch.to_lower() >= "a" and ch.to_lower() <= "z")):
-			# On a single-case alphabet the field can show what will actually be
-			# sent, instead of letting somebody type a code in a case that is
-			# about to be corrected out from under them on submit. Addresses are
-			# left alone — hostnames are not ours to shout.
-			if _backend_uses_codes() and Link.short_codes(lobby_backend):
-				join_ip += ch.to_upper()
-			else:
-				join_ip += ch
-		else:
-			return
-	Sfx.play("back" if backspace else "key", randf_range(0.92, 1.10))
 
 
 ## Groups a code for reading aloud. Short single-case codes split in threes,
@@ -5490,13 +5214,6 @@ func _backend_slots() -> Array:
 	if EOSConfig.is_configured():
 		return [Link.Backend.EOS, Link.Backend.DIRECT]
 	return [Link.Backend.ROOM, Link.Backend.DIRECT]
-
-
-## True when the join field holds a room code rather than an address. Both the
-## noray and EOS paths are code-based; only DIRECT dials a host.
-func _backend_uses_codes() -> bool:
-	return lobby_backend == Link.Backend.ROOM or lobby_backend == Link.Backend.EOS
-
 
 func _lobby_backend_rect(i: int) -> Rect2:
 	var top := _lobby_field_rect(1).end.y + 82.0
@@ -6901,59 +6618,21 @@ func _activate(action: String) -> void:
 		phase = Phase.TITLE
 		_hover_action = ""
 		Sfx.play("back")
+	elif action == "versus":
+		paused = false
+		_on_find_match_pressed()
+		Sfx.play("back", 1.2)
 	elif action == "rematch":
 		# Still connected? Both players go back to the room and ready up again.
 		if Link.connected:
 			Link.request_rematch()
-		elif net_active() or difficulty == "Versus":
-			_activate("versus")
+		elif net_active() or difficulty == "leave_match":
+			_activate("leave_match")
 		else:
 			# Straight from the seats, so a random opponent is genuinely rolled
 			# again rather than quietly becoming whoever it was last time.
 			var again := _solo_lineup()
 			start_match(again[0], again.size(), again)
-	elif action == "versus":
-		Link.leave()
-		Link.status = ""
-		phase = Phase.LOBBY
-		_hover_action = ""
-		Sfx.play("back", 1.2)
-	elif action == "host":
-		Link.host(lobby_backend)
-		Link.set_kinds(block_kinds)
-		Sfx.play("count")
-	elif action == "join":
-		Link.join(lobby_backend, join_ip)
-		Sfx.play("count")
-	elif action == "addbot":
-		Link.set_bots(Link.bot_count + 1)
-		Sfx.play("count", 1.2)
-	elif action == "dropbot":
-		Link.set_bots(Link.bot_count - 1)
-		Sfx.play("back")
-	elif action == "ready":
-		Link.set_ready(not Link.my_ready)
-		Sfx.play("count", 1.2 if Link.my_ready else 0.9)
-	elif action == "leave":
-		Link.leave()
-		Link.status = ""
-		_hover_action = ""
-		Sfx.play("back")
-	elif action.begins_with("backend:"):
-		# The action carries the picker slot, not the enum value — which backend
-		# owns slot 0 depends on whether EOS is configured.
-		lobby_backend = _backend_slots()[int(action.substr(8))]
-		Sfx.play("key", 1.2)
-	elif action.begins_with("field:"):
-		var which := int(action.substr(6))
-		# While hosting, that field is the code to read out — clicking copies it.
-		if which == 1 and Link.is_host and Link.room_code != "":
-			DisplayServer.clipboard_set(Link.room_code)
-			Link.status = "code copied to your clipboard"
-			Sfx.play("count", 1.3)
-		else:
-			lobby_field = which
-			_show_keyboard(Link.my_name if which == 0 else join_ip)
 	elif action == "solo":
 		phase = Phase.SOLO
 		_hover_action = ""
