@@ -85,6 +85,9 @@ var _local_id := ""
 var _hello_timer := 0.0
 var _wait_age := 0.0
 var _peer_said_hello := false
+## Counted only so a failed handshake can say how hard it tried. "Never
+## answered" after one hello and after thirty are different faults.
+var _hellos_sent := 0
 
 ## The people the in-app picker offers, as `GKPlayer`.
 var friends: Array = []
@@ -143,9 +146,16 @@ func _process(delta: float) -> void:
 	_hello_timer -= delta
 	if _hello_timer <= 0.0:
 		_hello_timer = HELLO_EVERY
+		_hellos_sent += 1
 		_send_raw({"type": "hello", "id": _local_id})
+		# Every fourth, so a stalled handshake leaves a heartbeat in the device
+		# log rather than fifteen seconds of nothing followed by a failure with
+		# no history behind it.
+		if _hellos_sent % 4 == 1:
+			print("[GC] hello #%d sent at %.1fs — heard back: %s" % [
+				_hellos_sent, _wait_age, _peer_said_hello])
 	if _wait_age >= HANDSHAKE_TIMEOUT:
-		_fail("the other player never answered")
+		_fail("the other player never answered after %d hellos" % _hellos_sent)
 
 
 # ----------------------------------------------------------------- sign-in
@@ -331,7 +341,29 @@ func load_friends(force := false) -> void:
 	friends_state = Friends.LOADING
 	friends_note = "asking Game Center"
 	friends_changed.emit()
+	print("[GC] asking for friends (forced: %s)" % force)
+	# Asked for the log's sake and nothing else. An empty friend list has two
+	# completely different causes — the player never granted access, or they did
+	# and simply share no mutual authoriser — and from the empty array alone
+	# those are indistinguishable. The status is the only thing that separates
+	# them, and separating them is the difference between "tap Ask again" and
+	# "get your friend to open the app".
+	local_player.load_friends_authorization_status(_on_friends_authorization)
 	local_player.load_friends(_on_friends_loaded)
+
+
+## Apple's raw `GKFriendsAuthorizationStatus`: 0 not determined, 1 denied,
+## 2 restricted, 3 authorised. Logged rather than acted on — `load_friends` is
+## the call that actually decides, and second-guessing it here would mean two
+## sources of truth for one question.
+func _on_friends_authorization(status: int, error = null) -> void:
+	if error != null:
+		print("[GC] friend authorization unavailable — %s" % _error_text(error))
+		return
+	var names := ["not determined", "denied", "restricted", "authorized"]
+	print("[GC] friend authorization: %s (%d)" % [
+		names[status] if status >= 0 and status < names.size() else "unknown",
+		status])
 
 
 func _on_friends_loaded(list, error = null) -> void:
@@ -340,14 +372,24 @@ func _on_friends_loaded(list, error = null) -> void:
 		friends_state = Friends.DENIED
 		friends_note = _friends_refused(error)
 		push_warning("Game Center: load_friends failed — %s" % _error_text(error))
+		print("[GC] friends failed — %s" % _error_text(error))
 		friends_changed.emit()
 		return
 
 	friends = []
+	var raw: int = 0
 	if list != null:
+		raw = list.size()
 		for p in list:
 			if p is GKPlayer:
 				friends.append(p)
+	# `raw` against the kept count separates "Apple sent nobody" from "Apple sent
+	# people and the filter dropped them", which is the difference between a
+	# Game Center problem and one of ours.
+	print("[GC] friends — Apple returned %d, kept %d" % [raw, friends.size()])
+	for p: GKPlayer in friends:
+		print("[GC]   %s (invitable: %s)" % [
+			String(p.display_name), p.is_invitable])
 	# Whoever is taking invitations comes first, then alphabetically. `is_invitable`
 	# is only ever a sort key here and never a gate: if the plugin leaves it false
 	# for everyone the order is simply alphabetical, whereas gating on it would
@@ -437,6 +479,7 @@ func _on_found_match(found, error = null) -> void:
 	_peer_id = ""
 	_peer_said_hello = false
 	_wait_age = 0.0
+	_hellos_sent = 0
 	_set_state(State.CONNECTING, "connecting")
 	_check_connected()
 
@@ -450,13 +493,21 @@ func _check_connected() -> void:
 		return
 	if current_match.expected_player_count > 0:
 		if status != "waiting for the other player":
-			_set_state(State.CONNECTING, "waiting for the other player")
+			_set_state(State.CONNECTING,
+				"waiting for the other player")
+			print("[GC] still expecting %d player(s)"
+				% current_match.expected_player_count)
 		return
 	# Nobody else is coming, so stop Game Center looking for more.
 	_mm().finish_matchmaking(current_match)
 	_wait_age = 0.0
 	_hello_timer = 0.0
 	_set_state(State.HANDSHAKING, "saying hello")
+	# The peer's hello can arrive while this device is still CONNECTING, in which
+	# case `_begin_if_ready` was called too early to do anything and the answer is
+	# already sitting here. Without this the match waits out another round trip
+	# for news it has already had.
+	_begin_if_ready()
 
 
 func _on_player_changed(player: GKPlayer, connected: bool) -> void:
@@ -479,16 +530,19 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 		return
 	var kind := String(packet.get("type", ""))
 
-	if kind == "hello":
+	if kind == "hello" or kind == "hello_back":
+		# Logged once. A handshake that times out is either "we sent thirty and
+		# heard nothing" or "we heard them and still did not start", and those are
+		# opposite faults that look identical from the outside — one line here
+		# decides which, and repeating it thirty times would bury the rest.
+		if not _peer_said_hello:
+			print("[GC] heard %s from %s" % [kind, packet.get("id", "?")])
 		_peer_id = String(packet.get("id", ""))
 		# Answer immediately as well as on the timer, so the pair converges in
-		# one round trip rather than waiting out another tick.
-		_send_raw({"type": "hello_back", "id": _local_id})
-		_peer_said_hello = true
-		_begin_if_ready()
-		return
-	if kind == "hello_back":
-		_peer_id = String(packet.get("id", ""))
+		# one round trip rather than waiting out another tick. Only `hello` is
+		# answered — replying to a reply is how two devices talk forever.
+		if kind == "hello":
+			_send_raw({"type": "hello_back", "id": _local_id})
 		_peer_said_hello = true
 		_begin_if_ready()
 		return

@@ -671,16 +671,25 @@ func _on_match_started() -> void:
 
 ## Matchmaking was cancelled, refused, or the opponent left.
 func _on_match_ended(reason: String) -> void:
-	net_status = ""
 	if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
 		# Mid-match: you win by default rather than being dumped to the title
 		# with nothing to show for it.
+		net_status = ""
 		winner = "YOU"
 		_log(reason, Color("#ff6b6b"))
 		_end_match(ai_side)
 		return
+	# Kept, not cleared. `_fail` sets the reason as the status one line before it
+	# emits this, and clearing here wiped it in the same frame — so a handshake
+	# that timed out walked back to the versus screen reading "signed in to Game
+	# Center", with the one sentence explaining what went wrong thrown away. The
+	# `_say` that was supposed to carry it never showed either: the message
+	# banner is drawn by the playfield HUD, and a menu has no playfield.
+	#
+	# "cancelled" is the exception — you already know, and `cancel_find` has put
+	# a better sentence in the status than this reason string is.
 	if reason != "cancelled":
-		_say(reason, Color("#ff6b6b"))
+		net_status = reason
 
 
 ## What Game Center is doing, so the title screen can say so instead of looking

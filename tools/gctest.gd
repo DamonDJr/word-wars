@@ -59,7 +59,7 @@ const CONNECTIONS := {
 const CALLS := {
 	"GameCenterManager": {"authenticate": 0},
 	"GKLocalPlayer": {"register_listener": 0, "load_challengeable_friends": 1,
-		"load_friends": 1},
+		"load_friends": 1, "load_friends_authorization_status": 1},
 	"GKMatchmaker": {
 		"find_match": 2,
 		"match_for_invite": 2,
@@ -90,6 +90,10 @@ const CALLBACK_ARITY := {
 	# and then throws inside Apple's completion handler, so the friend picker
 	# would simply never fill in and nothing would say why.
 	"_on_friends_loaded": 2,
+	# `(int status, Variant error)`. Only ever logged, which is exactly why it
+	# needs pinning: a wrong arity here throws inside Apple's handler and takes
+	# the one line that says whether the player granted access with it.
+	"_on_friends_authorization": 2,
 }
 
 var fails := 0
