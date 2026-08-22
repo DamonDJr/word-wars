@@ -126,6 +126,20 @@ if ! grep -q "shop behaves" <<<"$SHOP"; then
 	exit 1
 fi
 
+# The other half of the pack. An ad break has three failures that never show up
+# on the screen it happens on: one that fires during a versus rematch strands
+# the other player, one that forgets which door was asked for drops you at the
+# title after you pressed Rematch, and a counter left unspent shows a break
+# after every match from then on.
+echo "==> Ad break check"
+ADS=$("$(command -v godot)" --headless --script tools/adtest.gd 2>&1 || true)
+if ! grep -q "the break behaves" <<<"$ADS"; then
+	echo "FAILED: the ad break is not behaving." >&2
+	grep -E "FAILED" <<<"$ADS" >&2 || true
+	echo "        Run: godot --headless --script tools/adtest.gd" >&2
+	exit 1
+fi
+
 # The daily makes two promises that both fail quietly: the same board for
 # everyone, and one run a day. A daily that deals different boards still looks
 # like a working daily — it just is not a contest — and a second attempt at a

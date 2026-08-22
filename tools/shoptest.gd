@@ -28,6 +28,7 @@ func _init() -> void:
 	_buying_grants_all_three()
 	_it_survives_a_save()
 	_ads_stop()
+	_the_gap_moves()
 	_free_themes_are_untouched()
 	_premium_theme_actually_differs()
 	_the_menu_knows_every_block_style()
@@ -107,16 +108,49 @@ func _ads_stop() -> void:
 	print("--- the pack stops the ads ---")
 	P.owned = {}
 	P.since_ad = 0
-	for i in P.ADS_EVERY:
+	P.ad_gap = 0
+	# The gap is rolled, so the test cannot name the match it lands on — only the
+	# window it has to land inside. One short of the minimum is never due; the
+	# maximum always is.
+	for i in P.ADS_EVERY_MIN - 1:
 		P.note_match_for_ads()
-	_expect("a break is due after %d matches" % P.ADS_EVERY, P.ad_due())
+	_expect("no break before %d matches" % P.ADS_EVERY_MIN, not P.ad_due())
+	for i in P.ADS_EVERY_MAX - (P.ADS_EVERY_MIN - 1):
+		P.note_match_for_ads()
+	_expect("one is due by %d" % P.ADS_EVERY_MAX, P.ad_due())
 	P.clear_ad()
 	_expect("and not straight after one", not P.ad_due())
 
 	P.grant(P.PACK_PREMIUM)
-	for i in P.ADS_EVERY * 3:
+	for i in P.ADS_EVERY_MAX * 3:
 		P.note_match_for_ads()
 	_expect("an owner never has one due", not P.ad_due())
+
+
+## The gap has to actually vary, and has to stay inside its own bounds. A roll
+## that always returned three would pass every check above while being the fixed
+## cadence this replaced — so the spread is asserted rather than assumed.
+func _the_gap_moves() -> void:
+	print("--- the gap is 3 to 5 and not a metronome ---")
+	P.owned = {}
+	var seen: Dictionary = {}
+	var in_range := true
+	for i in 400:
+		P.roll_ad_gap()
+		in_range = in_range and P.ad_gap >= P.ADS_EVERY_MIN and P.ad_gap <= P.ADS_EVERY_MAX
+		seen[P.ad_gap] = true
+	_expect("every roll lands in range", in_range)
+	_expect("and all three lengths come up",
+		seen.size() == P.ADS_EVERY_MAX - P.ADS_EVERY_MIN + 1)
+
+	# And it survives the save, or a restart is a way to roll again for a longer
+	# one — the same hole as counting matches anywhere but here.
+	P.ad_gap = P.ADS_EVERY_MAX
+	P.since_ad = 1
+	P.save()
+	P.ad_gap = 0
+	_expect("the file reads the gap back",
+		P._read(P.save_path) == OK and P.ad_gap == P.ADS_EVERY_MAX)
 
 
 ## Widening what a theme may set must not change what the existing ones do.

@@ -29,6 +29,15 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
+	# Off the real save. Every section here ends a match, and ending a match
+	# banks the record and counts towards an ad break — against whatever profile
+	# happens to be loaded, which used to be the developer's own.
+	var P := get_root().get_node("Profile")
+	P.save_path = "user://profile-score-test.cfg"
+	P.owned = {}
+	P.since_ad = 0
+	P.ad_gap = P.ADS_EVERY_MAX
+
 	_topout_pays()
 	_winning_pays()
 	_focus_needs_a_crowd()
@@ -38,6 +47,8 @@ func _init() -> void:
 		fails += 1
 		print("  %-52s %s" % ["all %d sections ran" % SECTIONS,
 			"FAILED (%d did)" % done])
+	for suffix in ["", ".bak", ".tmp"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(P.save_path + suffix))
 	print("--- %s ---" % ("scoring behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
 

@@ -59,14 +59,39 @@ var owned: Dictionary = {}
 ## see one.
 var since_ad := 0
 
-## How many matches go by between breaks.
-const ADS_EVERY := 3
+## How many matches this gap is worth, rolled fresh after every break.
+##
+## A number rather than a constant, because a break that lands on exactly every
+## third match is a rhythm players learn to feel coming — and the match they
+## learn to feel it on is the one they stop before. Three to five, rolled once
+## per gap, is frequent enough to be worth selling against and irregular enough
+## not to be counted.
+##
+## Saved alongside the counter. A gap re-rolled at every launch would let a
+## restart shop for a longer one, which is the same hole as counting matches in
+## the match rather than here.
+var ad_gap := 0
+
+const ADS_EVERY_MIN := 3
+const ADS_EVERY_MAX := 5
+
+
+## The next gap. Inclusive of both ends, so five is as reachable as three.
+func roll_ad_gap() -> void:
+	ad_gap = randi_range(ADS_EVERY_MIN, ADS_EVERY_MAX)
 
 
 ## Whether a break is due. Asked at the end of a match, before the summary is
 ## left, so the answer is about the match that just finished.
 func ad_due() -> bool:
-	return not ads_removed() and since_ad >= ADS_EVERY
+	if ads_removed():
+		return false
+	# A profile written before gaps existed, or a brand new one, has never rolled
+	# one. Done here rather than at load so there is exactly one place that can
+	# leave `ad_gap` at zero — and zero would make every match a break.
+	if ad_gap <= 0:
+		roll_ad_gap()
+	return since_ad >= ad_gap
 
 
 func note_match_for_ads() -> void:
@@ -78,6 +103,7 @@ func note_match_for_ads() -> void:
 
 func clear_ad() -> void:
 	since_ad = 0
+	roll_ad_gap()
 	save()
 
 
@@ -552,6 +578,11 @@ func _read(path: String) -> Error:
 	powers = cfg.get_value("record", "powers", {})
 	owned = cfg.get_value("shop", "owned", {})
 	since_ad = int(cfg.get_value("shop", "since_ad", 0))
+	# Clamped rather than trusted. A hand-edited or older file could carry a gap
+	# of six hundred, and the only symptom would be ads that never appear again.
+	ad_gap = int(cfg.get_value("shop", "ad_gap", 0))
+	if ad_gap < ADS_EVERY_MIN or ad_gap > ADS_EVERY_MAX:
+		ad_gap = 0
 	daily = cfg.get_value("daily", "runs", {})
 	daily_best = int(cfg.get_value("daily", "best", 0))
 	daily_streak = int(cfg.get_value("daily", "streak", 0))
@@ -581,6 +612,7 @@ func save() -> void:
 	cfg.set_value("record", "powers", powers)
 	cfg.set_value("shop", "owned", owned)
 	cfg.set_value("shop", "since_ad", since_ad)
+	cfg.set_value("shop", "ad_gap", ad_gap)
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
 	cfg.set_value("daily", "streak", daily_streak)

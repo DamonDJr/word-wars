@@ -256,6 +256,19 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
+	# Off the real save, onto one of our own. This screen drives `_activate` on a
+	# finished match, and two of the things that hang off that — banking the
+	# record, counting matches towards an ad break — write whatever profile is
+	# loaded. Left alone it was the developer's own, which is how a run of the
+	# test suite quietly added matches to somebody's career; and once a break
+	# could be due, "title leaves" started depending on how many matches the
+	# machine running the test had played.
+	var P := root.get_node("Profile")
+	P.save_path = "user://profile-versus-test.cfg"
+	P.owned = {}
+	P.since_ad = 0
+	P.ad_gap = P.ADS_EVERY_MAX
+
 	game._activate("versus")
 	print("--- the screen holds together at both sizes ---")
 	_orient(false)
@@ -273,6 +286,8 @@ func _init() -> void:
 	print("  status: %s" % game._versus_state_line())
 	print("  title:  %s" % game._versus_sub())
 
+	for suffix in ["", ".bak", ".tmp"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(P.save_path + suffix))
 	print("--- %s ---" % ("the versus screen holds up" if fails == 0
 		else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
