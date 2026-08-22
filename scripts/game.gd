@@ -486,7 +486,10 @@ func _screen_laid() -> float:
 		Phase.VERSUS:
 			return 214.0 + _versus_laid()
 		Phase.SOLO:
-			return 118.0 + _solo_laid()
+			# Portrait's `_solo_laid` already counts from the top of the header, so
+			# adding the landscape header allowance again would invent 118 units of
+			# scroll under a screen that ends at the Start button.
+			return _solo_laid() if portrait else 118.0 + _solo_laid()
 		Phase.MASTERY:
 			return 166.0 + _mastery_laid()
 		Phase.COSMETICS:
@@ -5401,6 +5404,13 @@ func _draw_coaching(size: Vector2) -> void:
 ## have picked. Choosing an opponent was the title screen's job until it had
 ## seven of them on it — and it never let you choose more than one at a time,
 ## which made a free-for-all three copies of the same personality.
+##
+## On a phone it is none of that. A four-seat table, a seat you have to select
+## before the roster means anything, and six special-block switches under it was
+## a desktop control panel scaled down — three separate things to understand
+## before a one-handed player could start a match. Portrait keeps the one
+## question worth asking (who) and answers it with cards big enough for a thumb;
+## see `_solo_cards` and `_solo_seat_rects`.
 func _draw_solo(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
@@ -5410,7 +5420,9 @@ func _draw_solo(size: Vector2) -> void:
 
 	var hy := safe_top + _menu_offset(_solo_laid())
 	_otext(_font_bold, Vector2(cx, hy + 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
-	_otext(_font, Vector2(cx, hy + 96.0), "add up to three, and pick who they are", 14,
+	_otext(_font, Vector2(cx, hy + 96.0),
+		"pick who you are up against" if portrait
+			else "add up to three, and pick who they are", 14,
 		Color("#8d99bd"))
 
 	# The table, you included, so the size of the match is visible rather than
@@ -5448,34 +5460,51 @@ func _draw_solo(size: Vector2) -> void:
 			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
 				"rolled each match", 11, Color("#7c88ad"))
 
-	_otext(_font, Vector2(cx, _solo_roster_top() - 24.0),
-		"%s a seat, then pick below · %d opponent%s" % [
-			"tap" if portrait else "click",
-			_solo_filled(), "" if _solo_filled() == 1 else "s"], 12, Color("#5d6a92"))
+	# No header over the roster in portrait: with the seats gone the roster is the
+	# only thing on the screen, and the subtitle four lines up already named it.
+	if not portrait:
+		_otext(_font, Vector2(cx, _solo_roster_top() - 24.0),
+			"click a seat, then pick below · %d opponent%s" % [
+				_solo_filled(), "" if _solo_filled() == 1 else "s"], 12,
+			Color("#5d6a92"))
 
 	for c: Dictionary in _solo_cards():
 		var r: Rect2 = c["rect"]
 		var hot: bool = _hover_action == String(c["action"])
-		var on: bool = String(solo_seats[solo_pick]) == String(c["id"])
+		var on: bool = String(solo_seats[0 if portrait else solo_pick]) \
+			== String(c["id"])
 		if hot:
 			r = Rect2(r.position - Vector2(0, 3), r.size)
 		var accent: Color = c["accent"]
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
-			Color("#ffd166") if on else Color(accent, 0.9 if hot else 0.28), 10.0,
-			3.0 if on else 2.0)
+			Color("#ffd166") if on else Color(accent, 0.9 if hot else 0.28),
+			14.0 if portrait else 10.0, 3.0 if on else 2.0)
 		# Placed off the card's own height rather than at +26/+48, so the taller
 		# portrait card carries the pair down with it instead of leaving them
 		# huddled at the top. `_text_fit_overlay` shrinks to fit, so raising the
 		# starting sizes can only help a card that has the room and costs nothing
 		# to one that does not.
+		var ny: float = 0.30 if portrait else 0.38
+		var oy: float = 0.56 if portrait else 0.72
 		_text_fit_overlay(_font_bold,
-			Vector2(r.get_center().x, r.position.y + r.size.y * 0.38),
-			String(c["name"]).to_upper(), 20, r.size.x - 20.0,
+			Vector2(r.get_center().x, r.position.y + r.size.y * ny),
+			String(c["name"]).to_upper(), 26 if portrait else 20, r.size.x - 20.0,
 			Color.WHITE if hot else Color("#e6ecff"), 14)
-		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + r.size.y * 0.72),
-			String(c["note"]), 14, r.size.x - 14.0, Color("#8d99bd"), 10)
+		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + r.size.y * oy),
+			String(c["note"]), 15 if portrait else 14, r.size.x - 14.0,
+			Color("#8d99bd"), 10)
+		# The pace, which used to live on the seat the card filled. With the seat
+		# row gone this is the only place left that says how hard a name is going
+		# to be, and it is the thing a player is actually choosing between.
+		var id := String(c["id"])
+		if portrait and id != "?":
+			_text_fit_overlay(_font, Vector2(r.get_center().x,
+				r.position.y + r.size.y * 0.82),
+				"%d wpm" % int(AiOpponent.spec(id)["wpm"]), 14, r.size.x - 20.0,
+				accent, 10)
 
-	_draw_kind_cards(_solo_kinds_top(), true)
+	if not portrait:
+		_draw_kind_cards(_solo_kinds_top(), true)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -5491,6 +5520,11 @@ func _draw_solo(size: Vector2) -> void:
 ## differently.
 func _kind_cards(top: float) -> Array:
 	var out: Array = []
+	# Off the single-player screen entirely on a phone. Six switches nobody had
+	# asked for stood between a thumb and the Start button; the versus room still
+	# has them, because there the host is setting rules for other people.
+	if portrait and phase == Phase.SOLO:
+		return out
 	var kf: float = _solo_fill() if phase == Phase.SOLO else 1.0
 	var rects := _grid_rects(KIND_ORDER.size(), top, 3, 254.0, 56.0 * kf, 10.0,
 		240.0, 8.0 * kf)
@@ -5553,16 +5587,31 @@ func _solo_spread() -> float:
 	return _menu_spread(SOLO_NATURAL, 2.0)
 
 
+## How tall the screen is once it is laid out, measured from the header down to
+## the bottom of the Start button.
+##
+## The portrait figure is counted rather than estimated, because with the seat
+## table and the switches gone the screen finally fits a phone without scrolling
+## — and a guess that came out high would put a scrollbar on a screen that has
+## nowhere to go. The 176 is `_solo_roster_top`'s header block, the `42 * sp` is
+## the gap `_solo_kinds_top` leaves, and the 26 plus the door height is the Start
+## button and its lead-in from `_menu_buttons`.
 func _solo_laid() -> float:
 	var f := _solo_fill()
 	var sp := _solo_spread()
-	var roster: float = 3.0 if portrait else 2.0
-	var kinds: float = 3.0 if portrait else 2.0
-	return 76.0 * f + 40.0 * sp + roster * 66.0 * f + (roster - 1.0) * 10.0 * sp \
-		+ 42.0 * sp + kinds * 56.0 + 90.0
+	if portrait:
+		var rows := ceilf(float(_solo_roster().size()) / 2.0)
+		return 176.0 + rows * SOLO_CARD_H + (rows - 1.0) * SOLO_CARD_GAP \
+			+ 42.0 * sp + 26.0 + PORTRAIT_DOOR_H
+	return 76.0 * f + 40.0 * sp + 2.0 * 66.0 * f + 10.0 * sp \
+		+ 42.0 * sp + 2.0 * 56.0 + 90.0
 
 
 func _solo_seat_rects() -> Array:
+	# No table on a phone: one opponent means the row would be you and one other,
+	# which says nothing the roster below does not already say.
+	if portrait:
+		return []
 	# Four across at whatever width fits, never wrapped: the point of the row is
 	# that it is the table, and a table that goes 3 + 1 stops reading as one.
 	# `min_w` of zero is what forbids the wrap.
@@ -5570,24 +5619,49 @@ func _solo_seat_rects() -> Array:
 		76.0 * _solo_fill(), 12.0, 0.0, 10.0)
 
 
+## How tall one opponent card is in portrait, and the gap between rows.
+##
+## Sized off the thumb rather than off the screen — two columns of these at 720
+## wide come out around 317 across, so a card is comfortably past Apple's 44pt
+## floor in both directions. Four rows of them plus the header and the Start door
+## also happen to reach about three quarters of the way down a phone, which is
+## what stops the screen looking like it stopped early.
+const SOLO_CARD_H := 140.0
+const SOLO_CARD_GAP := 16.0
+
+
 ## Everything that can go in a seat: nothing, a random pick, or one of the
 ## roster. Built from `AiOpponent.ROSTER`, so a new personality appears here the
 ## moment it exists.
-func _solo_cards() -> Array:
-	var list: Array = [
-		{"id": "", "name": "Empty", "note": "leave the seat open",
-			"accent": Color("#5d6a92")},
-		{"id": "?", "name": "Random", "note": "rolled at the start of each match",
-			"accent": Color("#ffd166")},
-	]
+##
+## Portrait drops Empty. With one seat instead of four, "leave the seat open" is
+## a button for starting a match against nobody — `_solo_lineup` would only put
+## the Duelist back in anyway.
+func _solo_roster() -> Array:
+	var list: Array = []
+	if not portrait:
+		list.append({"id": "", "name": "Empty", "note": "leave the seat open",
+			"accent": Color("#5d6a92")})
+	list.append({"id": "?", "name": "Random",
+		"note": "rolled at the start of each match", "accent": Color("#ffd166")})
 	for name: String in AiOpponent.ROSTER:
 		var d: Dictionary = AiOpponent.spec(name)
 		list.append({"id": name, "name": name, "note": String(d["style"]),
 			"accent": Color(String(d["tint"]))})
+	return list
 
+
+func _solo_cards() -> Array:
+	var list := _solo_roster()
 	var out: Array = []
-	var rects := _grid_rects(list.size(), _solo_roster_top(), 5, 202.0,
-		66.0 * _solo_fill(), 10.0, 190.0, 10.0 * _solo_spread())
+	# Two fat columns on a phone against five narrow ones on a desktop. The old
+	# portrait grid asked for five columns and a 190 floor, which wrapped to three
+	# cards of 190 across — a target the width of a fingertip carrying two lines
+	# of text.
+	var rects := _grid_rects(list.size(), _solo_roster_top(), 2, 320.0,
+		SOLO_CARD_H, SOLO_CARD_GAP, 260.0, SOLO_CARD_GAP) if portrait \
+		else _grid_rects(list.size(), _solo_roster_top(), 5, 202.0,
+			66.0, 10.0, 190.0, 10.0)
 	for i in list.size():
 		var e: Dictionary = list[i]
 		e["rect"] = rects[i]
@@ -5596,8 +5670,11 @@ func _solo_cards() -> Array:
 	return out
 
 
-## Under the seats and the line of instructions beneath them.
+## Under the seats and the line of instructions beneath them — or, with no seats,
+## under the header.
 func _solo_roster_top() -> float:
+	if portrait:
+		return safe_top + _menu_offset(_solo_laid()) + 176.0
 	return _grid_bottom(_solo_seat_rects(), 194.0) + 40.0 * _solo_spread()
 
 
@@ -5612,7 +5689,8 @@ func _solo_kinds_top() -> float:
 
 
 ## The bottom of the last thing on the single-player screen, which the Start and
-## Back buttons sit under.
+## Back buttons sit under. In portrait that last thing is the roster itself,
+## since `_kind_cards` hands back nothing there.
 func _solo_foot() -> float:
 	var top := _solo_kinds_top()
 	var out := top
@@ -5632,9 +5710,14 @@ func _solo_filled() -> int:
 ## Turn the seats into the lineup a match actually runs. Random seats roll here,
 ## once, so a "random" opponent is a surprise rather than a thing that changes
 ## under you between the menu and the countdown.
+##
+## One seat on a phone. The other two are left in `solo_seats` untouched rather
+## than cleared, so a player who set up a three-way on a desktop still has it
+## when they go back — the phone simply does not read past the first.
 func _solo_lineup() -> Array:
 	var out: Array = []
-	for w in solo_seats:
+	var seats: Array = [solo_seats[0]] if portrait else solo_seats
+	for w in seats:
 		var id := String(w)
 		if id == "":
 			continue
@@ -6945,10 +7028,24 @@ func _menu_buttons() -> Array:
 		# Under the switches rather than at 596, which the roster now overruns on
 		# anything narrower than a desktop.
 		var sfoot := _solo_foot() + 26.0
-		var sw: float = minf(300.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		# A 300x46 button was the same slab a desktop gets, sitting under cards
+		# three times its height. In portrait it becomes a door the size of the ones
+		# on the title screen — same width as the roster above it — so the last
+		# thing on the screen reads as the thing you came to press. The sub line is
+		# who you picked, which is both the confirmation and what stops a
+		# full-width plate looking half empty.
+		var sw: float = minf(654.0 if portrait else 300.0,
+			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		var ssub := ""
+		if portrait:
+			var who := String(solo_seats[0])
+			ssub = "against a name drawn at random" if who == "?" \
+				else "against %s" % who
 		out.append({
-			"rect": Rect2(cx - sw * 0.5, sfoot, sw, 46.0), "key": "ENTER",
-			"label": "Start", "sub": "", "note": "", "rating": 0,
+			"rect": Rect2(cx - sw * 0.5, sfoot, sw,
+				PORTRAIT_DOOR_H if portrait else 46.0),
+			"key": "ENTER",
+			"label": "Start", "sub": ssub, "note": "", "rating": 0,
 			"accent": Color("#7bdff2"), "action": "solo_start"})
 		# Portrait already has the chevron in the corner; a second Back inside the
 		# screen is the same button twice.
@@ -7880,6 +7977,14 @@ func _activate(action: String) -> void:
 			start_match(again[0], again.size(), again)
 	elif action == "solo":
 		phase = Phase.SOLO
+		# Portrait has no Empty card, so an empty first seat left over from a
+		# desktop setup would be a screen with nothing selected and a Start button
+		# that quietly ran the Duelist anyway. Name it up front instead.
+		if portrait:
+			solo_pick = 0
+			if String(solo_seats[0]) == "":
+				solo_seats[0] = "Duelist"
+				Profile.set_pref("solo", solo_seats.duplicate())
 		_hover_action = ""
 		Sfx.play("count", 1.1)
 	elif action == "practice":
@@ -7928,10 +8033,14 @@ func _activate(action: String) -> void:
 		solo_pick = clampi(int(action.substr(5)), 0, solo_seats.size() - 1)
 		Sfx.play("key", 1.2)
 	elif action.begins_with("seat:"):
+		# Portrait only ever fills the first seat — there is no second one to move
+		# on to, and advancing would leave the tapped card looking unselected.
+		if portrait:
+			solo_pick = 0
 		solo_seats[solo_pick] = action.substr(5)
 		# Filling a seat moves you on to the next empty one, so setting up three
 		# opponents is three clicks rather than six.
-		if String(solo_seats[solo_pick]) != "":
+		if not portrait and String(solo_seats[solo_pick]) != "":
 			for i in solo_seats.size():
 				var at := (solo_pick + 1 + i) % solo_seats.size()
 				if String(solo_seats[at]) == "":

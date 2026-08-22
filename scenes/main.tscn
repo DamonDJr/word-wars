@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3 uid="uid://bwordwars0main"]
+[gd_scene format=3 uid="uid://ck16nhwa3r0vx"]
 
-[ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
+[ext_resource type="Script" uid="uid://slw4pxd3bmfm" path="res://scripts/game.gd" id="1_game"]
 
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node2D" unique_id=651953036]
 script = ExtResource("1_game")
