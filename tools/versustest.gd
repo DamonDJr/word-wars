@@ -146,6 +146,42 @@ func _doors_do_what_they_say() -> void:
 	_expect("and shuts the drawer behind it", not game.versus_inviting)
 
 
+## Rematch asks the opponent you already have. The button must therefore exist
+## only while there is one — and with Game Center off, `net_active()` is false,
+## which is exactly the "they left" case the summary screen has to survive.
+func _rematch_button_follows_the_opponent() -> void:
+	print("--- rematch ---")
+	game.phase = game.Phase.OVER
+	game.mode = game.Mode.NORMAL
+
+	game.difficulty = "Versus"
+	_expect("a versus match with nobody left cannot rematch",
+		not game._rematch_possible())
+	var gone: Array = game._menu_buttons()
+	var acts: PackedStringArray = []
+	for b: Dictionary in gone:
+		acts.append(String(b["action"]))
+	_expect("so the summary offers only Title (%s)" % ", ".join(acts),
+		not acts.has("rematch") and acts.has("title"))
+
+	# A CPU match has nobody to ask and can always be re-run, so the button stays.
+	game.difficulty = "Rookie"
+	_expect("a CPU match can always go again", game._rematch_possible())
+	var acts2: PackedStringArray = []
+	for b2: Dictionary in game._menu_buttons():
+		acts2.append(String(b2["action"]))
+	_expect("so the summary keeps Rematch (%s)" % ", ".join(acts2),
+		acts2.has("rematch"))
+
+	# The negotiation flags must never outlive the match they belong to.
+	game.rematch_asked = true
+	game.rematch_offered = true
+	game.start_match("Rookie", 1)
+	_expect("starting a match clears a stale ask",
+		not game.rematch_asked and not game.rematch_offered)
+	game.phase = game.Phase.TITLE
+
+
 func _init() -> void:
 	await process_frame
 	mm = root.get_node("MultiplayerManager")
@@ -168,6 +204,7 @@ func _init() -> void:
 
 	_prediction_matches_the_grid()
 	_doors_do_what_they_say()
+	_rematch_button_follows_the_opponent()
 
 	print("--- what the screen says with Game Center off ---")
 	print("  status: %s" % game._versus_state_line())

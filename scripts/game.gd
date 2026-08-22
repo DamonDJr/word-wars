@@ -688,6 +688,11 @@ func _on_match_ended(reason: String) -> void:
 	#
 	# "cancelled" is the exception — you already know, and `cancel_find` has put
 	# a better sentence in the status than this reason string is.
+	# Whoever we were negotiating with has gone, so neither flag means anything
+	# any more. `_rematch_possible` will have dropped the button by now, and a
+	# flag left set would make it reappear mid-negotiation on the next match.
+	rematch_asked = false
+	rematch_offered = false
 	if reason != "cancelled":
 		net_status = reason
 
@@ -1106,6 +1111,11 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	lesson_age = 0.0
 	lesson_done = false
 	difficulty = diff
+	# Cleared here rather than only where a rematch is agreed, so a request that
+	# arrived while the last summary was up cannot carry into the next match and
+	# start a third one nobody asked for.
+	rematch_asked = false
+	rematch_offered = false
 	# A lesson, a practice run and the daily are played alone. There is nobody to
 	# lose to and nothing to be distracted by, which is the entire point.
 	if mode != Mode.NORMAL:
@@ -1906,6 +1916,68 @@ func _on_multiplayer_data(packet: Dictionary) -> void:
 			if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
 				winner = "YOU"
 				_end_match(ai_side)
+		"rematch":
+			_on_net_rematch()
+
+
+# ------------------------------------------------------------------ rematch
+#
+# Rematch used to walk back to the versus screen and start a fresh search,
+# which threw away the one opponent you had just proved you could reach and
+# went looking for a stranger. The match is still open when a game ends —
+# nobody has disconnected — so the person who beat you is right there, and
+# asking them is a packet rather than a fresh forty-second matchmaking round.
+
+## True once this device has asked. Held so the button can say it is waiting
+## rather than doing nothing visible on a second press.
+var rematch_asked := false
+## True once the other end has asked us.
+var rematch_offered := false
+
+
+## Whether a rematch can be asked for at all, which is only true while the
+## opponent is still connected. A Game Center match ends the moment somebody
+## leaves — `net_active()` goes false with it — and offering a button that can
+## only fail is worse than offering nothing.
+func _rematch_possible() -> bool:
+	if not net_active():
+		# A CPU match has no one to ask and can always be re-run.
+		return difficulty != "Versus"
+	return MultiplayerManager.in_match()
+
+
+## Both ends have to want it. Whoever asks second is the one who starts the
+## match, and the other is started by the packet — so there is no vote to lose
+## and no host to elect.
+##
+## This name was taken by a netfox-era handler that put both players back in the
+## dead `Phase.LOBBY` to ready up again. Nothing had been able to call it since
+## `_net_setup` became a no-op, and it collided with this one — so it is gone
+## rather than renamed around, which would have left two rematch handlers and
+## one silent trap.
+func _on_net_rematch() -> void:
+	rematch_offered = true
+	if rematch_asked:
+		_begin_rematch()
+
+
+func _begin_rematch() -> void:
+	rematch_asked = false
+	rematch_offered = false
+	start_match("Versus", 0, [], Mode.NORMAL)
+
+
+## What the rematch button says under its name. Against a person this is the
+## only place the negotiation is visible, so it has to carry all three states:
+## nobody has asked, you have asked, they have asked.
+func _rematch_sub() -> String:
+	if not net_active():
+		return difficulty
+	if rematch_asked:
+		return "waiting for them"
+	if rematch_offered:
+		return "they want to go again"
+	return "ask for another"
 
 ## Which special this block is, if any. Rolled per block on the machine that
 ## owns the board, which is safe over a network because each board is simulated
@@ -4649,8 +4721,17 @@ func _versus_door_rects() -> Array:
 	var count := _versus_doors().size()
 	if count == 0:
 		return []
-	return _grid_rects(count, 214.0 + safe_top + _menu_offset(_versus_laid()), 2,
-		320.0, 104.0 * _versus_fill(), 20.0, 340.0, 16.0 * _versus_spread())
+	var top: float = 214.0 + safe_top + _menu_offset(_versus_laid())
+	var h: float = 104.0 * _versus_fill()
+	# The stop door is on its own, and `_grid_rects` gives a lone card its
+	# `want_w` rather than the row — so it came out 320 wide where the pair it
+	# replaces are 648, with STOP LOOKING crushed into a third of a plate. It
+	# takes the whole width the two doors between them would have used, which is
+	# also the right emphasis: it is the only thing on the screen.
+	if count == 1:
+		return _grid_rects(1, top, 1, 660.0, h, 20.0, 0.0, 16.0 * _versus_spread())
+	return _grid_rects(count, top, 2, 320.0, h, 20.0, 340.0,
+		16.0 * _versus_spread())
 
 
 ## One column on a phone, two on a desktop. `min_w` of zero forbids the wrap, so
@@ -4773,8 +4854,8 @@ func _draw_versus(size: Vector2) -> void:
 	# saying the same thing.
 	var head := _versus_state_line() if not _versus_busy() \
 		else "one on one, over Game Center"
-	_text_fit_overlay(_font, Vector2(cx, hy + 118.0), head, 13,
-		size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
+	_text_fit_overlay(_font, Vector2(cx, hy + 118.0), head, 16,
+		size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 13)
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -4785,7 +4866,7 @@ func _draw_versus(size: Vector2) -> void:
 	if not MultiplayerManager.available():
 		_text_fit_overlay(_font, Vector2(cx, hy + 214.0),
 			"Game Center is how this game finds people, and this build cannot reach it",
-			14, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 11)
+			16, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 13)
 		return
 
 	# The hint sits just under the content and the Back button goes below it at
@@ -4793,10 +4874,10 @@ func _draw_versus(size: Vector2) -> void:
 	var foot := _versus_foot() + 36.0
 	if _versus_busy():
 		_text_fit_overlay(_font, Vector2(cx, foot),
-			"this runs in the background — Game Center will bring you back", 12,
-			size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+			"this runs in the background — Game Center will bring you back", 14,
+			size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 12)
 	elif not portrait:
-		_otext(_font, Vector2(cx, foot), "1 quick match · 2 invite · ESC back", 12,
+		_otext(_font, Vector2(cx, foot), "1 quick match · 2 invite · ESC back", 14,
 			Color("#5d6a92"))
 
 
@@ -4811,20 +4892,20 @@ func _draw_versus_friends(size: Vector2) -> void:
 		if listing == MultiplayerManager.Friends.UNASKED:
 			note = "Game Center will ask before sharing your friends"
 		_text_fit_overlay(_font, Vector2(cx, top - 26.0),
-			note if note != "" else "asking Game Center", 13,
-			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
+			note if note != "" else "asking Game Center", 16,
+			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 13)
 		# Said once, under the reason, because a picker with nothing in it and no
 		# explanation is indistinguishable from one that is broken.
 		if listing == MultiplayerManager.Friends.DENIED:
 			_text_fit_overlay(_font, Vector2(cx, top),
 				"you can still take a quick match, or start one from the Game Center app",
-				12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+				14, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 12)
 		elif listing == MultiplayerManager.Friends.EMPTY:
 			# Apple's friend list is mutual — they have to let Word Wars see them
 			# too — so this is not "you have nobody" and must not read as it.
 			_text_fit_overlay(_font, Vector2(cx, top),
 				"they see the same prompt in their copy · quick match works meanwhile",
-				12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+				14, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 12)
 		return
 
 	var shown := _versus_friends().size()
@@ -4832,7 +4913,7 @@ func _draw_versus_friends(size: Vector2) -> void:
 	var label := "%d FRIEND%s" % [shown, "" if shown == 1 else "S"]
 	if total > shown:
 		label = "%d OF %d FRIENDS" % [shown, total]
-	_otext(_font_bold, Vector2(cx, top - 26.0), label, 13, Color("#7c88ad"))
+	_otext(_font_bold, Vector2(cx, top - 28.0), label, 15, Color("#7c88ad"))
 
 	for c: Dictionary in _versus_friend_cards():
 		var r: Rect2 = c["rect"]
@@ -4841,15 +4922,20 @@ func _draw_versus_friends(size: Vector2) -> void:
 			r = Rect2(r.position - Vector2(0, 3), r.size)
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
 			Color(Color("#7bdff2"), 0.9 if hot else 0.28), 10.0, 2.0)
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 24.0),
-			String(c["name"]).to_upper(), 17, r.size.x - 20.0,
-			Color.WHITE if hot else Color("#e6ecff"))
+		# Set off the row's own height, so the taller portrait row carries type to
+		# match instead of a name floating in it.
+		var nsize := int(clampf(18.0 + (r.size.y - 62.0) * 0.14, 18.0, 24.0))
+		_text_fit_overlay(_font_bold,
+			Vector2(r.get_center().x, r.position.y + r.size.y * 0.38),
+			String(c["name"]).to_upper(), nsize, r.size.x - 20.0,
+			Color.WHITE if hot else Color("#e6ecff"), 13)
 		# `is_invitable` is a hint and not a promise — the invitation is sent
 		# either way — so it is phrased as one rather than as a gate.
-		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 46.0),
+		_text_fit_overlay(_font,
+			Vector2(r.get_center().x, r.position.y + r.size.y * 0.72),
 			("%s to invite" % ["tap" if portrait else "click"]) if bool(c["open"])
-				else "may not be taking invites", 11, r.size.x - 14.0,
-			Color("#8d99bd") if bool(c["open"]) else Color("#5d6a92"), 9)
+				else "may not be taking invites", 14, r.size.x - 14.0,
+			Color("#8d99bd") if bool(c["open"]) else Color("#5d6a92"), 11)
 
 
 ## The lesson card, and the live readout a practice run is for. Both sit in the
@@ -6244,13 +6330,6 @@ func _on_net_peer_left(why: String) -> void:
 		phase = Phase.TITLE
 
 
-## A rematch puts both players back in the room to ready up again, rather than
-## silently restarting on one player's say-so.
-func _on_net_rematch() -> void:
-	phase = Phase.LOBBY
-	_hover_action = ""
-
-
 func _on_net_attack(word: String, tier: int) -> void:
 	var side : SideState = player
 	if side == null:
@@ -6597,11 +6676,23 @@ func _menu_buttons() -> Array:
 				"label": "Title", "sub": "a new board at midnight", "note": "",
 				"rating": 0, "accent": Color("#ffd166"), "action": "title"})
 			return out
+		# The opponent has to still be there to be asked. Once they have gone the
+		# button cannot do anything but fail, so the screen drops to the one door
+		# that still works rather than leaving a dead one on it.
+		if not _rematch_possible():
+			var alone := _grid_rects(1, _over_foot() + 54.0, 1, 300.0, 96.0, 20.0,
+				280.0, 14.0)
+			out.append({
+				"rect": alone[0], "key": "ESC",
+				"label": "Title", "sub": "they left the match", "note": "",
+				"rating": 0, "accent": Color("#8d99bd"), "action": "title"})
+			return out
 		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
 		out.append({
 			"rect": over[0], "key": "",
-			"label": "Rematch", "sub": difficulty, "note": "", "rating": 0,
-			"accent": PLAYER_ACCENT, "action": "rematch"})
+			"label": "Rematch", "sub": _rematch_sub(), "note": "", "rating": 0,
+			"accent": Color("#ffd166") if rematch_asked else PLAYER_ACCENT,
+			"action": "rematch", "on": rematch_offered})
 		out.append({
 			"rect": over[1], "key": "ESC",
 			"label": "Title", "sub": "pick a new opponent", "note": "", "rating": 0,
@@ -6822,12 +6913,21 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 		Profile.worn("blocks"), hot)
 	# Continuous with the plate rather than stepping at two thresholds, so a
 	# taller row carries bigger type instead of stranding small text in it.
-	var size: int = int(clampf(16.0 + (r.size.y - 40.0) * 0.11, 16.0, 26.0))
+	#
+	# Both ranges were raised after a phone test: the old 16-26 word and a sub
+	# pinned at 12 were legible on a desktop monitor at arm's length and small
+	# and hard to read on the device the game is actually played on, which is the
+	# only measurement that counts. The sub scales now rather than staying put,
+	# because a plate that doubles in height and keeps 12px caption text looks
+	# like a mistake at both ends.
+	var tx: float = r.position.x + gw + 20.0
+	var avail: float = r.end.x - tx - 12.0
+	var size := _fitted_size(_font_bold, word,
+		int(clampf(18.0 + (r.size.y - 40.0) * 0.12, 18.0, 30.0)), avail, 13)
 	_draw_tracked(_font_bold, gutter.get_center(), stamp, maxi(15, size - 2), 3.0,
 		ink)
 	var head := word.substr(0, stamp.length()) if word.to_upper().begins_with(stamp) else ""
 	var tail := word.substr(head.length())
-	var tx: float = r.position.x + gw + 20.0
 	var hw: float = _font_bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT,
 		-1, size).x
 	var ty: float = r.position.y + r.size.y * (0.37 if sub != "" else 0.5)
@@ -6838,7 +6938,9 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 	_otext_left(_font_bold, Vector2(tx, ty), head, size, bright)
 	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size, dim)
 	if sub != "":
-		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72), sub, 12,
+		var ss := _fitted_size(_font, sub,
+			int(clampf(13.0 + (r.size.y - 40.0) * 0.055, 13.0, 19.0)), avail, 11)
+		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72), sub, ss,
 			Color("#aab4d4") if hot else Color("#7c88ad"))
 
 
@@ -6885,6 +6987,24 @@ func _draw_tracked_left(font: Font, at: Vector2, text: String, size: int,
 		x += font.get_string_size(text[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + track
 
 
+## The largest size at or below `size` that fits `text` into `max_width`.
+##
+## Pulled out of `_text_fit_overlay` so the left-aligned plate text can use the
+## same rule. Type on the plates is set from the plate's height — a tall row
+## carries big type — and height says nothing about how long the word is, so
+## without this the generous sizes would run INVITE A FRIEND off the edge of a
+## landscape door.
+func _fitted_size(font: Font, text: String, size: int, max_width: float,
+		min_size: int = 9) -> int:
+	if font == null or text == "":
+		return size
+	var s := size
+	while s > min_size and font.get_string_size(
+			text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
+		s -= 1
+	return s
+
+
 ## Left-aligned overlay text, for anything that hangs off an edge rather than a
 ## centre line.
 func _otext_left(font: Font, at: Vector2, text: String, size: int,
@@ -6912,8 +7032,13 @@ func _draw_menu_button(b: Dictionary) -> void:
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
 			Color(b["accent"], 0.9 if hot else 0.26), 8.0, 2.0)
 		var key0 := String(b["key"])
-		_otext(_font_bold, r.get_center(), label if label != "" else key0,
-			15, Color.WHITE if hot else Color("#e6ecff"))
+		# Fitted rather than fixed at 15: these are the small ones — Back, the
+		# category arrows — and they are the width they are, so the size has to
+		# give way instead of the text running over the panel edge.
+		var txt := label if label != "" else key0
+		_otext(_font_bold, r.get_center(), txt,
+			_fitted_size(_font_bold, txt, 18, r.size.x - 18.0, 12),
+			Color.WHITE if hot else Color("#e6ecff"))
 		return
 
 	var stamp := String(b["stamp"]) if b.has("stamp") and String(b["stamp"]) != "" \
@@ -7259,17 +7384,25 @@ func _activate(action: String) -> void:
 		_hover_action = ""
 		Sfx.play("back")
 	elif action == "rematch":
-		# Still connected? Both players go back to the room and ready up again.
-		if Link.connected:
-			Link.request_rematch()
-		elif net_active() or difficulty == "Versus":
-			# To the versus screen and straight into the queue. Rematch is a
-			# decision already made, so it does not stop to ask again — but
-			# matchmaking is headless, and firing it from the summary screen used
-			# to leave a search running with nothing anywhere saying so and no way
-			# to call it off.
-			_activate("versus")
-			_start_quick_match()
+		if net_active():
+			# Ask the person who is already here. This used to walk back to the
+			# versus screen and start a fresh search, which threw away the one
+			# opponent you had just finished a match with and went looking for a
+			# stranger — forty seconds of matchmaking to replace somebody who was
+			# still connected and, having pressed Rematch themselves, waiting.
+			if rematch_offered:
+				# They asked first, so this press is the second yes and starts it.
+				MultiplayerManager.send_event("rematch", {})
+				_begin_rematch()
+				Sfx.play("count", 1.3)
+			elif not rematch_asked:
+				rematch_asked = true
+				MultiplayerManager.send_event("rematch", {})
+				Sfx.play("count", 1.2)
+			else:
+				# Already asked and still waiting. Say so rather than sending a
+				# second identical packet.
+				Sfx.play("reject", 1.2)
 		else:
 			# Straight from the seats, so a random opponent is genuinely rolled
 			# again rather than quietly becoming whoever it was last time.
