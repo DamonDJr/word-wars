@@ -88,6 +88,7 @@ var _peer_said_hello := false
 ## Counted only so a failed handshake can say how hard it tried. "Never
 ## answered" after one hello and after thirty are different faults.
 var _hellos_sent := 0
+var _send_failures := 0
 
 ## The people the in-app picker offers, as `GKPlayer`.
 var friends: Array = []
@@ -502,6 +503,17 @@ func _check_connected() -> void:
 	_mm().finish_matchmaking(current_match)
 	_wait_age = 0.0
 	_hello_timer = 0.0
+	_send_failures = 0
+	# `expected_player_count` reaching zero only means GameKit has stopped
+	# recruiting. `players` is who is actually attached, and a broadcast to an
+	# empty roster goes to nobody while reporting nothing wrong — which is
+	# indistinguishable, from this side, from a peer who is ignoring us.
+	var who: PackedStringArray = []
+	for p in current_match.players:
+		if p is GKPlayer:
+			who.append(String((p as GKPlayer).display_name))
+	print("[GC] match ready — %d attached: %s" % [
+		who.size(), ", ".join(who) if not who.is_empty() else "NOBODY"])
 	_set_state(State.HANDSHAKING, "saying hello")
 	# The peer's hello can arrive while this device is still CONNECTING, in which
 	# case `_begin_if_ready` was called too early to do anything and the answer is
@@ -611,19 +623,33 @@ func send_event(type: String, payload: Dictionary = {}) -> void:
 func send_state(payload: Dictionary) -> void:
 	if state != State.PLAYING or current_match == null:
 		return
-	current_match.send_data_to_all_players(
-		JSON.stringify({"type": "state", "payload": payload}).to_utf8_buffer(),
-		GKMatch.SendDataMode.UNRELIABLE
-	)
+	_send({"type": "state", "payload": payload}, GKMatch.SendDataMode.UNRELIABLE)
 
 
 func _send_raw(packet: Dictionary) -> void:
+	_send(packet, GKMatch.SendDataMode.RELIABLE)
+
+
+## Every outgoing packet, so one place can notice that sending is failing.
+##
+## `send_data_to_all_players` returns an `Error` and this used to drop it on the
+## floor. That is how a handshake which never left the device looked exactly like
+## a peer who never answered: thirty hellos, no error anywhere, and a log whose
+## only evidence was that nothing came back. The two have opposite fixes.
+func _send(packet: Dictionary, mode: int) -> void:
 	if current_match == null:
 		return
-	current_match.send_data_to_all_players(
-		JSON.stringify(packet).to_utf8_buffer(),
-		GKMatch.SendDataMode.RELIABLE
-	)
+	var err: int = current_match.send_data_to_all_players(
+		JSON.stringify(packet).to_utf8_buffer(), mode)
+	if err == OK:
+		return
+	_send_failures += 1
+	# The board mirror goes out fifteen times a second, so a broken channel would
+	# bury the whole log inside a second. Loud at first, then a heartbeat.
+	if _send_failures <= 3 or _send_failures % 30 == 0:
+		print("[GC] send failed (error %d) on '%s' — %d failed so far" % [
+			err, packet.get("type", "?"), _send_failures])
+		push_warning("Game Center: send failed — error %d" % err)
 
 
 func in_match() -> bool:

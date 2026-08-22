@@ -72,7 +72,10 @@ const CALLS := {
 ## class -> properties the manager reads or writes.
 const PROPERTIES := {
 	"GameCenterManager": ["local_player"],
-	"GKMatch": ["expected_player_count"],
+	# `players` is the attached roster, which is not the same question as
+	# `expected_player_count` and is the one that says whether a broadcast has
+	# anywhere to go.
+	"GKMatch": ["expected_player_count", "players"],
 	# `alias` and `is_invitable` are what the in-app friend picker draws each row
 	# from. Neither is load-bearing enough to crash if it moves — a missing one is
 	# a blank name or a wrong hint — which is exactly why nothing else would catch
