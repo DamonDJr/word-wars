@@ -29,6 +29,7 @@ func _init() -> void:
 	_it_survives_a_save()
 	_ads_stop()
 	_the_gap_moves()
+	_the_test_grant_is_taken_back()
 	_free_themes_are_untouched()
 	_premium_theme_actually_differs()
 	_the_menu_knows_every_block_style()
@@ -151,6 +152,55 @@ func _the_gap_moves() -> void:
 	P.ad_gap = 0
 	_expect("the file reads the gap back",
 		P._read(P.save_path) == OK and P.ad_gap == P.ADS_EVERY_MAX)
+
+
+## A pack handed out by the old test button has to be taken back on load.
+##
+## This is the bug that found itself: the button sat two taps from the volume
+## sliders, one of the three things it granted was silence from the ad break,
+## and a tap made and forgotten presented weeks later as ads that simply never
+## appeared — with nothing on any screen to say why. The button is gone, which
+## fixes it for new saves and does nothing at all for the ones already carrying
+## a grant. So the migration is the fix, and this is the check on it.
+func _the_test_grant_is_taken_back() -> void:
+	print("--- an old test grant does not survive the update ---")
+	var path := "user://profile-migrate-test.cfg"
+	var cfg := ConfigFile.new()
+	# A schema-1 file, written the way the old build wrote one: pack owned, and
+	# one of its cosmetics worn.
+	cfg.set_value("meta", "schema", 1)
+	# Past 100, so Centurion is genuinely earned — otherwise the check below
+	# passes for the wrong reason, the title being stripped as unearned rather
+	# than kept as not the pack's to take.
+	cfg.set_value("record", "matches", 140)
+	cfg.set_value("shop", "owned", {P.PACK_PREMIUM: true})
+	cfg.set_value("shop", "since_ad", 9)
+	cfg.set_value("worn", "equipped", {"theme": "prism", "title": "centurion"})
+	cfg.save(ProjectSettings.globalize_path(path))
+
+	P.owned = {}
+	P.equipped = {}
+	_expect("the old file reads", P._read(path) == OK)
+	_expect("the pack is gone", not P.owns(P.PACK_PREMIUM))
+	_expect("so ads are back on", not P.ads_removed())
+	_expect("and a break is due, having played 9", P.ad_due())
+	_expect("the premium theme came off with it", P.worn("theme") != "prism")
+	# Only what the pack paid for. An earned title is not the pack's to take.
+	_expect("but an earned title stayed on", P.worn("title") == "centurion")
+	_expect("and the record is untouched", P.matches == 140)
+
+	# A real purchase, once there is one, must not be caught by this. Saves
+	# written from here on carry the current schema and are left alone.
+	P.owned = {}
+	P.save_path = path
+	P.grant(P.PACK_PREMIUM)
+	P.owned = {}
+	_expect("a grant written at the current schema survives a reload",
+		P._read(path) == OK and P.owns(P.PACK_PREMIUM))
+
+	P.save_path = "user://profile-shop-test.cfg"
+	for suffix in ["", ".bak", ".tmp"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 ## Widening what a theme may set must not change what the existing ones do.

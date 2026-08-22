@@ -130,16 +130,22 @@ func _it_gives_back_what_was_asked_for() -> void:
 		game.phase == game.Phase.COUNTDOWN or game.phase == game.Phase.PLAY)
 	_expect("and nothing is left owed", game.ad_next == "")
 
-	# Buying instead of watching drops the rematch on purpose: coming out of the
-	# store into a match nobody asked for any more is the worse of the two.
+	# Close is the only way off the break now that the test store has gone, and
+	# it has to be the only way: a second button whose action nothing handles
+	# would sit there looking live and swallow the tap that should have closed.
 	P.since_ad = 0
 	P.ad_gap = P.ADS_EVERY_MIN
 	for i in P.ADS_EVERY_MIN:
 		_at_summary()
-	game._activate("rematch")
-	game._activate("ad_remove")
-	_expect("Remove ads goes to the store", game.phase == game.Phase.SETTINGS)
-	_expect("and does not start the rematch behind it", game.ad_next == "")
+	game._activate("title")
+	game.ad_age = game.AD_DWELL
+	var acts: PackedStringArray = []
+	for b: Dictionary in game._menu_buttons():
+		acts.append(String(b["action"]))
+	_expect("the break offers exactly one door (%s)" % ", ".join(acts),
+		acts.size() == 1 and acts[0] == "ad_close")
+	game._activate("ad_close")
+	_expect("and it leads out", game.phase == game.Phase.TITLE)
 
 
 func _the_pack_and_the_practice_modes_are_exempt() -> void:

@@ -459,7 +459,12 @@ func record_match(r: Dictionary) -> void:
 
 ## Bumped only when the on-disk shape changes in a way that needs migrating.
 ## Stored so a future version can convert an old file instead of ignoring it.
-const SCHEMA := 1
+##
+## 2: the premium pack stopped being something a button in Settings could hand
+##    out. Saves written before that may carry a grant nobody paid for, and one
+##    of the things it buys is silence from the ad break — so a forgotten test
+##    tap reads, forever after, as a game whose ads are broken. See `_migrate`.
+const SCHEMA := 2
 
 # ---------------------------------------------------------------- the daily
 #
@@ -588,7 +593,39 @@ func _read(path: String) -> Error:
 	daily_streak = int(cfg.get_value("daily", "streak", 0))
 	equipped = cfg.get_value("worn", "equipped", {})
 	prefs = cfg.get_value("worn", "prefs", {})
+	# Last, so everything a migration might have to rewrite has been read first.
+	# `equipped` in particular is loaded below `owned`, and dropping a pack means
+	# taking off what was worn from it.
+	_migrate(int(cfg.get_value("meta", "schema", 1)))
 	return OK
+
+
+## Bring an older file up to the current shape.
+##
+## Does not save. The next thing to write the profile stamps the new schema and
+## the migration stops running; until then it re-runs on every launch, which is
+## harmless because every step here has to be idempotent anyway — a half-applied
+## migration and a twice-applied one are the same file.
+func _migrate(from: int) -> void:
+	if from >= SCHEMA:
+		return
+
+	# The premium pack used to be reachable from a two-tap test button in
+	# Settings. Nobody ever paid for one, so every grant on disk is a tap
+	# somebody made while looking at something else — and it silently switches
+	# off the ad break, which is exactly how it was found.
+	#
+	# Written against `owned` directly rather than through `revoke`, which saves
+	# and emits `changed` — neither is safe from inside a load, and the second
+	# would repaint the board off a profile that is not finished reading itself.
+	if from < 2 and owned.has(PACK_PREMIUM):
+		owned.erase(PACK_PREMIUM)
+		# And take off anything that was only wearable because of it, or a pack
+		# that is gone stays on the screen until something re-equips.
+		for slot: String in SLOTS:
+			var id := String(equipped.get(slot, ""))
+			if id != "" and not is_unlocked(slot, id):
+				equipped.erase(slot)
 
 
 func save() -> void:

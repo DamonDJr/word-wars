@@ -523,9 +523,6 @@ func _draw_scrollbar(size: Vector2) -> void:
 		track.size.y * frac), Color(PLAYER_ACCENT, 0.5), true)
 
 
-## Whether the premium row is waiting for its second tap. Deliberately not
-## saved: an armed purchase should not survive leaving the screen.
-var _buy_armed := false
 ## What Game Center last said it was doing. Shown on the title screen, because
 ## matchmaking happens behind a native sheet and the moment it closes the player
 ## is looking at a menu with no explanation of what is going on.
@@ -3736,8 +3733,6 @@ func _press_back() -> void:
 	var act := _back_action()
 	if act == "":
 		return
-	if phase == Phase.SETTINGS:
-		_buy_armed = false
 	if phase == Phase.SETTINGS and settings_editing:
 		# The name field has the keyboard; back closes that before it closes the
 		# screen, or a rename is thrown away by the gesture that confirms it.
@@ -4757,23 +4752,6 @@ func _draw_settings(size: Vector2) -> void:
 				_otext(_font_bold, Vector2(sw.position.x + (26.0 if on else 66.0),
 					sw.get_center().y), "ON" if on else "OFF", 11,
 					Color("#e6ecff") if on else Color("#7c88ad"))
-			"buy":
-				# Two states before it is owned, because a purchase that goes
-				# through on the first tap is a purchase somebody made by
-				# accident. Once owned the same control hands it back, which is
-				# the only way to test the flow more than once.
-				var got2: bool = bool(row["value"])
-				var armed: bool = _buy_armed and not got2
-				var label := "OWNED" if got2 else (
-					"CONFIRM?" if armed else "BUY  ·  TEST")
-				var bw2 := 168.0
-				var br := Rect2(r.end.x - bw2 - 36.0, r.get_center().y - 17.0, bw2, 34.0)
-				_panel(br,
-					Color("#1f8a70") if got2 else (
-						Color("#5a2233") if armed else Color("#241626")),
-					Color("#ffd166") if (got2 or armed) else Color("#c77dff"),
-					9.0, 2.0)
-				_otext(_font_bold, br.get_center(), label, 13, Color("#e6ecff"))
 			"text":
 				var field := Rect2(r.end.x - 336.0, r.get_center().y - 18.0, 300.0, 36.0)
 				var editing: bool = settings_editing
@@ -4834,15 +4812,21 @@ func _settings_defs() -> Array:
 			bool(Profile.pref("fullscreen"))])
 	defs.append(["name", "text", "Your name", "shown to other players",
 		Link.my_name])
-	# The store, such as it is. One row, and the same `Profile.grant` a real
-	# purchase callback would call once a receipt validated — so what is being
-	# tested here is the thing that will ship, minus the receipt.
-	var got: bool = Profile.owns(Profile.PACK_PREMIUM)
-	defs.append(["premium", "buy", "Premium pack",
-		"no ads · FOUNDER · Prism board · Supernova win", got])
-	
+	# There was a store row here: two taps and `Profile.grant` handed over the
+	# premium pack, so the purchase flow could be exercised without a receipt.
+	#
+	# It cost more than it was worth the moment ads became real. One of the three
+	# things the pack buys is no ad break, and the button is two taps away from
+	# the volume sliders — so a tap made months ago, while looking for something
+	# else, presents later as a game whose ads have quietly stopped working, with
+	# nothing on any screen to say why. That is not a hypothetical; it is how the
+	# first play-test of the break went.
+	#
+	# Everything behind it stays: `PACK_PREMIUM`, `grant`, `revoke`, `owns`,
+	# `ads_removed` and the three cosmetics are untouched, so wiring StoreKit up
+	# is adding this row back with a receipt in front of it.
 	return defs
-	
+
 ## One table for drawing and hit-testing both, so a control that is on screen is
 ## always a control that responds.
 func _settings_rows() -> Array:
@@ -4895,30 +4879,6 @@ func _change_setting(key: String) -> void:
 		else:
 			_hide_keyboard()
 		Sfx.play("key", 1.2)
-		return
-	if key == "premium":
-		# Two taps, because a purchase that happens on the first one is a
-		# purchase somebody made by accident. The second tap is where a real
-		# store sheet would open instead.
-		if Profile.owns(Profile.PACK_PREMIUM):
-			# Owned already — the row becomes a way to hand it back, which is the
-			# only way to test the flow more than once.
-			Profile.revoke(Profile.PACK_PREMIUM)
-			_buy_armed = false
-			_say("premium pack removed", Color("#8d99bd"))
-			Sfx.play("reject", 1.1)
-			return
-		if not _buy_armed:
-			_buy_armed = true
-			_say("tap again to confirm", Color("#ffd166"))
-			Sfx.play("count", 1.2)
-			return
-		_buy_armed = false
-		Profile.grant(Profile.PACK_PREMIUM)
-		_apply_theme()
-		_say("premium unlocked — three cosmetics in Mastery", Color("#ffd166"))
-		Sfx.play("salvo", 1.15)
-		Haptics.fire("level")
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
 			or key == "haptics":
@@ -6631,7 +6591,7 @@ func _draw_gameover(size: Vector2) -> void:
 	# warning cannot promise a break the versus rule is going to skip.
 	if _ad_before("title"):
 		_text_fit_overlay(_font, Vector2(cx, _over_foot() + 4.0),
-			"a short ad plays when you leave this screen  ·  Premium removes them",
+			"a short ad plays when you leave this screen",
 			12, size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
 
 	var strip_bottom := _draw_mastery_strip(cx)
@@ -7141,21 +7101,29 @@ func _menu_buttons() -> Array:
 	# down is a mis-tap waiting to happen.
 	if phase == Phase.AD:
 		var card := _ad_card()
-		var bw: float = (card.size.x - AD_PAD * 2.0 - 12.0) * 0.5
 		var by: float = card.end.y - AD_PAD - AD_FOOT
 		var live := _ad_closable()
+		# Close, and nothing beside it.
+		#
+		# There was a "Remove ads" button here, on the reasoning that this is the
+		# one screen where not seeing ads is a thing the player is actively
+		# wishing for. That reasoning is still right and the button should come
+		# back — but the row it opened has gone with the test store, so all it
+		# leads to now is a Settings screen with nothing to buy on it. An offer
+		# that goes nowhere is worse than no offer.
+		#
+		# Centred and narrow rather than filling the card. Past 230 across,
+		# `_draw_menu_button` promotes a button to the branded plate — stamp
+		# gutter, block grid, the treatment the title screen's doors wear — and a
+		# full-bleed Close came out reading "CLO" and "CLOSE" at once. It is also
+		# just the wrong shape: a network's close control is a small thing in a
+		# corner, and the mock should not be teaching a bigger one.
+		var bw: float = minf(220.0, card.size.x - AD_PAD * 2.0)
 		out.append({
-			"rect": Rect2(card.position.x + AD_PAD, by, bw, AD_FOOT), "key": "",
+			"rect": Rect2(card.get_center().x - bw * 0.5, by, bw, AD_FOOT), "key": "",
 			"label": "Close" if live else "%ds" % _ad_left(), "sub": "", "note": "",
 			"rating": 0, "accent": PLAYER_ACCENT if live else Color("#2b3559"),
 			"action": "ad_close" if live else "ad_wait"})
-		# The other half of the pack, offered where it is worth the most. This is
-		# the only screen in the game where "no ads" is a thing the player is
-		# currently wishing for.
-		out.append({
-			"rect": Rect2(card.position.x + AD_PAD + bw + 12.0, by, bw, AD_FOOT),
-			"key": "", "label": "Remove ads", "sub": "", "note": "", "rating": 0,
-			"accent": Color("#ffd166"), "action": "ad_remove"})
 		return out
 
 	# SPLASH counts as TITLE here: the menu is being drawn underneath the art as
@@ -8118,14 +8086,6 @@ func _activate(action: String) -> void:
 		# button that makes no sound reads as a broken one, and the next thing a
 		# player does about a broken button is hammer it.
 		Sfx.play("reject", 1.2)
-	elif action == "ad_remove":
-		# Straight to the pack, and the break is spent either way: it was served,
-		# and the thing it was owed is dropped on the floor along with it. Coming
-		# out of a purchase screen back into a rematch nobody asked for any more
-		# is worse than making them press Rematch again.
-		ad_next = ""
-		ad_age = 0.0
-		_activate("settings")
 	elif action == "solo":
 		phase = Phase.SOLO
 		_hover_action = ""
@@ -8146,7 +8106,6 @@ func _activate(action: String) -> void:
 	elif action == "settings":
 		phase = Phase.SETTINGS
 		settings_editing = false
-		_buy_armed = false
 		_hover_action = ""
 		Sfx.play("count", 1.1)
 	elif action == "daily":
