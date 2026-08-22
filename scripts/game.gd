@@ -168,11 +168,19 @@ const CLUTCH_TIME := 4.5
 ## a pardon.
 const CLUTCH_RATE := 0.3
 
+## `solo` is what the same power did in a run with nobody to hit — see `_strike`.
+## Saying "sent it back" on a board with no opponent was the daily's other quiet
+## lie, alongside the LESSON chip: the rule fired, the banner named a thing that
+## did not happen, and the points arrived unexplained.
 const POWERS := {
-	"COUNTER": {"tint": "#7bdff2", "bonus": 150, "note": "sent it back"},
-	"COMBO": {"tint": "#ffd166", "bonus": 250, "note": "next hit is bigger"},
-	"PERFECT": {"tint": "#c77dff", "bonus": 500, "note": "free attack"},
-	"CLUTCH": {"tint": "#90be6d", "bonus": 300, "note": "garbage slowed"},
+	"COUNTER": {"tint": "#7bdff2", "bonus": 150, "note": "sent it back",
+		"solo": "shot down, paid out"},
+	"COMBO": {"tint": "#ffd166", "bonus": 250, "note": "next hit is bigger",
+		"solo": "next hit pays more"},
+	"PERFECT": {"tint": "#c77dff", "bonus": 500, "note": "free attack",
+		"solo": "paid twice"},
+	"CLUTCH": {"tint": "#90be6d", "bonus": 300, "note": "garbage slowed",
+		"solo": "garbage slowed"},
 }
 ## Loudest last, so a word that trips several announces the best of them nearest
 ## the eye and does not bury it under the ordinary ones.
@@ -251,15 +259,68 @@ enum Mode { NORMAL, TUTORIAL, TRAINING, DAILY }
 ## The daily board: one run, everybody gets the same one, and it is over when
 ## the clock runs out rather than when somebody wins.
 ##
-## There is no opponent. A shared board only means anything if the thing being
-## compared is the same for everyone, and an opponent — human or CPU — makes
-## every run diverge on its second word. So the pressure is the ambient clock
-## and nothing else, and what is being measured is how much you can wring out
-## of three minutes of it.
-const DAILY_SECONDS := 180.0
+## There is no opponent, and no second board pretending to be one. A shared
+## board only means anything if the thing being compared is the same for
+## everyone, and an opponent — human or CPU — makes every run diverge on its
+## second word. So the pressure is the ambient clock and nothing else, and what
+## is being measured is how much you can wring out of it.
+##
+## A minute, not three. Three minutes of solitaire against a clock that starts
+## at twenty-two seconds a block is not a contest, it is a warm-up that outlasts
+## its own interest — and the score it produces is mostly a measure of patience.
+## Sixty seconds is short enough that the whole run is the interesting part, and
+## short enough to want another go at tomorrow.
+const DAILY_SECONDS := 60.0
+## When the clock turns red. Lands on the last size step, so the alarm and the
+## thing it is warning about are the same moment.
+const DAILY_ALARM := 12.0
 ## The block kinds are part of the day. Rolled from the seed, so the setting is
 ## as fixed as the letters are.
-const DAILY_KIND_POOL := ["bomb", "armoured", "volatile", "split", "frozen", "cursed"]
+##
+## Spelled the way `KIND_NAMES` spells them. They were not — "armoured" and
+## "cursed" here against "armored" and "curse" there — so on roughly half of all
+## days `_roll_kind` looked up a key that did not exist and every block on the
+## board came out of a failed dictionary read.
+const DAILY_KIND_POOL := ["bomb", "armored", "volatile", "split", "frozen", "curse"]
+
+## How hard the minute leans on you.
+##
+## Built around a phone typist at 36-38 wpm, which is the speed that actually
+## turns up: at that rate a word is found and fired about every three seconds,
+## and each one takes out one or two blocks. So garbage arriving every ~1.6
+## seconds by the end is meant to be faster than anyone can answer. Losing
+## ground is the shape of the last fifteen seconds; the three lives are what
+## make that a scoring decision rather than a death.
+const DAILY_PRESSURE_START := 3.4
+const DAILY_PRESSURE_MIN := 1.6
+const DAILY_PRESSURE_STEP := 0.14
+## Seconds elapsed at which ambient garbage steps up a size. Rate alone runs out
+## of room — below about a second and a half the blocks arrive faster than the
+## eye reads them — so the back half of the run escalates by weight instead.
+const DAILY_TIER_AT := [25.0, 48.0]
+
+## How full the board is before the first word is typed, as a fraction of its
+## cells, rolled from the day's seed.
+##
+## An empty board asks nothing for the first twenty seconds, which in a
+## sixty-second run is a third of it spent waiting. Starting a quarter to a half
+## buried means the first word already matters, and it is one more thing the
+## seed fixes: everybody digs out of the same hole.
+const DAILY_OPEN_MIN := 0.25
+const DAILY_OPEN_MAX := 0.45
+## Sizes the opening pile is built from. No 3x3 or 4x3 — a slab that big in the
+## first second is a wall, not a starting position.
+const DAILY_OPEN_TIERS := [0, 0, 1, 1, 2, 3]
+
+## What an attack is worth when there is nobody to attack it with.
+##
+## Everything the game builds towards — the tier a chain earns, the block a
+## COUNTER sends straight back, the free attack a PERFECT buys, a salvo — has no
+## target in a solo run. Switching those rules off would leave the daily a
+## thinner game than the one it is drawn from, so instead each one is paid in
+## score, priced by the damage it would have done: one cell of block you would
+## have put on somebody, this many points.
+const DAILY_STRIKE_PAY := 80
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -874,12 +935,13 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# screen, so the clock does not sit behind the Dynamic Island.
 	var top := safe_top
 
-	var clock: float = daily_left() if mode == Mode.DAILY else match_time
+	var daily: bool = mode == Mode.DAILY
+	var clock: float = daily_left() if daily else match_time
 	var kick := score_kick * score_kick
 	_text_pair(_font_bold, _font_bold, Vector2(cx, top + 34.0),
-		"%d:%02d" % [int(clock) / 60, int(clock) % 60],
+		_daily_clock(clock) if daily else "%d:%02d" % [int(clock) / 60, int(clock) % 60],
 		_commas(int(round(score_shown))), 26, int(26 + 8.0 * kick),
-		Color("#ff6b6b") if (mode == Mode.DAILY and clock <= 15.0) else Color("#e6ecff"),
+		Color("#ff6b6b") if (daily and clock <= DAILY_ALARM) else Color("#e6ecff"),
 		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 34.0)
 	_text_centered(_font, Vector2(cx, top + 60.0),
 		"pressure in %ds" % int(ceil(pressure_timer)), 11, Color("#5d6a92"))
@@ -1129,7 +1191,13 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		block_kinds = daily_kinds()
 	else:
 		WordBank.free_run()
-	slots_in_play = clampi(1 + bots, 2, SLOTS)
+	# The daily is one board and says so. Every other mode keeps a second seat in
+	# the match so the layouts and draw routines have the two sides they were
+	# written for, but the daily was paying for that with a rival chip labelled
+	# LESSON along the top of a phone and a LESSON row on its own summary — a
+	# solo run that looked for all the world like a match against the tutorial
+	# bot. Nothing here is sent anywhere, so there is nothing for the seat to do.
+	slots_in_play = 1 if mode == Mode.DAILY else clampi(1 + bots, 2, SLOTS)
 	if lineup.is_empty():
 		lineup = _bot_lineup(diff, slots_in_play - 1)
 
@@ -1182,7 +1250,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		s.in_danger = false
 		s.flash = 0.0
 		s.target = 0
-	if mode != Mode.NORMAL:
+	if mode == Mode.TUTORIAL or mode == Mode.TRAINING:
 		# The second board is left in the match so every layout and every draw
 		# routine still has the two sides they were written for, but nobody is
 		# home: no bot, no attacks, nothing to answer.
@@ -1212,6 +1280,12 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		# first block takes twenty-two seconds to turn up.
 		pressure_interval = float(TRAINING_PACE[train_pace]["every"])
 		pressure_timer = pressure_interval
+	elif mode == Mode.DAILY:
+		pressure_interval = DAILY_PRESSURE_START
+		pressure_timer = DAILY_PRESSURE_START
+		# Last, because it is the only thing here that touches the board, and it
+		# has to survive the `reset()` every side just took.
+		_deal_daily_opening()
 	winner = ""
 	shake = 0.0
 	flash = 0.0
@@ -1368,6 +1442,67 @@ func daily_kinds(key: String = "") -> Array:
 ## How long is left of the daily run.
 func daily_left() -> float:
 	return maxf(0.0, DAILY_SECONDS - match_time)
+
+
+## The sprint clock, as the player reads it.
+##
+## Not `m:ss`. A minute-long run spends fifty-nine of its sixty seconds showing a
+## leading "0:", which is a whole digit of nothing, and the last ten seconds are
+## the ones being counted — so they get tenths, and the readout visibly speeds up
+## exactly when the run does.
+func _daily_clock(left: float) -> String:
+	if left <= DAILY_ALARM:
+		return "%.1f" % left
+	return "%d" % int(ceil(left))
+
+
+## True while nothing you fire has anywhere to go. One test, read by everything
+## that would otherwise send a block, so there is exactly one place to look when
+## asking why a daily does not attack.
+func solo_run() -> bool:
+	return mode == Mode.DAILY
+
+
+## Deal the pile the day starts on.
+##
+## Every draw here comes off `WordBank.rng` — the sizes, the stamps, the special
+## kinds and, inside `add_garbage`, the column each block falls down. That is
+## the whole promise of a daily: two machines that agree on the date sit down in
+## front of the identical mess.
+func _deal_daily_opening() -> void:
+	var room := WWBoard.COLS * WWBoard.ROWS
+	var target := int(round(float(room)
+		* WordBank.rng.randf_range(DAILY_OPEN_MIN, DAILY_OPEN_MAX)))
+	# The pile is built out of whole blocks, so it lands near the target rather
+	# than on it. The guard is against the one case that does not terminate: a
+	# board too congested to place anything, where `cell_count` stops moving.
+	var guard := 0
+	while player.board.cell_count() < target and guard < room:
+		guard += 1
+		var tier: int = int(DAILY_OPEN_TIERS[
+			WordBank.rng.randi_range(0, DAILY_OPEN_TIERS.size() - 1)])
+		var spec: Dictionary = TIERS[tier]
+		var kind := _roll_kind()
+		var want: int = BOMB_STAMP_WANT if kind == WWBoard.Kind.BOMB else STAMP_WANT
+		var stamp := _mint_stamp(WordBank.random_common(), want, player)
+		if not player.board.add_garbage(stamp, tier, spec["w"], spec["h"], kind):
+			break
+	player.board.snap_to_grid()
+	_log("today's board is already %d%% full" %
+		int(round(float(player.board.cell_count()) / float(room) * 100.0)),
+		Color("#ffd166"))
+
+
+## How big the ambient blocks are right now. The run escalates by weight as well
+## as by rate, because rate alone runs out of room: much under a second and a
+## half apart and the blocks arrive faster than they can be read, which is not
+## pressure, it is noise.
+func _daily_tier() -> int:
+	var t := 0
+	for at: float in DAILY_TIER_AT:
+		if match_time >= at:
+			t += 1
+	return mini(t, TIERS.size() - 1)
 
 
 ## Extra weight when a board is being ganged up on.
@@ -1735,10 +1870,17 @@ func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 # ------------------------------------------------------------------ core rules
 
 func _play_word(attacker: SideState, word: String) -> void:
-	var defender: SideState = sides[attacker.target]
-	if not _is_valid_target(attacker, defender):
-		defender = _pick_target_for(attacker)
-		_aim(attacker, defender)
+	# In a solo run there is nobody to aim at, and `_pick_target_for` answers an
+	# empty room by handing back the shooter. Left to run, that points every word
+	# you fire at your own board. Nothing is sent in a solo run — see
+	# `_strike` — but the aim is settled here rather than relying on the send
+	# being skipped further down.
+	var defender: SideState = null
+	if not solo_run():
+		defender = sides[attacker.target]
+		if not _is_valid_target(attacker, defender):
+			defender = _pick_target_for(attacker)
+			_aim(attacker, defender)
 	attacker.used[word] = true
 	attacker.words_played += 1
 	if attacker == player:
@@ -1821,9 +1963,8 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var out_tier := clampi(_chain_tier(attacker.chain) + combo + spent + focus,
 		0, TIERS.size() - 1)
 
-	if out_tier >= 0:
-		_send_block(defender, word, out_tier, DROP_DELAY, attacker)
-		_throw(attacker, defender, out_tier, word.substr(maxi(0, word.length() - 3)))
+	earned += _strike(attacker, defender, word, out_tier, DROP_DELAY,
+		word.substr(maxi(0, word.length() - 3)))
 
 	earned += _fire_powers(attacker, defender, word, powers, out_tier, intercepted)
 	_note_best(attacker, word, earned)
@@ -1869,6 +2010,34 @@ func _note_best(side: SideState, word: String, earned: int) -> void:
 	if earned > side.best_word_score:
 		side.best_word_score = earned
 		side.best_word = word
+
+
+## An attack going out, whether or not there is anyone out there.
+##
+## Every hit in the game funnels through here, which is the point: the rules
+## that decide how big a hit is — the chain ladder, the combo, a tier owed by an
+## earlier COMBO — are the same rules in a solo run as in a match, and only the
+## last step differs. With a rival, the block is sent and thrown. Without one it
+## is cashed at `DAILY_STRIKE_PAY` a cell, so the ladder still pays for exactly
+## what it paid for before and the daily is the same game rather than a
+## defanged copy of it.
+##
+## Returns what it was worth in points, which is zero whenever it was worth a
+## block instead.
+func _strike(attacker: SideState, defender: SideState, word: String, tier: int,
+		delay: float, text: String = "") -> int:
+	if tier < 0:
+		return 0
+	if not solo_run():
+		_send_block(defender, word, tier, delay, attacker)
+		_throw(attacker, defender, tier, text)
+		return 0
+	var pay := _cells(tier) * DAILY_STRIKE_PAY
+	attacker.score += pay
+	if attacker == player:
+		_pop_score("+%s" % _commas(pay), _tier_name(tier), pay)
+		score_kick = minf(1.0, score_kick + 0.30)
+	return pay
 
 
 ## One block on its way. The defender mints its own stamp over a network,
@@ -2157,18 +2326,24 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 		var spec: Dictionary = POWERS[name]
 		var tint := Color(String(spec["tint"]))
 
+		# Each of these is a rule about damage, and `_strike` is what decides
+		# whether damage means a block or means points. So all four survive a
+		# solo run intact: COUNTER still pays for shooting something down before
+		# it lands, COMBO still promises the next word is bigger, PERFECT is
+		# still worth the whole hit twice. CLUTCH is the one that needs no
+		# translation — a reprieve is a reprieve whether or not anyone is
+		# shooting at you.
 		match name:
 			"COUNTER":
 				# Literally back where it came from: one for one, so it can never
 				# pay out more than was aimed at you in the first place.
 				for i in intercepted:
-					_send_block(defender, word, 0, DROP_DELAY + 0.25 + i * 0.12, attacker)
-					_throw(attacker, defender, 0, "")
+					paid += _strike(attacker, defender, word, 0,
+						DROP_DELAY + 0.25 + i * 0.12)
 			"COMBO":
 				attacker.tier_bonus = 1
 			"PERFECT":
-				_send_block(defender, word, out_tier, DROP_DELAY + 0.4, attacker)
-				_throw(attacker, defender, out_tier, "")
+				paid += _strike(attacker, defender, word, out_tier, DROP_DELAY + 0.4)
 			"CLUTCH":
 				attacker.slowdown = CLUTCH_TIME
 
@@ -2178,7 +2353,8 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 		var bonus := int(spec["bonus"])
 		attacker.score += bonus
 		paid += bonus
-		_log("%s: %s — %s" % [attacker.label, name, String(spec["note"])], tint)
+		_log("%s: %s — %s" % [attacker.label, name,
+			String(spec["solo"] if solo_run() else spec["note"])], tint)
 		if attacker == player:
 			_pop_power(name, bonus, tint)
 			score_kick = 1.0
@@ -2282,7 +2458,14 @@ func _voice_attack(attacker: SideState, cleared: int, intercepted: int, out_tier
 func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: int) -> void:
 	var power := SALVO_BLOCKS + combo
 
-	if net_active() and not _owned_here(defender):
+	# Ten cells of damage is ten cells of damage. A solo salvo pays for all of
+	# them at the same rate every other hit is paid at, which makes riding a
+	# chain to the top of the ladder the single biggest thing you can do in a
+	# minute — as it should be, since it costs nine clean words in a row.
+	var rain := 0
+	if solo_run():
+		rain = power * DAILY_STRIKE_PAY
+	elif net_active() and not _owned_here(defender):
 		MultiplayerManager.send_event("salvo", {"word": word, "count": power})
 		defender.flash = 1.0
 	else:
@@ -2302,7 +2485,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	attacker.salvo_flash = 1.0
 	# Paid on top of the word that cashed the run in, which `_play_word` has
 	# already banked at full chain.
-	var bounty: int = Scoring.SALVO_BONUS * Scoring.SCALE
+	var bounty: int = Scoring.SALVO_BONUS * Scoring.SCALE + rain
 	attacker.score += bounty
 	if attacker == player:
 		_pop_score("SALVO +%s" % _commas(bounty), "", bounty)
@@ -2311,14 +2494,15 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	attacker.chain_fill = 0.0
 	attacker.chain_timer = 0.0
 
-	_log("%s: %s — SALVO (%d blocks)" % [attacker.label, word.to_upper(), power],
-		Color("#ffd166"))
+	_log("%s: %s — SALVO (%d %s)" % [attacker.label, word.to_upper(), power,
+		"blocks paid" if solo_run() else "blocks"], Color("#ffd166"))
 
 	var mine := attacker == player
 	Sfx.play("salvo", 1.0, 0.0 if mine else -8.0)
 	if mine:
 		Haptics.fire("salvo")
-		_say("SALVO — %d blocks away, chain spent" % power, Color("#ffd166"))
+		_say("SALVO — %s, chain spent" % [("+%s" % _commas(bounty)) if solo_run()
+			else ("%d blocks away" % power)], Color("#ffd166"))
 		shake = maxf(shake, 0.5)
 		_bloom(Color("#ffd166"), 0.30)
 		_hitstop(HITSTOP_SALVO)
@@ -2332,7 +2516,8 @@ func _report(attacker: SideState, word: String, cleared: int, intercepted: int,
 	if intercepted > 0:
 		bits.append("shot down %d" % intercepted)
 	if out_tier >= 0:
-		var how := "sent %dx%d" % [TIERS[out_tier]["w"], TIERS[out_tier]["h"]]
+		var how := "%s %dx%d" % ["banked" if solo_run() else "sent",
+			TIERS[out_tier]["w"], TIERS[out_tier]["h"]]
 		# Worth saying out loud, or a COMBO's promise cashes in invisibly.
 		if spent > 0:
 			how += " (+%d tier)" % spent
@@ -2353,7 +2538,8 @@ func _report(attacker: SideState, word: String, cleared: int, intercepted: int,
 	elif intercepted == 1:
 		_say("shot it down", PLAYER_ACCENT)
 	elif out_tier >= 0:
-		_say("sent %s" % _tier_name(out_tier), PLAYER_ACCENT)
+		_say("%s %s" % ["banked" if solo_run() else "sent", _tier_name(out_tier)],
+			PLAYER_ACCENT)
 	else:
 		_say("absorbed", Color("#8892b0"))
 
@@ -2703,6 +2889,15 @@ func _tick_pressure(delta: float) -> void:
 	if mode == Mode.TRAINING:
 		# A fixed pace, because the point is to practise at a speed you chose.
 		pressure_timer = float(TRAINING_PACE[train_pace]["every"])
+	elif mode == Mode.DAILY:
+		# Its own ramp, an order of magnitude tighter than a match's. A match
+		# has an opponent supplying most of the pressure and can afford to open
+		# at twenty-two seconds a block; a solo minute cannot afford to open at
+		# anything, and the whole run would be over before the standard ramp had
+		# taken its third step.
+		pressure_interval = maxf(DAILY_PRESSURE_MIN,
+			pressure_interval - DAILY_PRESSURE_STEP)
+		pressure_timer = pressure_interval
 	else:
 		pressure_interval = maxf(PRESSURE_MIN, pressure_interval - PRESSURE_STEP)
 		pressure_timer = pressure_interval
@@ -2739,9 +2934,20 @@ func _seed_pressure(source: String) -> void:
 		if side.slowdown > 0.0:
 			continue
 		var p := Pending.new()
-		p.tier = 0
-		p.prefix = _mint_stamp(source, STAMP_WANT, side)
-		p.cells = _cells(0)
+		# In a match the ambient block is always the smallest one there is, and
+		# always plain — it is a metronome under a fight somebody else is
+		# supplying. In the daily it is the entire fight, so it is the one thing
+		# that has to escalate, and it is where the day's block kinds live:
+		# nothing is sent in a solo run, so ambient pressure is the only way a
+		# frozen or a cursed block ever reaches the board after the opening pile.
+		if mode == Mode.DAILY:
+			p.tier = _daily_tier()
+			p.kind = _roll_kind()
+		else:
+			p.tier = 0
+		p.prefix = _mint_stamp(source,
+			BOMB_STAMP_WANT if p.kind == WWBoard.Kind.BOMB else STAMP_WANT, side)
+		p.cells = _cells(p.tier)
 		p.timer = DROP_DELAY
 		side.pending.append(p)
 		fed += 1
@@ -2901,12 +3107,17 @@ func _finish_daily() -> void:
 	_hover_action = ""
 	_clear_hitstop()
 	tracers.clear()
-	winner = "YOU"
+	# There is nobody to beat, so this is not "did you win" — it is "did you last
+	# the minute". Everything downstream reads it: the tint, the confetti, the
+	# music the summary comes up under. A run that burned all three lives with
+	# twenty seconds still on the clock used to get the victory fanfare.
+	var survived: bool = player.lives > 0
+	winner = "YOU" if survived else ""
 	Profile.record_daily(daily_key(), player.score, int(round(_wpm())),
 		player.words_played, player.best_chain)
 	earned = {}
-	Sfx.play("win")
-	Haptics.fire("win")
+	Sfx.play("win" if survived else "lose")
+	Haptics.fire("win" if survived else "life")
 	WordBank.free_run()
 
 
@@ -2942,13 +3153,22 @@ func _lose_life(side: SideState) -> void:
 		side.chain_fill = 0.0
 		side.chain_timer = 0.0
 		side.pending.clear()
-		side.board.reset()
+		side.in_danger = false
+		# Taken apart rather than blinked out, the same as a match. `reset()`
+		# left a board's worth of blocks simply ceasing to exist, which on a
+		# sixty-second run is the single most expensive moment in it going by
+		# unremarked.
+		side.board.detonate()
+		shake = maxf(shake, 0.7)
 		side.respite = RESPITE
 		side.life_flash = 1.0
 		Sfx.play("lose")
 		Haptics.fire("life")
 		if side.lives <= 0:
 			_finish_daily()
+		elif side == player:
+			_say("topped out — %d %s left" % [side.lives,
+				"life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
 		return
 	if mode != Mode.NORMAL:
 		side.chain = 0
@@ -5044,11 +5264,19 @@ func _draw_coaching(size: Vector2) -> void:
 	# own readout rather than falling through to the tutorial card, which is what
 	# it did on its first run: a daily board that opened on "STEP 1 OF 7".
 	if mode == Mode.DAILY:
+		# The centre column exists in landscape because the rival board is not
+		# using it. On a phone there is no centre column — the board is in the
+		# middle of the screen — and this card was being painted straight across
+		# the playfield, over the stack it is reporting on. The portrait header
+		# already carries the clock, the score and the lives, which is all of
+		# this card that is not the date.
+		if portrait:
+			return
 		var left := daily_left()
-		_otext(_font_bold, Vector2(cx, 300.0), "DAILY BOARD", 16, Color("#ffd166"))
+		_otext(_font_bold, Vector2(cx, 300.0), "DAILY SPRINT", 16, Color("#ffd166"))
 		_otext(_font, Vector2(cx, 322.0), daily_key(), 11, Color("#5d6a92"))
 		var rows2 := [
-			["TIME LEFT", "%d:%02d" % [int(left) / 60, int(left) % 60]],
+			["TIME LEFT", _daily_clock(left)],
 			["SCORE", _commas(player.score)],
 			["BEST CHAIN", "x%d" % player.best_chain],
 			["LIVES", str(player.lives)],
@@ -5057,7 +5285,7 @@ func _draw_coaching(size: Vector2) -> void:
 		for r: Array in rows2:
 			_otext_pair(_font, _font_bold, Vector2(cx, y2), r[0], r[1], 11, 16,
 				Color("#5d6a92"),
-				Color("#ff6b6b") if (r[0] == "TIME LEFT" and left <= 15.0)
+				Color("#ff6b6b") if (r[0] == "TIME LEFT" and left <= DAILY_ALARM)
 					else Color("#e6ecff"), 30.0)
 			y2 += 28.0
 		_otext(_font, Vector2(cx, y2 + 14.0), "one run — no second go", 11,
@@ -6082,9 +6310,19 @@ func _draw_gameover(size: Vector2) -> void:
 			"supernova":
 				Cosmetics.victory_supernova(_overlay, size, Vector2(cx, 200.0), t, tint)
 
-	_otext(_font_bold, Vector2(cx, 132), "YOU WIN" if win else "YOU LOSE", 68, tint)
-	var wm := _font_bold.get_string_size("YOU WIN" if win else "YOU LOSE",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 68)
+	# A sprint has nothing to win. "YOU WIN" over a solo run against a clock is
+	# the summary claiming a rival was beaten, which is the same lie the LESSON
+	# chip used to tell during the run — and it says it whether the minute ended
+	# on the clock or on the last life, so it is not even reporting the run.
+	var headline := "YOU WIN" if win else "YOU LOSE"
+	if mode == Mode.DAILY:
+		headline = "TIME" if win else "TOPPED OUT"
+	# Sized down past the eight characters the slot was cut for, so the longest
+	# of them is no wider on screen than the shortest — 68 was measured against
+	# "YOU LOSE" and a phone has no margin to spare.
+	var hsize := 68 if headline.length() <= 8 else 52
+	_otext(_font_bold, Vector2(cx, 132), headline, hsize, tint)
+	var wm := _font_bold.get_string_size(headline, HORIZONTAL_ALIGNMENT_LEFT, -1, hsize)
 	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170, wm.x, 3), Color(tint, 0.45), true)
 
 	# The score is the headline, above the tiles rather than inside one. Winning
@@ -6121,7 +6359,7 @@ func _draw_gameover(size: Vector2) -> void:
 		int(match_time) / 60, int(match_time) % 60,
 		difficulty.to_upper() if not net_active() else "VERSUS"]
 	if mode == Mode.DAILY:
-		subtitle = "DAILY BOARD  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
+		subtitle = "DAILY SPRINT  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
 	_text_fit_overlay(_font, Vector2(cx, _scoreboard_top() - 30.0), subtitle,
 		_over_size(15), size.x - GRID_MARGIN * 2.0, Color("#7c88ad"), 11)
 
@@ -6156,8 +6394,12 @@ func _draw_gameover(size: Vector2) -> void:
 	# summary impossible to read — and it was pinned at 674, which the buttons
 	# now sit on top of.
 	if not portrait:
+		# The daily has no Rematch button — that is the whole shape of one run a
+		# day — so it must not be told to click one.
 		_otext(_font, Vector2(cx, strip_bottom + 26.0),
-			"click Rematch to go again      ESC — title", 13, Color("#4d5878"))
+			"ESC — title" if mode == Mode.DAILY
+				else "click Rematch to go again      ESC — title",
+			13, Color("#4d5878"))
 
 
 ## What the win was worth, kept so the summary can reconcile its own headline.
@@ -6940,7 +7182,7 @@ func _title_modes() -> Array:
 	var fresh: bool = not bool(Profile.pref("taught"))
 	var dkey := daily_key()
 	var spent: bool = Profile.daily_done(dkey)
-	var dsub := "One run, the same board for everyone"
+	var dsub := "%d seconds, one run, the same board for everyone" % int(DAILY_SECONDS)
 	if spent:
 		dsub = "Played — %s. New board at midnight." % _commas(
 			int(Profile.daily_result(dkey).get("score", 0)))

@@ -10,6 +10,11 @@ extends SceneTree
 ## "One run a day" is the other. A crash, a reload, or a second trip through the
 ## door must not buy a second attempt at a board you have already seen.
 ##
+## And a third, added when the daily became a sprint: it is a run alone against
+## a clock. Nothing is sent, nothing is faced, and there is no second seat in
+## the match — which the daily used to have, filled with an opponent labelled
+## LESSON that a phone drew as a rival chip along the top of the screen.
+##
 ##   godot --headless --script tools/dailytest.gd
 
 var game: Node
@@ -31,6 +36,10 @@ func _init() -> void:
 	_the_day_is_stable()
 	_one_run_a_day()
 	_the_day_is_the_players_own()
+	_it_is_a_run_alone()
+	_it_opens_part_buried()
+	_damage_becomes_score()
+	_the_minute_leans_on_you()
 
 	print("--- %s ---" % ("daily behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -137,6 +146,202 @@ func _the_day_is_the_players_own() -> void:
 	# And the settings travel with the date too, not just the letters.
 	_expect("a date always picks the same block kinds",
 		game.daily_kinds("2026-07-07") == game.daily_kinds("2026-07-07"))
+
+	# The kinds are looked up by name in `KIND_NAMES` when a block is minted, so
+	# a pool that spells them any other way is not a different flavour of
+	# English, it is a dictionary miss on every block of that day.
+	for kind: String in game.DAILY_KIND_POOL:
+		_expect("the pool's \"%s\" is a kind the game knows" % kind,
+			game.KIND_NAMES.has(kind))
+
+
+## Nobody else is in the room. This is the one that regressed silently: the
+## daily kept a second seat so the layouts had two sides to draw, and a phone
+## drew that seat as a rival chip labelled LESSON — a solo run that looked
+## exactly like a match against the tutorial bot.
+func _it_is_a_run_alone() -> void:
+	print("--- a run alone ---")
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+
+	_expect("the run is a minute", game.DAILY_SECONDS == 60.0)
+	_expect("one seat is in the match", game.slots_in_play == 1)
+	var others := 0
+	for s in game.sides:
+		if s.slot > 0 and s.in_match:
+			others += 1
+	_expect("and no second board is in it", others == 0)
+	_expect("there is no bot", game.sides[1].bot == null)
+	_expect("and nothing is labelled LESSON", game.sides[1].label != "LESSON")
+	_expect("the summary would list one row", game._scoreboard_sides().size() == 1)
+	_expect("and the mode knows it is solo", game.solo_run())
+
+	# The clock is what ends it, from the top of the run to the bottom.
+	game.match_time = 0.0
+	_expect("a fresh run has the whole minute", game.daily_left() == 60.0)
+	game.match_time = 61.0
+	_expect("and none of it once the clock is out", game.daily_left() == 0.0)
+
+
+## A quarter to a half buried before the first word, and the same hole for
+## everybody who sits down on the same date.
+## `WWBoard` is deliberately not named here. Referring to the class by name from
+## a `--script` suite pulls board.gd into this file's compilation, where the
+## `WordBank` autoload it uses is not bound yet — which fails the whole suite
+## before a single test runs, and takes game.gd down with it. Everything board
+## comes off the live instance instead, constants included.
+func _it_opens_part_buried() -> void:
+	print("--- it opens part buried ---")
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	var board = game.player.board
+	var room: int = int(board.COLS) * int(board.ROWS)
+	var fill := float(board.cell_count()) / float(room)
+	_expect("the board opens at least a quarter full", fill >= 0.25)
+	_expect("and no more than half full", fill <= 0.55)
+	_expect("with stamps on it to answer", not board.prefixes().is_empty())
+
+	# Dealt, not dropped: the pile has to be sitting still when the countdown
+	# starts, or the first thing the run does is rain twenty blocks onto a board
+	# the player has not been given a chance to read.
+	var falling := 0
+	for b in board.blocks:
+		if b.vis.y < b.gy * float(board.CELL):
+			falling += 1
+	_expect("and settled rather than still falling", falling == 0)
+
+	# The same day is the same hole. Compared as the stamps in the order they
+	# were dealt, since that is the whole of what the player is looking at.
+	var deal_a := _opening_stamps()
+	var deal_b := _opening_stamps()
+	_expect("the same day deals the same opening", deal_a == deal_b)
+
+
+## Restart the run and read back what was dealt.
+func _opening_stamps() -> Array:
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	var out: Array = []
+	for b in game.player.board.blocks:
+		out.append("%s@%d,%d:%d" % [b.prefix, b.gx, b.gy, b.tier])
+	return out
+
+
+## Every rule about damage survives, paid in points. A daily that simply switched
+## the attack rules off would be a thinner game than the one it is drawn from —
+## and the score would stop measuring the chain ladder at all.
+func _damage_becomes_score() -> void:
+	print("--- damage is paid in score ---")
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+
+	var before: int = game.player.score
+	var paid: int = game._strike(game.player, null, "alignment", 3, 2.8, "ent")
+	_expect("a strike pays rather than sends",
+		paid == game._cells(3) * game.DAILY_STRIKE_PAY)
+	_expect("and the points are banked", game.player.score == before + paid)
+	_expect("a bigger tier pays more",
+		game._strike(game.player, null, "alignment", 5, 2.8)
+		> game._strike(game.player, null, "alignment", 1, 2.8))
+
+	# Nothing left the board, in flight or otherwise.
+	var inbound := 0
+	for s in game.sides:
+		inbound += s.pending.size()
+	_expect("nothing was sent anywhere", inbound == 0)
+	_expect("and nothing is in the air", game.tracers.is_empty())
+
+	# The powers are the part most likely to be quietly dropped, since three of
+	# the four are defined by the block they send.
+	before = game.player.score
+	var powers: int = game._fire_powers(game.player, null, "alignment",
+		["COUNTER", "COMBO", "PERFECT", "CLUTCH"], 2, 1)
+	_expect("all four powers still fire", game.player.powers_fired == 4)
+	_expect("and every one of them paid", powers > 0)
+	_expect("the score agrees with what they paid",
+		game.player.score == before + powers)
+	_expect("COMBO still owes the next word a tier", game.player.tier_bonus == 1)
+	_expect("CLUTCH still buys a reprieve", game.player.slowdown > 0.0)
+	inbound = 0
+	for s in game.sides:
+		inbound += s.pending.size()
+	_expect("and still nothing was sent", inbound == 0)
+
+	# The whole path rather than its pieces. `_play_word` is where the missing
+	# opponent actually bites: it asks `_pick_target_for` who to hit, and an
+	# empty room answers with the shooter — so an unguarded solo run aims every
+	# word you fire at your own board.
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.player.board.reset()
+	game.player.board.add_garbage("al", 0, 1, 1)
+	before = game.player.score
+	game._play_word(game.player, "alignment")
+	_expect("a word fired at nobody still scores", game.player.score > before)
+	_expect("and clears what it answered", game.player.blocks_cleared >= 1)
+	_expect("and lands nothing on your own board", game.player.pending.is_empty())
+	_expect("and leaves the board it cleared clear", game.player.board.blocks.is_empty())
+
+	# A salvo is the biggest thing in the game and has to stay the biggest.
+	before = game.player.score
+	game.player.chain = game.SALVO_AT
+	game._fire_salvo(game.player, null, "alignment", 2)
+	var salvo: int = game.player.score - before
+	_expect("a salvo pays out", salvo > 0)
+	_expect("and beats any single strike",
+		salvo > game._cells(game.TIERS.size() - 1) * game.DAILY_STRIKE_PAY)
+	_expect("and still spends the chain", game.player.chain == 0)
+
+
+## The pressure is the whole opponent, so it has to actually press. A minute
+## under the standard match ramp — twenty-two seconds to the first block, then
+## a step and a half off each time — deals two blocks and ends.
+func _the_minute_leans_on_you() -> void:
+	print("--- the minute leans on you ---")
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.player.board.reset()
+
+	_expect("the first block is seconds away, not half a minute",
+		game.pressure_timer <= 4.0)
+
+	# Run the clock out with nobody typing and count what turned up. The board is
+	# emptied each time so a top-out cannot cut the count short.
+	var seeded := 0
+	var step := 1.0 / 60.0
+	while game.match_time < game.DAILY_SECONDS:
+		game.match_time += step
+		var was: int = game.player.pending.size()
+		game._tick_pressure(step)
+		seeded += maxi(0, game.player.pending.size() - was)
+		game.player.pending.clear()
+	_expect("a minute of it deals a run's worth of garbage", seeded >= 20)
+	_expect("without turning into noise", seeded <= 45)
+	_expect("and the rate bottoms out where it was told to",
+		game.pressure_interval == game.DAILY_PRESSURE_MIN)
+
+	# Rate alone runs out of room below about a second and a half, so the back
+	# half of the run escalates by weight instead.
+	game.match_time = 0.0
+	var opened: int = game._daily_tier()
+	game.match_time = game.DAILY_SECONDS - 1.0
+	var closed: int = game._daily_tier()
+	_expect("it opens on the smallest block there is", opened == 0)
+	_expect("and closes on something heavier", closed > opened)
+
+	# Lasting the minute and burning three lives are different runs, and the
+	# summary has to be able to tell them apart — it reads `winner`, and `winner`
+	# used to be "YOU" either way.
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.match_time = game.DAILY_SECONDS
+	game._finish_daily()
+	_expect("lasting the minute counts as surviving it", game.winner == "YOU")
+
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	for i in game.LIVES:
+		game._lose_life(game.player)
+	_expect("three top-outs end the run early", game.phase == game.Phase.OVER)
+	_expect("and that is not a run you survived", game.winner != "YOU")
 
 
 func _expect(what: String, ok: bool) -> void:

@@ -195,6 +195,24 @@ func reset() -> void:
 	shake = 0.0
 
 
+## Put every block where it already belongs, with no fall and no impact. Grid
+## positions are untouched — this is about the animation, not the rules; see
+## `settle` for the one that actually moves blocks.
+##
+## For a board that is dealt rather than played into. The daily opens on a pile
+## a quarter to a half deep, and that pile is meant to be sitting there to be
+## read during the 3-2-1 — not raining in over the top of the countdown with
+## twenty impacts, twenty screen shakes and a stack still settling when the
+## clock starts.
+func snap_to_grid() -> void:
+	for b: Blk in blocks:
+		b.vis = Vector2(b.gx * CELL, b.gy * CELL)
+		b.vel = 0.0
+		b.squash = 0.0
+	bits.clear()
+	shake = 0.0
+
+
 # ---------------------------------------------------------------- grid queries
 
 func _occupancy() -> Array:
