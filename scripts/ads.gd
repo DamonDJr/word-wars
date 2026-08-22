@@ -1,0 +1,205 @@
+extends Node
+## The ad network, behind one door.
+##
+## Everything the rest of the game knows about advertising is the four things
+## below: whether a break can be served, serve one, a signal when it is over,
+## and go and fetch the next. Which network is behind that is deliberately not
+## the match code's business — this file is the only one in the project that
+## names AdMob, so changing networks is rewriting one file rather than auditing
+## every screen that might have learned something about the last one.
+##
+## There is no drawing here and there must not be. An interstitial is a native
+## view the SDK puts over the whole app; the game does not lay it out, does not
+## size it and cannot draw over it. That is also what makes it full screen —
+## the mock that stands in off-device is full screen for the same reason.
+
+## Emitted once per attempt. `shown` is true only if an impression actually
+## reached the player, which is the difference between a break that was served
+## and a break that was asked for and never arrived. The cadence counter is
+## spent on the first and must not be on the second.
+signal finished(shown: bool)
+
+## Google's own test units. They fill every time, on any bundle id, signed or
+## not — which is exactly why they exist and why they are the default here. A
+## real unit in a sideloaded build gets no fill and looks identical to a broken
+## integration, so testing against one would teach nothing.
+##
+## Interstitial ids are per platform; the addon's own sample quotes the Android
+## one for both, which on an iPhone is a request for a unit that does not exist.
+const TEST_UNIT_IOS := "ca-app-pub-3940256099942544/4411468910"
+const TEST_UNIT_ANDROID := "ca-app-pub-3940256099942544/1033173712"
+
+## Set these to the real ad units to go live. Left empty, the test unit above is
+## used — so a build can never accidentally serve real ads because somebody
+## forgot to switch something back.
+const LIVE_UNIT_IOS := ""
+const LIVE_UNIT_ANDROID := ""
+
+## A load that never answers must not leave the loader stuck. With no plugin
+## behind the API — a desktop export, or an iOS build where the addon was not
+## included — every call is a silent no-op and no callback ever arrives, which
+## is indistinguishable from a slow network right up until it never ends.
+const LOAD_TIMEOUT := 20.0
+
+## The rescue hatch for a break that goes up and never reports back. Long on
+## purpose: a real interstitial can legitimately hold the screen for half a
+## minute, and cutting a live one short is worse than the hang this prevents.
+const SHOW_TIMEOUT := 60.0
+
+## How long to let the SDK come up before asking it for the first ad.
+const INIT_GRACE := 1.0
+
+var _ad: InterstitialAd = null
+var _loader: InterstitialAdLoader = null
+var _loading := false
+var _showing := false
+
+## Bumped on every attempt so a callback or a timer belonging to an older one
+## can tell that it has been overtaken and do nothing.
+var _load_token := 0
+var _show_token := 0
+
+
+func _ready() -> void:
+	if not available():
+		print("[Ads] no ad plugin on this platform — the game runs without breaks")
+		return
+	MobileAds.set_request_configuration(RequestConfiguration.new())
+	MobileAds.initialize(OnInitializationCompleteListener.new())
+	print("[Ads] initialising, unit %s" % unit_id())
+	# The first fetch is kicked off from a timer rather than from the SDK's own
+	# initialisation callback, and the listener handed to `initialize` is a bare
+	# one that closes over nothing.
+	#
+	# That callback is retained by the plugin object in a one-shot connection,
+	# and the plugin is reached through a static — so a lambda capturing this
+	# autoload kept a reference to it alive past the scene tree's own teardown,
+	# and the node was released a second time on the way out. Every headless run
+	# ended in `double free or corruption`, after the tests had all passed, which
+	# is the most ignorable form a real memory bug can take. A SceneTreeTimer
+	# dies with the tree, so nothing here outlives anything else.
+	get_tree().create_timer(INIT_GRACE).timeout.connect(fetch)
+
+
+## Whether there is anything behind the API at all.
+##
+## Mirrors how the addon picks its own backend: a registered native singleton on
+## a phone, a full-screen mock when running under the editor binary, and nothing
+## whatever in an exported desktop build. Asked before the SDK is touched, so a
+## Linux build does not spend its first frames talking to an absent plugin.
+func available() -> bool:
+	if Engine.has_singleton("PoingGodotAdMobInterstitialAd"):
+		return true
+	return OS.has_feature("editor")
+
+
+func unit_id() -> String:
+	if OS.get_name() == "iOS":
+		return LIVE_UNIT_IOS if LIVE_UNIT_IOS != "" else TEST_UNIT_IOS
+	return LIVE_UNIT_ANDROID if LIVE_UNIT_ANDROID != "" else TEST_UNIT_ANDROID
+
+
+## Is there an impression in hand, right now, to put on the screen?
+##
+## Asked before the game commits to a break rather than after. An interstitial
+## takes seconds to fetch, so `show` on a cold loader shows nothing — and a
+## break that was announced and then did not happen is worse than one that never
+## came, because the player has already been made to wait for it.
+func has_ad() -> bool:
+	return _ad != null and not _showing
+
+
+## Is a break on the screen? The game stops taking input while this is true: the
+## native view swallows everything on a phone, but the desktop mock is a canvas
+## layer inside our own window, and a keystroke that lands on the menu behind it
+## would move a screen nobody can see.
+func showing() -> bool:
+	return _showing
+
+
+## Go and get one. Safe to call whenever — already loading, already holding one,
+## or currently showing all decline quietly, so this can sit at the start of a
+## match without any of the callers having to know the state.
+func fetch() -> void:
+	if not available() or _loading or _showing or _ad != null:
+		return
+	_loading = true
+	_load_token += 1
+	var token := _load_token
+
+	var cb := InterstitialAdLoadCallback.new()
+	cb.on_ad_loaded = func(ad: InterstitialAd) -> void:
+		if token != _load_token:
+			# Overtaken by a newer fetch. Destroyed rather than kept, because a
+			# second live ad is native memory nobody is going to free.
+			ad.destroy()
+			return
+		_loading = false
+		_ad = ad
+		_arm(ad)
+	cb.on_ad_failed_to_load = func(err: LoadAdError) -> void:
+		if token != _load_token:
+			return
+		_loading = false
+		# Not an error. Having nothing to serve is the ordinary state of an ad
+		# network several times a day, and the game's answer is to carry on.
+		print("[Ads] no fill: %s" % err.message)
+
+	# Held on the object, not a local: the loader has to outlive this function
+	# or it is collected before the callback it is waiting for can arrive.
+	_loader = InterstitialAdLoader.new()
+	_loader.load(unit_id(), AdRequest.new(), cb)
+
+	get_tree().create_timer(LOAD_TIMEOUT).timeout.connect(func() -> void:
+		if token == _load_token and _loading:
+			_loading = false
+			print("[Ads] load timed out"))
+
+
+## Wire up what the ad does once it is on screen. Every exit — dismissed,
+## refused, or timed out — has to end at `_done`, or the game sits forever
+## waiting for a break that is already over.
+func _arm(ad: InterstitialAd) -> void:
+	var fcb := FullScreenContentCallback.new()
+	fcb.on_ad_showed_full_screen_content = func() -> void:
+		_showing = true
+	fcb.on_ad_dismissed_full_screen_content = func() -> void:
+		_done(true)
+	fcb.on_ad_failed_to_show_full_screen_content = func(err: AdError) -> void:
+		print("[Ads] refused to show: %s" % err.message)
+		_done(false)
+	ad.full_screen_content_callback = fcb
+
+
+## Put one on the screen. Returns false if there was nothing to put there, in
+## which case `finished` never fires and the caller carries on as it was.
+func show() -> bool:
+	if not has_ad():
+		return false
+	_showing = true
+	_show_token += 1
+	var token := _show_token
+	_ad.show()
+	get_tree().create_timer(SHOW_TIMEOUT).timeout.connect(func() -> void:
+		if token == _show_token and _showing:
+			push_warning("Ads: the break never reported back — letting the player through")
+			_done(false))
+	return true
+
+
+func _done(shown: bool) -> void:
+	# Once only. Both the SDK and the rescue timer can arrive here for the same
+	# break, and the second one must not emit a second `finished`.
+	if not _showing:
+		return
+	_showing = false
+	# Retires the timer belonging to this attempt.
+	_show_token += 1
+	if _ad != null:
+		# Native memory, and the addon is explicit that this is ours to free.
+		_ad.destroy()
+		_ad = null
+	finished.emit(shown)
+	# Straight into fetching the next, so the gap between breaks is spent
+	# loading rather than the moment the next one is due.
+	fetch()

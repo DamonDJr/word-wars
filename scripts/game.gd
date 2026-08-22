@@ -247,7 +247,7 @@ const GRAIN := 0.05
 const VIGNETTE := 0.40
 
 enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
-	COUNTDOWN, PLAY, OVER, COSMETICS, VERSUS, AD }
+	COUNTDOWN, PLAY, OVER, COSMETICS, VERSUS }
 
 ## What a match is for. A tutorial and a training run use the whole machine —
 ## real board, real typing, real rules — and differ only in what is switched off
@@ -647,6 +647,7 @@ func _ready() -> void:
 	MultiplayerManager.match_ended.connect(_on_match_ended)
 	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
+	Ads.finished.connect(_on_ad_finished)
 	
 	randomize()
 	_font = ThemeDB.fallback_font
@@ -1167,6 +1168,10 @@ func _bloom(color: Color, amount: float) -> void:
 ## rematch off an old save still do.
 func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		how: int = Mode.NORMAL) -> void:
+	# Asked for at the start of the match it will interrupt the end of, which
+	# buys the fetch the whole match to finish in. Called cold at the moment a
+	# break is due, an interstitial simply is not there yet.
+	Ads.fetch()
 	mode = how
 	lesson = 0
 	lesson_age = 0.0
@@ -1623,6 +1628,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if k == null or not k.pressed or k.echo:
 		return
 
+	# Nothing reaches the game while a break is up. On a phone the native view
+	# has already swallowed it, but the stand-in used off-device is a canvas
+	# layer inside our own window — and a keystroke landing on the summary behind
+	# it would walk to a screen the player cannot see.
+	if Ads.showing():
+		return
+
 	# Any key cuts the splash short — and does only that, so an impatient press
 	# cannot also land on whatever is sitting under it on the menu.
 	if phase == Phase.SPLASH:
@@ -1687,14 +1699,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			return
 		match k.keycode:
 			KEY_ESCAPE: _activate("title")
-		return
-
-	# An ad you can dismiss with any key is not an ad. Escape is the one that
-	# works, and only once the dwell is up — same rule the button follows.
-	if phase == Phase.AD:
-		if _ad_closable():
-			match k.keycode:
-				KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE: _activate("ad_close")
 		return
 
 	if phase == Phase.MASTERY:
@@ -2245,44 +2249,31 @@ func _rematch_sub() -> String:
 
 # ------------------------------------------------------------------ the break
 #
-# An ad break, with no ad network behind it yet.
+# An ad break, served by whatever network `Ads` is talking to.
 #
-# What is being tested here is placement and cadence, which are the only two
-# parts of this that are ours to get wrong. A network hands over a creative and
-# a close button and takes both decisions off the table; everything about how an
-# ad *feels* is where it was asked for and how often it comes back. So this is a
-# real interstitial — full screen, a real dwell before it can be dismissed, a
-# real Close — carrying a house card where a sold one will go.
+# The game does not draw it. An interstitial is a native view the SDK throws
+# over the whole app: full screen because it is not inside our window at all,
+# with its own close button on its own schedule. Off a device the addon puts a
+# full-screen mock in the same place, so the one thing there is never a reason
+# to build here is a picture of an ad.
 #
-# It plays on the way *out* of the summary rather than on the way in. The
-# scoreboard is the payoff for the match you just finished, and covering it the
-# instant it appears is taking the reward away to sell something; leaving that
-# screen is already a decision to stop looking at it. It is also the last moment
-# before a rematch, which is the one place a break costs the least — you are
-# between matches either way.
+# It plays *at the end of the match*, before the summary. The earlier version
+# ran it on the way out of the summary instead, on the reasoning that the
+# scoreboard is the payoff and should not be covered — but from the player's
+# side that is not what it reads as. You press Rematch, and the ad is the thing
+# standing between you and the match you just asked for, so the break belongs to
+# the match you are trying to start rather than the one that ended. Firing it as
+# the match ends puts it where it actually belongs: the match is over, the break
+# is the punctuation, and the summary and Rematch are on the far side of it.
 #
-# Wiring a real network up is `_start_ad` and `_ad_finished`. Nothing else in
-# here knows or cares what is on the screen in between.
-
-## How long before the break can be dismissed. Five seconds is the floor most
-## networks enforce on a non-rewarded interstitial, so testing against anything
-## shorter would be testing a break that will not ship.
-const AD_DWELL := 5.0
-
-## What to do once the break is over — the action the player asked for and is
-## still owed. Empty outside the break.
-var ad_next := ""
-
-## Seconds the break has been up.
-var ad_age := 0.0
-
+# What is on screen is `ads.gd`'s business. What is left here is only when.
 
 ## Whether a match of this shape may be interrupted at all.
 ##
 ## Never in versus. The rematch handshake is two packets between two people, and
 ## a peer who has already said yes sits on a "waiting for them" card until the
-## second one lands — so five seconds of an ad here is five seconds of nothing
-## there, for a decision they have made and cannot see the delay behind.
+## second one lands — so a break here is dead air there, for a decision they have
+## made and cannot see the delay behind.
 ##
 ## Never in a lesson, a training run or the daily either: none of them banks a
 ## match, so none of them has moved the counter, and a break at the end of one is
@@ -2296,46 +2287,39 @@ func _ad_allowed(is_net: bool) -> bool:
 	return mode == Mode.NORMAL and not is_net
 
 
-## Whether leaving the summary by this door should show a break first.
-func _ad_before(action: String) -> bool:
-	if phase != Phase.OVER or not _ad_allowed(net_active()):
-		return false
-	if action != "rematch" and action != "title":
-		return false
-	return Profile.ad_due()
-
-
-## Take the screen, and remember what the player was in the middle of doing.
+## Whether the match that just ended should be followed by a break.
 ##
-## The counter is cleared here rather than on the way out, because that is where
-## a network counts an impression: the break has been served, and killing the
-## app halfway through it must not be a way to be shown the same one forever.
-func _start_ad(after: String) -> void:
-	ad_next = after
-	ad_age = 0.0
-	phase = Phase.AD
-	_hover_action = ""
-	_scroll = 0.0
-	Profile.clear_ad()
-	Sfx.play("back", 0.8, -4.0)
+## `Ads.has_ad` is asked here, with everything else, rather than trusted to fail
+## gracefully later. An ad takes seconds to fetch and networks have nothing to
+## serve several times a day, so "the cadence says yes" and "there is an ad in
+## hand" are different questions — and the counter must only be spent on the
+## second, or a run of empty nights silently resets the cadence and the player
+## goes hours without a break.
+func _break_due() -> bool:
+	return _ad_allowed(net_active()) and Profile.ad_due() and Ads.has_ad()
 
 
-## Whether the Close button is live yet.
-func _ad_closable() -> bool:
-	return ad_age >= AD_DWELL
+## Try to put one up. Called as the match ends, with the summary already built
+## behind it, so there is nothing to hand back when it finishes — closing the ad
+## reveals the scoreboard that was there all along.
+func _try_ad_break() -> void:
+	if not _break_due():
+		return
+	if not Ads.show():
+		return
+	# Sound and music belong to whatever is on screen, and that is no longer us.
+	Music.stop()
 
 
-## Hand the player back the thing they asked for before the break took the
-## screen. `ad_next` is cleared first so the door cannot be walked through
-## twice — `_ad_before` is keyed on Phase.OVER and we have left it, but a
-## rematch that fails to start would otherwise leave a stale action behind.
-func _ad_finished() -> void:
-	var go := ad_next
-	ad_next = ""
-	ad_age = 0.0
-	if go == "":
-		go = "title"
-	_activate(go)
+## The break is over. `shown` is false when the network refused at the last
+## moment, and a break that never reached the player is not one they have had —
+## so the counter keeps its place and the next match tries again.
+func _on_ad_finished(shown: bool) -> void:
+	if shown:
+		Profile.clear_ad()
+	_music_key = ""
+	_music_hold = 0.0
+	_tick_music(0.0)
 
 
 ## Which special this block is, if any. Rolled per block on the machine that
@@ -2793,8 +2777,6 @@ func _process(delta: float) -> void:
 
 	if phase == Phase.OVER:
 		over_age += delta
-	if phase == Phase.AD:
-		ad_age += delta
 	_tick_scroll()
 
 	# The playfields have nothing to say on the front-of-house screens.
@@ -2802,7 +2784,7 @@ func _process(delta: float) -> void:
 		and phase != Phase.LOBBY and phase != Phase.MASTERY \
 		and phase != Phase.SOLO and phase != Phase.SETTINGS \
 		and phase != Phase.PRACTICE and phase != Phase.COSMETICS \
-		and phase != Phase.VERSUS and phase != Phase.AD
+		and phase != Phase.VERSUS
 	for s: SideState in sides:
 		# There is no rival in a lesson or a practice run, so its board is not
 		# drawn at all — an empty playfield sitting there reads as an opponent
@@ -2885,10 +2867,7 @@ func _tick_music(delta: float) -> void:
 	var want := "menu"
 	match phase:
 		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS, \
-				Phase.PRACTICE, Phase.COSMETICS, Phase.VERSUS, Phase.AD:
-			# The break keeps the menu bed rather than silence. A real creative
-			# brings its own audio and the mix is the network's problem, but a game
-			# that goes quiet the moment an ad appears reads as a game that crashed.
+				Phase.PRACTICE, Phase.COSMETICS, Phase.VERSUS:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -3365,6 +3344,10 @@ func _end_match(loser: SideState) -> void:
 	_log("%s wins" % winner, Color("#ffd166"))
 	if mode == Mode.NORMAL:
 		_record_mastery()
+	# Last, and after the record: `_record_mastery` is what moves the counter, so
+	# asking before it would always be a match behind. The summary is already
+	# built underneath — the break covers it and uncovers it.
+	_try_ad_break()
 
 
 ## Fold the finished match into the lifetime record, and keep what it earned so
@@ -4465,8 +4448,6 @@ func _draw_overlay() -> void:
 		# Over the summary rather than inside it, and last, so nothing the
 		# scoreboard draws lands on top of the question.
 		_draw_rematch_popup(size)
-	elif phase == Phase.AD:
-		_draw_ad(size)
 
 	# Last, so it sits over whatever the screen drew — several of these paint a
 	# full-width header straight through the corner it lives in.
@@ -6354,141 +6335,6 @@ func _rules_extra() -> float:
 	return 12.0 + 16.0 + 24.0 + rows + kinds
 
 
-# ------------------------------------------------------- drawing the break
-#
-# See `_ad_before` for why it exists and where it fires. This half is only the
-# picture, and the picture is deliberately a placeholder that says so: the whole
-# value of a mock interstitial is that it takes the same amount of screen for the
-# same amount of time as the real one, and none of that value comes from it
-# looking like a sold ad. A convincing fake would only make it easy to ship one.
-
-const AD_PAD := 18.0
-## The badge row along the top, and the button row along the bottom.
-const AD_HEAD := 44.0
-const AD_FOOT := 46.0
-
-
-## The card the break is drawn inside.
-func _ad_card() -> Rect2:
-	var size := get_viewport_rect().size
-	var top := safe_top + 24.0
-	var bottom := size.y - safe_bottom - 24.0
-	var cw: float = minf(size.x - GRID_MARGIN * 2.0, 460.0)
-	var ch: float = minf(bottom - top, 700.0)
-	return Rect2(size.x * 0.5 - cw * 0.5, top + (bottom - top - ch) * 0.5, cw, ch)
-
-
-## Where the creative goes: the 2:3 portrait rectangle a network fills, fitted
-## into whatever the card has left once the badge row and the buttons have taken
-## theirs. Boxed rather than bled to the card edge, because the one thing a mock
-## is genuinely for is showing how much of the screen the real one will take.
-func _ad_creative() -> Rect2:
-	var card := _ad_card()
-	var box := Rect2(card.position.x + AD_PAD, card.position.y + AD_HEAD,
-		card.size.x - AD_PAD * 2.0,
-		card.size.y - AD_HEAD - AD_FOOT - AD_PAD * 2.0)
-	var w: float = minf(box.size.x, box.size.y / 1.5)
-	var h: float = minf(box.size.y, w * 1.5)
-	return Rect2(box.position.x + (box.size.x - w) * 0.5,
-		box.position.y + (box.size.y - h) * 0.5, w, h)
-
-
-## Seconds still to wait, never rounded down to nothing — a counter that shows 0
-## for the last frames reads as a button that is live before it is.
-func _ad_left() -> int:
-	return maxi(1, int(ceil(AD_DWELL - ad_age)))
-
-
-## A dashed outline, for the empty slot. Drawn rather than reached for as a
-## texture so it scales with the card on any screen.
-func _dashed_rect(r: Rect2, col: Color, dash: float, gap: float, width: float) -> void:
-	var corners := [r.position, Vector2(r.end.x, r.position.y), r.end,
-		Vector2(r.position.x, r.end.y)]
-	for i in 4:
-		var a: Vector2 = corners[i]
-		var b: Vector2 = corners[(i + 1) % 4]
-		var span := a.distance_to(b)
-		var step := dash + gap
-		var dir := (b - a).normalized()
-		var at := 0.0
-		while at < span:
-			_overlay.draw_line(a + dir * at, a + dir * minf(at + dash, span), col, width)
-			at += step
-
-
-func _draw_ad(size: Vector2) -> void:
-	# Near enough to opaque. A break you can read the scoreboard through is a
-	# break you sit out reading the scoreboard, which is neither honest about what
-	# it is nor any use as a rehearsal for one that will not be see-through.
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color("#01061a"), true)
-
-	var card := _ad_card()
-	_panel(card, Color("#0b1226"), Color("#232c4d"), 14.0, 2.0)
-
-	# The badge. Every store requires an ad be labelled as one, and putting it in
-	# the mock means the space it costs is in the layout from the start rather
-	# than turning up as a surprise the week before submission.
-	var badge := Rect2(card.position.x + AD_PAD, card.position.y + 13.0, 40.0, 20.0)
-	_panel(badge, Color("#ffd166"), Color("#ffd166"), 4.0, 1.0)
-	_draw_tracked_left(_font_bold, Vector2(badge.position.x + 9.0, badge.get_center().y),
-		"AD", 11, 1.6, Color("#0b1226"))
-
-	var head_y := badge.get_center().y
-	if not _ad_closable():
-		_otext_left(_font, Vector2(card.end.x - AD_PAD - 62.0, head_y),
-			"closes in %ds" % _ad_left(), 12, Color("#7c88ad"))
-
-	# The dwell, as a rule filling across the card. The wait is the part of an
-	# interstitial people actually experience, so it gets a readout rather than
-	# leaving them to guess whether the thing is stuck.
-	# Inset by the border, or the ends of the rule sit outside the card's rounded
-	# corners and read as two stray marks rather than as one line.
-	var bar := Rect2(card.position.x + 6.0, card.position.y + AD_HEAD - 8.0,
-		card.size.x - 12.0, 2.0)
-	_overlay.draw_rect(bar, Color("#1a2242"), true)
-	_overlay.draw_rect(Rect2(bar.position, Vector2(
-		bar.size.x * clampf(ad_age / AD_DWELL, 0.0, 1.0), bar.size.y)),
-		Color("#7bdff2") if _ad_closable() else Color("#3f6f88"), true)
-
-	var slot := _ad_creative()
-	_overlay.draw_rect(slot, Color("#080d1e"), true)
-	_dashed_rect(slot, Color("#2b3559"), 7.0, 6.0, 1.5)
-
-	# One stack in the middle of the slot rather than lines pinned to its edges.
-	# The empty space around it is the point — that is how much of the screen a
-	# real creative gets — and anything set against the dashed border starts
-	# looking like part of the frame instead of part of the card.
-	var mid := slot.get_center()
-	var inner := slot.size.x - 24.0
-	# Centred by hand: `_draw_tracked_left` sets from the left, and the tracking
-	# it adds is not in the font's own measurement of the string.
-	var kicker := "TEST CREATIVE"
-	var kicker_w: float = _font_bold.get_string_size(kicker,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 3.0 * float(kicker.length() - 1)
-	_draw_tracked_left(_font_bold, Vector2(mid.x - kicker_w * 0.5, mid.y - 52.0),
-		kicker, 11, 3.0, Color("#4d5878"))
-	# Set in the body face, not the title one. The display font is a distressed
-	# cut built for one word at forty-plus points, and "320 × 480" in it is a
-	# smear — the one line on this screen that has to be read as digits.
-	_text_fit_overlay(_font_bold, Vector2(mid.x, mid.y - 18.0), "320 × 480", 32,
-		inner, Color("#e6ecff"), 18)
-	_text_fit_overlay(_font, Vector2(mid.x, mid.y + 16.0),
-		"the placement is real — the ad is not", 13, inner, Color("#7c88ad"), 10)
-
-	# The one thing a placeholder can say that a real creative cannot: how long
-	# until the next one. Testing a cadence is otherwise a matter of playing
-	# matches and keeping count yourself.
-	_text_fit_overlay(_font, Vector2(mid.x, mid.y + 44.0),
-		"next break in %d %s" % [Profile.ad_gap,
-			"match" if Profile.ad_gap == 1 else "matches"],
-		12, inner, Color("#4d5878"), 10)
-
-	for b: Dictionary in _menu_buttons():
-		_draw_menu_button(b)
-
-
 func _draw_gameover(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	# Nearly opaque. The boards used to show faintly through, which was pleasant
@@ -6583,16 +6429,6 @@ func _draw_gameover(size: Vector2) -> void:
 			line = "a new best      " + line
 		_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0), line, 14,
 			size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
-
-	# A break is waiting on the far side of both buttons. Said here rather than
-	# sprung, because the thing that makes an interstitial feel like a tax is
-	# arriving without warning on top of something you were reading — and this
-	# costs one dim line to fix. It asks `_ad_before` rather than `ad_due` so the
-	# warning cannot promise a break the versus rule is going to skip.
-	if _ad_before("title"):
-		_text_fit_overlay(_font, Vector2(cx, _over_foot() + 4.0),
-			"a short ad plays when you leave this screen",
-			12, size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
@@ -7092,38 +6928,6 @@ func _menu_buttons() -> Array:
 			"rect": Rect2(cx + 10.0, 372.0, w, 84.0), "key": "Q",
 			"label": "Leave match", "sub": "", "note": "", "rating": 0,
 			"accent": Color("#ff6b6b"), "action": "leave_match"})
-		return out
-
-	# The break owns the whole screen, so it is answered before any other phase
-	# gets a chance to put a button under it. Close is drawn dead rather than
-	# missing for its first five seconds: a control that appears late is one the
-	# eye has to find, and one that fades in under a thumb already on its way
-	# down is a mis-tap waiting to happen.
-	if phase == Phase.AD:
-		var card := _ad_card()
-		var by: float = card.end.y - AD_PAD - AD_FOOT
-		var live := _ad_closable()
-		# Close, and nothing beside it.
-		#
-		# There was a "Remove ads" button here, on the reasoning that this is the
-		# one screen where not seeing ads is a thing the player is actively
-		# wishing for. That reasoning is still right and the button should come
-		# back — but the row it opened has gone with the test store, so all it
-		# leads to now is a Settings screen with nothing to buy on it. An offer
-		# that goes nowhere is worse than no offer.
-		#
-		# Centred and narrow rather than filling the card. Past 230 across,
-		# `_draw_menu_button` promotes a button to the branded plate — stamp
-		# gutter, block grid, the treatment the title screen's doors wear — and a
-		# full-bleed Close came out reading "CLO" and "CLOSE" at once. It is also
-		# just the wrong shape: a network's close control is a small thing in a
-		# corner, and the mock should not be teaching a bigger one.
-		var bw: float = minf(220.0, card.size.x - AD_PAD * 2.0)
-		out.append({
-			"rect": Rect2(card.get_center().x - bw * 0.5, by, bw, AD_FOOT), "key": "",
-			"label": "Close" if live else "%ds" % _ad_left(), "sub": "", "note": "",
-			"rating": 0, "accent": PLAYER_ACCENT if live else Color("#2b3559"),
-			"action": "ad_close" if live else "ad_wait"})
 		return out
 
 	# SPLASH counts as TITLE here: the menu is being drawn underneath the art as
@@ -7805,6 +7609,8 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
+	if Ads.showing():
+		return
 	# Two thumbs. Godot turns touches into mouse presses one at a time — the
 	# second finger down while the first is still held produces no event at all —
 	# and a keystroke that never arrives is indistinguishable, from the typist's
@@ -7988,13 +7794,6 @@ func _activate(action: String) -> void:
 	# thirty branches. The weighting means a heavier event fired in the same
 	# breath — a match ending, a level going up — swallows it.
 	Haptics.fire("tap")
-	# The break stands between the summary and both doors out of it. Caught here
-	# rather than inside the Rematch and Title branches so that the keyboard, the
-	# buttons and the phone's back chevron all go through the same gate — three
-	# ways off one screen is three ways to forget one.
-	if _ad_before(action):
-		_start_ad(action)
-		return
 	if action.begins_with("diff:"):
 		Link.leave()
 		MultiplayerManager.leave_match()
@@ -8079,13 +7878,6 @@ func _activate(action: String) -> void:
 			# again rather than quietly becoming whoever it was last time.
 			var again := _solo_lineup()
 			start_match(again[0], again.size(), again)
-	elif action == "ad_close":
-		_ad_finished()
-	elif action == "ad_wait":
-		# Pressed before the dwell was up. Answered rather than ignored — a dead
-		# button that makes no sound reads as a broken one, and the next thing a
-		# player does about a broken button is hammer it.
-		Sfx.play("reject", 1.2)
 	elif action == "solo":
 		phase = Phase.SOLO
 		_hover_action = ""

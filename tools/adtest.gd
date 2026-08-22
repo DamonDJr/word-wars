@@ -1,19 +1,22 @@
 extends SceneTree
-## The ad break: when it fires, when it must not, and that it gives the screen
-## back afterwards.
+## The ad break: when it fires, when it must not, and what it costs.
 ##
-## Three of these are the kind of bug you only find in the wild. A break that
-## fires during a versus rematch leaves the other player staring at a card while
-## nothing happens on their side. A break that forgets what the player asked for
-## drops them on the title screen after they pressed Rematch. And a counter that
-## is not cleared when the break is served shows the same one every match from
-## then on. None of the three is visible from the summary screen, and all three
-## are cheap to check here.
+## Driven through the addon's own mock, which is what `Ads` talks to whenever
+## there is no phone underneath — same loader, same callbacks, same lifetime,
+## and a real full-screen view. So everything below exercises the shipping path
+## rather than a stand-in written for the test.
+##
+## Four of these are the kind of bug that only shows up in the wild. A break
+## during a versus rematch strands the other player. A cadence spent on an ad
+## that never arrived silently stops the breaks for hours. A break asked for
+## with a cold loader shows nothing and eats the counter anyway. And an ad that
+## never reports back leaves the game waiting on a screen nobody can see.
 ##
 ##   godot --headless --script tools/adtest.gd
 
 var game: Node
 var P: Node
+var A: Node
 var fails := 0
 
 
@@ -24,13 +27,14 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 	P = get_root().get_node("Profile")
+	A = get_root().get_node("Ads")
 	P.save_path = "user://profile-ad-test.cfg"
 	P.owned = {}
 
-	_it_fires_inside_the_window()
-	_it_holds_the_screen()
-	_it_gives_back_what_was_asked_for()
-	_the_pack_and_the_practice_modes_are_exempt()
+	await _the_mock_stands_in()
+	await _it_fires_at_the_end_of_the_match()
+	await _an_ad_that_never_arrived_costs_nothing()
+	await _who_never_sees_one()
 	_versus_never_breaks()
 
 	for suffix in ["", ".bak", ".tmp"]:
@@ -39,148 +43,132 @@ func _init() -> void:
 	quit(1 if fails > 0 else 0)
 
 
-## Sit on a finished normal match, which is the only place `_ad_before` says yes.
-func _at_summary() -> void:
+## Wait for a fetch to land. The mock answers on a half-second timer, the same
+## shape as a real network answering over the air.
+func _await_loaded() -> bool:
+	A.fetch()
+	for i in 40:
+		if A.has_ad():
+			return true
+		await create_timer(0.05).timeout
+	return false
+
+
+## Finish a match the way the rules finish one.
+func _play_one() -> void:
 	game.start_match("Duelist", 1)
 	game.phase = game.Phase.PLAY
 	game.winner = "YOU"
 	game._end_match(game.sides[1])
 
 
-## How many matches it took to earn a break, counted the way the game counts
-## them — through the end of a real match rather than by poking `since_ad`.
-func _matches_until_break() -> int:
-	P.owned = {}
+## Close the break through the plugin, not by poking `Ads` — this is the signal
+## a real dismissal arrives on.
+func _dismiss() -> void:
+	var factory = load("res://addons/admob/internal/mock/mock_admob_factory.gd")
+	var plugin = factory.get_mock_plugin("PoingGodotAdMobInterstitialAd")
+	for uid in plugin._ads.keys():
+		plugin.on_interstitial_ad_dismissed_full_screen_content.emit(uid)
+	await process_frame
+	await process_frame
+
+
+func _the_mock_stands_in() -> void:
+	print("--- there is a network to talk to ---")
+	_expect("the addon answers off-device", A.available())
+	_expect("and the iOS unit is the iOS one, not the Android one",
+		A.TEST_UNIT_IOS != A.TEST_UNIT_ANDROID)
+	_expect("nothing is loaded before anything asks", not A.has_ad())
+	var got: bool = await _await_loaded()
+	_expect("a fetch lands", got)
+	_expect("and nothing is on screen yet", not A.showing())
+
+
+func _it_fires_at_the_end_of_the_match() -> void:
+	print("--- it fires as the match ends, not as the next one starts ---")
 	P.since_ad = 0
-	P.ad_gap = 0
-	for i in range(1, 40):
-		_at_summary()
-		if game._ad_before("title"):
-			return i
-	return -1
+	P.ad_gap = 2
+	await _await_loaded()
 
+	_play_one()
+	_expect("no break after one match", not A.showing())
+	_expect("and the summary is up", game.phase == game.Phase.OVER)
 
-func _it_fires_inside_the_window() -> void:
-	print("--- it lands between three and five matches ---")
-	var lengths: Dictionary = {}
-	var ok := true
-	for run in 24:
-		var n := _matches_until_break()
-		ok = ok and n >= P.ADS_EVERY_MIN and n <= P.ADS_EVERY_MAX
-		lengths[n] = true
-		# Serve it, so the next run starts from a freshly rolled gap.
-		game._start_ad("title")
-		game._activate("title")
-	_expect("every gap is %d to %d matches" % [P.ADS_EVERY_MIN, P.ADS_EVERY_MAX], ok)
-	_expect("and the length actually varies", lengths.size() > 1)
+	_play_one()
+	_expect("the break is on screen the moment the match ends", A.showing())
+	# The whole point of the move: the scoreboard is already behind it, so there
+	# is no second screen to come back to and nothing owed to the player.
+	_expect("with the summary already built behind it",
+		game.phase == game.Phase.OVER)
+	_expect("and input is refused while it is up", A.showing())
 
-
-func _it_holds_the_screen() -> void:
-	print("--- it holds the screen for the dwell ---")
-	P.since_ad = 0
-	P.ad_gap = P.ADS_EVERY_MIN
-	for i in P.ADS_EVERY_MIN:
-		_at_summary()
-	_expect("a break is due", game._ad_before("title"))
-
-	game._activate("title")
-	_expect("leaving the summary starts it", game.phase == game.Phase.AD)
-	_expect("it did not go to the title instead", game.phase != game.Phase.TITLE)
-	# Counted the moment it is served. Killing the app halfway through must not
-	# be a way to be shown the same break forever.
+	var before: int = P.since_ad
+	await _dismiss()
+	_expect("closing it leaves the summary (was %d)" % before,
+		game.phase == game.Phase.OVER and not A.showing())
 	_expect("and the counter is spent", P.since_ad == 0)
 	_expect("with a fresh gap rolled",
 		P.ad_gap >= P.ADS_EVERY_MIN and P.ad_gap <= P.ADS_EVERY_MAX)
 
-	_expect("close is dead at zero seconds", not game._ad_closable())
-	_expect("and the button says so", _ad_button_action(0) == "ad_wait")
-	game._activate("ad_wait")
-	_expect("pressing it early changes nothing", game.phase == game.Phase.AD)
-
-	game.ad_age = game.AD_DWELL - 0.1
-	_expect("still dead a tenth short", not game._ad_closable())
-	game.ad_age = game.AD_DWELL
-	_expect("live once the dwell is up", game._ad_closable())
-	_expect("and the button becomes Close", _ad_button_action(0) == "ad_close")
-	game._activate("ad_close")
-	_expect("which hands the screen back", game.phase == game.Phase.TITLE)
-
-
-## The action on one of the break's two buttons, which is also what a tap on it
-## would reach — both come off `_menu_buttons`.
-func _ad_button_action(i: int) -> String:
-	var buttons: Array = game._menu_buttons()
-	if i >= buttons.size():
-		return ""
-	return String((buttons[i] as Dictionary)["action"])
-
-
-func _it_gives_back_what_was_asked_for() -> void:
-	print("--- it gives back the door that was asked for ---")
-	P.since_ad = 0
-	P.ad_gap = P.ADS_EVERY_MIN
-	for i in P.ADS_EVERY_MIN:
-		_at_summary()
+	# And Rematch is now instant — the break is behind us, not in front.
+	P.ad_gap = 99
 	game._activate("rematch")
-	_expect("Rematch starts a break too", game.phase == game.Phase.AD)
-	_expect("and remembers which door it was", game.ad_next == "rematch")
-	game.ad_age = game.AD_DWELL
-	game._activate("ad_close")
-	_expect("closing it starts the match, not the title",
-		game.phase == game.Phase.COUNTDOWN or game.phase == game.Phase.PLAY)
-	_expect("and nothing is left owed", game.ad_next == "")
-
-	# Close is the only way off the break now that the test store has gone, and
-	# it has to be the only way: a second button whose action nothing handles
-	# would sit there looking live and swallow the tap that should have closed.
-	P.since_ad = 0
-	P.ad_gap = P.ADS_EVERY_MIN
-	for i in P.ADS_EVERY_MIN:
-		_at_summary()
-	game._activate("title")
-	game.ad_age = game.AD_DWELL
-	var acts: PackedStringArray = []
-	for b: Dictionary in game._menu_buttons():
-		acts.append(String(b["action"]))
-	_expect("the break offers exactly one door (%s)" % ", ".join(acts),
-		acts.size() == 1 and acts[0] == "ad_close")
-	game._activate("ad_close")
-	_expect("and it leads out", game.phase == game.Phase.TITLE)
+	_expect("Rematch goes straight into the match",
+		not A.showing() and game.phase != game.Phase.OVER)
 
 
-func _the_pack_and_the_practice_modes_are_exempt() -> void:
+## The failure that is invisible and expensive: the cadence says a break is due,
+## the network has nothing, and the counter gets spent anyway. Do that a few
+## nights running and the breaks quietly stop.
+func _an_ad_that_never_arrived_costs_nothing() -> void:
+	print("--- a break that never arrived is not one you have had ---")
+	await _await_loaded()
+	await _dismiss()
+	# Drain whatever the dismissal prefetched, so there is genuinely nothing in
+	# hand. Destroyed rather than dropped: the ad owns a view on the other side
+	# of the plugin, and nulling the reference would orphan it.
+	if A._ad != null:
+		A._ad.destroy()
+		A._ad = null
+	A._loading = false
+	A._load_token += 1
+	P.since_ad = 1
+	P.ad_gap = 1
+
+	_expect("the cadence says yes", P.ad_due())
+	_expect("but with nothing in hand no break is due", not game._break_due())
+	_play_one()
+	_expect("so none is shown", not A.showing())
+	_expect("and the counter was not spent", P.since_ad > 0)
+	_expect("the summary came up regardless", game.phase == game.Phase.OVER)
+
+
+func _who_never_sees_one() -> void:
 	print("--- who never sees one ---")
+	await _await_loaded()
 	P.owned = {}
 	P.since_ad = 99
 	P.ad_gap = P.ADS_EVERY_MIN
-	_at_summary()
-	_expect("an ordinary match is due one", game._ad_before("title"))
+	game.mode = game.Mode.NORMAL
+	_expect("an ordinary match is due one", game._break_due())
 
 	P.grant(P.PACK_PREMIUM)
-	_expect("an owner is not", not game._ad_before("title"))
+	_expect("an owner is not", not game._break_due())
 	P.revoke(P.PACK_PREMIUM)
 
-	# A lesson and a training run are not matches — they bank nothing and they
-	# cost nothing, so they must not be interrupted to sell anything either.
+	# A lesson, a training run and the daily bank nothing and cost nothing, so
+	# none of them may be interrupted to sell anything either.
 	for how in [game.Mode.TUTORIAL, game.Mode.TRAINING, game.Mode.DAILY]:
-		game.start_match("Rookie", 0, [], how)
-		game.phase = game.Phase.OVER
-		_expect("mode %d is exempt" % how, not game._ad_before("title"))
-
-	# And no other button on the summary is a door a break stands behind.
-	_at_summary()
-	P.since_ad = 99
-	for action in ["mastery", "settings", "cosmetics", "solo", "ad_close"]:
-		_expect("%s is not gated" % action, not game._ad_before(action))
+		game.mode = how
+		_expect("mode %d is exempt" % how, not game._break_due())
+	game.mode = game.Mode.NORMAL
 
 
 ## A live Game Center match cannot be stood up on a Linux box, so `net_active()`
 ## is false here no matter what — which is why the network clause is a parameter
-## rather than something `_ad_before` reads for itself. This is the only check in
-## the file that could not exist otherwise.
+## rather than something `_ad_allowed` reads for itself.
 func _versus_never_breaks() -> void:
 	print("--- versus is never interrupted ---")
-	game.start_match("Duelist", 1)
 	game.mode = game.Mode.NORMAL
 	_expect("a local match may be interrupted", game._ad_allowed(false))
 	_expect("a networked one may not", not game._ad_allowed(true))
@@ -191,4 +179,4 @@ func _versus_never_breaks() -> void:
 func _expect(what: String, ok: bool) -> void:
 	if not ok:
 		fails += 1
-	print("  %-52s %s" % [what, "ok" if ok else "FAILED"])
+	print("  %-56s %s" % [what, "ok" if ok else "FAILED"])

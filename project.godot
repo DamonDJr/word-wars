@@ -8,6 +8,17 @@
 
 config_version=5
 
+[admob]
+
+; Google's own test app ids. Written here rather than left to the editor to
+; create on first open, because an iOS build whose GADApplicationIdentifier is
+; missing or empty does not fall back to anything — the SDK raises on launch,
+; and the first sign of it is an app that dies on the splash screen.
+general/android/enabled=true
+general/android/app_id="ca-app-pub-3940256099942544~3347511713"
+general/ios/enabled=true
+general/ios/app_id="ca-app-pub-3940256099942544~1458002511"
+
 [application]
 
 config/name="Word Wars"
@@ -41,6 +52,7 @@ Link="*res://scripts/net_link.gd"
 Music="*res://scripts/music.gd"
 Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
+Ads="*res://scripts/ads.gd"
 
 [display]
 
@@ -52,7 +64,7 @@ window/handheld/orientation=1
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg")
+enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg", "res://addons/admob/plugin.cfg")
 
 [filesystem]
 
