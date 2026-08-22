@@ -51,7 +51,16 @@ const PRESSURE_START := 22.0
 const PRESSURE_MIN := 8.0
 const PRESSURE_STEP := 1.5
 
-const KEY_TOUCH_PADDING := 8.0
+## How far above its top row the keyboard starts claiming taps. Everything from
+## there down belongs to some key — see `_key_at` — so this is the only edge of
+## the thing that has to be decided by a number.
+const KEY_BAND_PAD := 10.0
+## Fingers land low. The hardware reports the middle of the contact patch and the
+## typist means the top of it, so the sample is lifted by this much before it is
+## matched against a key. Deliberately far smaller than a key: it is a nudge
+## against a bias that runs one direction, not a correction that can move a hit
+## from one row into another on its own.
+const TOUCH_LIFT := 6.0
 const DEBUG_TOUCH_HITBOXES := false
 ## Block shapes by tier. Which one you send is decided by your chain, never by
 ## how long the word was.
@@ -2988,9 +2997,20 @@ func _draw() -> void:
 # in the exact part of the screen you are not looking at. The information was
 # real and the distraction was worse, so the keys are plain now.
 
-## Which key is held down, for the pressed look. Cleared on release, so a
-## finger slid off a key does not leave it looking stuck.
-var _key_down := ""
+## Which keys are held, for the pressed look, as `touch index -> key id`.
+## Cleared on release, so a finger slid off a key does not leave it looking
+## stuck. A dictionary rather than one string because two thumbs hold two keys —
+## the mouse, which cannot, uses index -1.
+var _keys_down: Dictionary = {}
+
+## Set once real touch events start arriving, after which the mouse is no longer
+## allowed to work the keyboard. See `_unhandled_input`.
+var _touch_input := false
+
+
+## Whether the drawn keyboard is up and listening.
+func _keys_live() -> bool:
+	return portrait and phase == Phase.PLAY and not paused and player.alive
 
 
 # -------------------------------------------------------------- the back key
@@ -3213,11 +3233,11 @@ func _keyboard() -> Array:
 
 
 func _draw_keyboard() -> void:
-	var accent := PLAYER_ACCENT
+	var held := _keys_down.values()
 	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
 		var id: String = k["id"]
-		var down: bool = _key_down == id
+		var down: bool = held.has(id)
 		if down:
 			r = Rect2(r.position + Vector2(0, 3), r.size - Vector2(0, 3))
 
@@ -3231,20 +3251,33 @@ func _draw_keyboard() -> void:
 			"back":
 				bg = _key_bg.darkened(0.25) if not down else _key_bg.lightened(0.10)
 				edge = Color("#c77dff", 0.5)
+			# Reads as a stronger DEL rather than as its own thing, because that
+			# is what it is — and it sits at the far end of the same row, where
+			# nothing you are aiming at is next to it except Z.
+			"clear":
+				bg = _key_bg.darkened(0.25) if not down else _key_bg.lightened(0.10)
+				edge = Color("#c77dff", 0.32)
+				ink = Color(_key_ink, 0.72)
 		if down:
 			bg = bg.lightened(0.12)
 		_panel(r, bg, edge, 9.0, 2.0)
 		_otext(_font_bold, r.get_center(), String(k["label"]),
 			26 if id.length() == 1 else 19, ink)
 
+## The keys as they are drawn, plus the line above which the keyboard stops
+## claiming taps. There is nothing else left to draw: inside the band every pixel
+## belongs to the nearest key, so the boundaries are simply the midlines between
+## neighbours and the only edge that is a decision is the top one.
 func _draw_keyboard_hitboxes() -> void:
 	if not DEBUG_TOUCH_HITBOXES:
 		return
-		
+
+	var size := get_viewport_rect().size
+	var top: float = _keyboard_bottom() - Keyboard.height() - KEY_BAND_PAD
+	draw_rect(Rect2(0.0, top, size.x, size.y - top), Color(0.2, 0.8, 1.0, 0.08), true)
+	draw_line(Vector2(0.0, top), Vector2(size.x, top), Color(1.0, 0.5, 0.2, 0.6), 2.0)
 	for k: Dictionary in _keyboard():
-		var rect :=(k["rect"] as Rect2).grow(KEY_TOUCH_PADDING)
-		draw_rect(rect, Color(0.2, 0.8, 1.0, 0.15), true)
-		draw_rect(rect, Color(0.2, 0.8, 1.0, 0.5), false, 1.0)
+		draw_rect(k["rect"] as Rect2, Color(0.2, 0.8, 1.0, 0.5), false, 1.0)
 # --------------------------------------------------- the system keyboard
 #
 # The drawn keyboard is for the match, and only for the match. The lobby and the
@@ -3278,12 +3311,43 @@ func _hide_keyboard() -> void:
 		DisplayServer.virtual_keyboard_hide()
 
 
-## Which key is under a point, or "" for none.
+## Which key is under a point, or "" if the point is not on the keyboard at all.
+##
+## Not a hit test. Padding every key by a few pixels — which is what this used to
+## do — looks like generosity and is not: the padded rects overlap, and in the
+## overlap the winner is whichever key came first out of `_keyboard()`, which is
+## always the one further left and further up. Every near miss resolved the same
+## direction, so the keyboard was not merely imprecise, it was imprecise with a
+## grain, and a typist cannot learn their way around that.
+##
+## So the keyboard owns a band of the screen outright, and inside it there is no
+## such thing as a gap: an exact hit wins, and anything else goes to whichever
+## key it is closest to the edge of. Nothing about what you are typing is
+## consulted — this is geometry, and a tap that lands squarely on the wrong
+## letter still types the wrong letter. It only stops the misses that were never
+## really aimed at anything else from being thrown away.
 func _key_at(p: Vector2) -> String:
-	for k: Dictionary in _keyboard():
-		if (k["rect"] as Rect2).grow(KEY_TOUCH_PADDING).has_point(p):
+	var at := p - Vector2(0.0, TOUCH_LIFT)
+	if at.y < _keyboard_bottom() - Keyboard.height() - KEY_BAND_PAD:
+		return ""
+
+	var keys := _keyboard()
+	var best := ""
+	var best_d := INF
+	for k: Dictionary in keys:
+		var r: Rect2 = k["rect"]
+		if r.has_point(at):
 			return String(k["id"])
-	return ""
+		# Distance to the rectangle rather than to its centre, because the keys
+		# are not all the same size — measuring to centres would let FIRE, being
+		# the widest thing on the screen, pull taps off the letters beside it.
+		var dx := maxf(maxf(r.position.x - at.x, at.x - r.end.x), 0.0)
+		var dy := maxf(maxf(r.position.y - at.y, at.y - r.end.y), 0.0)
+		var d := dx * dx + dy * dy
+		if d < best_d:
+			best_d = d
+			best = String(k["id"])
+	return best
 
 
 ## A tap on a key does exactly what the matching physical key does, so there is
@@ -3292,7 +3356,6 @@ func _key_at(p: Vector2) -> String:
 func _press_key(id: String) -> void:
 	if id == "":
 		return
-	_key_down = id
 	if id == "fire":
 		_submit_player()
 		return
@@ -3301,6 +3364,18 @@ func _press_key(id: String) -> void:
 			typed = typed.substr(0, maxi(0, typed.length() - 1))
 			Sfx.play("back", randf_range(0.94, 1.06))
 			Haptics.fire("back")
+		return
+	# What Ctrl+Backspace has always done on a desktop. A word you have decided
+	# against is a word you have decided against, and getting rid of it one letter
+	# at a time is six taps of pure tax while the board is filling up.
+	if id == "clear":
+		if player.alive and not paused and typed != "":
+			typed = ""
+			# Pitched well under DEL and felt as a stop rather than as a tap, so
+			# the difference between losing a letter and losing the word is
+			# something you hear and feel without looking up from the board.
+			Sfx.play("back", 0.72)
+			Haptics.fire("reject", 0.6)
 		return
 	if paused or not player.alive or typed.length() >= 20:
 		return
@@ -6576,6 +6651,26 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Two thumbs. Godot turns touches into mouse presses one at a time — the
+	# second finger down while the first is still held produces no event at all —
+	# and a keystroke that never arrives is indistinguishable, from the typist's
+	# side, from one that landed on the wrong key. So the keyboard reads the
+	# touches themselves, and once any have arrived the mouse path below stands
+	# down for good rather than delivering the same press twice.
+	if event is InputEventScreenTouch:
+		var st := event as InputEventScreenTouch
+		_touch_input = true
+		if st.pressed:
+			if _keys_live():
+				var key := _key_at(st.position)
+				if key != "":
+					_keys_down[st.index] = key
+					_press_key(key)
+					return
+		elif _keys_down.has(st.index):
+			_keys_down.erase(st.index)
+			return
+
 	# Before anything else, and before the splash swallows input: the back button
 	# is the only way off most of these screens on a phone, so nothing else is
 	# allowed to sit on top of it.
@@ -6623,18 +6718,21 @@ func _unhandled_input(event: InputEvent) -> void:
 					return
 
 	# The drawn keyboard takes priority over everything else a click could mean
-	# while it is up, because it covers the bottom third of the screen.
-	if portrait and phase == Phase.PLAY and not paused and player.alive:
+	# while it is up, because it covers the bottom third of the screen. Skipped
+	# entirely on a touchscreen, where the block at the top of this function has
+	# already dealt with the same press as a touch.
+	if _keys_live() and not _touch_input:
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
 			if mb.button_index == MOUSE_BUTTON_LEFT:
 				var hit := _key_at(get_viewport().get_mouse_position())
 				if mb.pressed:
 					if hit != "":
+						_keys_down[-1] = hit
 						_press_key(hit)
 						return
-				elif _key_down != "":
-					_key_down = ""
+				elif _keys_down.has(-1):
+					_keys_down.erase(-1)
 					return
 	if phase == Phase.SPLASH:
 		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
