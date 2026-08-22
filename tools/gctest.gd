@@ -180,6 +180,22 @@ func _constants_exist() -> void:
 		_expect("GKMatch.SendDataMode.%s exists" % name,
 			ClassDB.class_has_integer_constant("GKMatch", name))
 
+	print("--- and the refusals the friend picker tells apart ---")
+	# `_friends_refused` turns each of these into different advice for a
+	# different person. If one is renamed the match arm stops matching and every
+	# refusal quietly collapses back to the catch-all that hid
+	# FRIEND_LIST_DESCRIPTION_MISSING in the first place.
+	for name in ["FRIEND_LIST_DESCRIPTION_MISSING", "FRIEND_LIST_DENIED",
+			"FRIEND_LIST_RESTRICTED", "NOT_AUTHENTICATED", "CANCELLED"]:
+		_expect("GKError.Code.%s exists" % name,
+			ClassDB.class_has_integer_constant("GKError", name))
+	for name in ["code", "domain", "message"]:
+		var have := false
+		for p in ClassDB.class_get_property_list("GKError", true):
+			if p.name == name:
+				have = true
+		_expect("GKError.%s exists" % name, have)
+
 
 func _callbacks_take_what_apple_sends() -> void:
 	print("--- and the completion handlers do too ---")

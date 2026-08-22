@@ -300,9 +300,21 @@ func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
 ## inside the app is to know who your friends are and pass them to `find_match`
 ## as recipients — which is exactly what `load_friends` is for.
 ##
-## The first call raises Apple's permission prompt. A refusal comes back as an
-## error rather than an empty array, which is what lets "you said no" and "you
-## have no friends here" be told apart and said differently.
+## Two things about this call are not obvious and both have bitten already.
+##
+## It needs `NSGKFriendListUsageDescription` in the app's Info.plist, the same
+## way the camera does. Without it Apple refuses with
+## `FRIEND_LIST_DESCRIPTION_MISSING` — which looks exactly like the player
+## declining, and is not: it is the build being wrong, and no amount of tapping
+## "ask again" will fix it. It is set in `export_presets.cfg` for iOS and macOS.
+##
+## And it is mutual: Apple returns the friends who have *also* granted this game
+## access to them, so a short list — or an empty one — is normal and is not the
+## same as having no friends. The copy has to say so, or the picker reads as
+## broken to somebody with a full friends list in the Game Center app.
+##
+## A refusal comes back as an error rather than an empty array, which is what
+## lets all of those be told apart and said differently.
 func load_friends(force := false) -> void:
 	if not available() or local_player == null:
 		friends = []
@@ -324,13 +336,10 @@ func load_friends(force := false) -> void:
 
 func _on_friends_loaded(list, error = null) -> void:
 	if error != null:
-		# Nearly always the player declining the prompt, which is an answer and
-		# not a fault — so it is reported as a state the screen can offer a way
-		# out of rather than as a failure.
 		friends = []
 		friends_state = Friends.DENIED
-		friends_note = "Game Center would not share your friends"
-		push_warning("Game Center: load_friends failed — %s" % str(error))
+		friends_note = _friends_refused(error)
+		push_warning("Game Center: load_friends failed — %s" % _error_text(error))
 		friends_changed.emit()
 		return
 
@@ -345,7 +354,11 @@ func _on_friends_loaded(list, error = null) -> void:
 	# turn one unpopulated property into a picker with nothing pickable in it.
 	friends.sort_custom(_friend_before)
 	friends_state = Friends.READY if not friends.is_empty() else Friends.EMPTY
-	friends_note = "" if not friends.is_empty() else "no Game Center friends yet"
+	# Not "you have no friends" — Apple only hands back the ones who have also
+	# let this game see them, so an empty list is the common case for a brand new
+	# install and says nothing about the Game Center friends list itself.
+	friends_note = "" if not friends.is_empty() \
+		else "none of your friends have shared themselves with Word Wars"
 	friends_changed.emit()
 
 
@@ -353,6 +366,41 @@ func _friend_before(a: GKPlayer, b: GKPlayer) -> bool:
 	if a.is_invitable != b.is_invitable:
 		return a.is_invitable
 	return String(a.display_name).nocasecmp_to(String(b.display_name)) < 0
+
+
+## Why Apple said no, in words meant for whoever has to do something about it.
+##
+## This started as one catch-all — "Game Center would not share your friends" —
+## and that message cost a build-and-install to diagnose: the refusal was
+## `FRIEND_LIST_DESCRIPTION_MISSING`, which is not the player declining anything
+## but the app shipping without `NSGKFriendListUsageDescription` in its
+## Info.plist. Three of these are three different jobs for three different
+## people, and a message that cannot tell them apart sends the wrong one.
+func _friends_refused(error) -> String:
+	if not (error is GKError):
+		return "Game Center would not share your friends"
+	match (error as GKError).code:
+		GKError.Code.FRIEND_LIST_DESCRIPTION_MISSING:
+			# Nothing the player can do; the build is wrong.
+			return "this build is missing its friend-list permission"
+		GKError.Code.FRIEND_LIST_DENIED:
+			return "friends are switched off for Word Wars in Settings"
+		GKError.Code.FRIEND_LIST_RESTRICTED:
+			return "Screen Time is holding the friend list back"
+		GKError.Code.NOT_AUTHENTICATED:
+			return "sign in to Game Center first"
+		GKError.Code.CANCELLED:
+			return "cancelled — ask again when you are ready"
+	return "Game Center would not share your friends"
+
+
+## The whole of what Apple said, for the log. `str()` on a `GKError` prints the
+## object rather than the failure, which is how the code above went unseen.
+func _error_text(error) -> String:
+	if not (error is GKError):
+		return str(error)
+	var e := error as GKError
+	return "code %d (%s) — %s" % [e.code, e.domain, e.message]
 
 
 func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:

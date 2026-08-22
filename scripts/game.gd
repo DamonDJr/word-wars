@@ -4811,9 +4811,11 @@ func _draw_versus_friends(size: Vector2) -> void:
 				"you can still take a quick match, or start one from the Game Center app",
 				12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
 		elif listing == MultiplayerManager.Friends.EMPTY:
+			# Apple's friend list is mutual — they have to let Word Wars see them
+			# too — so this is not "you have nobody" and must not read as it.
 			_text_fit_overlay(_font, Vector2(cx, top),
-				"add someone in Game Center and they will show up here", 12,
-				size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+				"they see the same prompt in their copy · quick match works meanwhile",
+				12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
 		return
 
 	var shown := _versus_friends().size()
