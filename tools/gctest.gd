@@ -50,6 +50,11 @@ const CONNECTIONS := {
 	},
 	"GKMatch": {
 		"data_received": "_on_data",
+		# Both, always. GameKit calls the recipient form *instead of* the plain
+		# one when the delegate implements it, and this plugin's proxy does — so
+		# connecting only `data_received` is a match that hands over no data at
+		# all while reporting every send as a success.
+		"data_received_for_recipient_from_player": "_on_data_for",
 		"player_changed": "_on_player_changed",
 		"did_fail_with_error": "_on_match_error",
 	},

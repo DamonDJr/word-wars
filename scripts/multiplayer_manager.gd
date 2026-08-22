@@ -89,6 +89,8 @@ var _peer_said_hello := false
 ## answered" after one hello and after thirty are different faults.
 var _hellos_sent := 0
 var _send_failures := 0
+## Which GameKit callback delivered this match's packets. See `_note_delivery`.
+var _delivery := ""
 
 ## The people the in-app picker offers, as `GKPlayer`.
 var friends: Array = []
@@ -474,6 +476,21 @@ func _on_found_match(found, error = null) -> void:
 
 	current_match = found
 	current_match.data_received.connect(_on_data)
+	# GameKit has two data callbacks and only ever calls one of them.
+	#
+	# `match(_:didReceive:fromRemotePlayer:)` is the obvious one and it is the
+	# only one this connected for weeks. But a delegate that *also* implements
+	# `match(_:didReceive:forRecipient:fromRemotePlayer:)` gets the recipient
+	# form instead — Apple prefers the more specific method and never calls the
+	# plain one. This plugin's `GKMatch.Proxy` implements both, so every packet
+	# that has ever been sent to this game arrived on the signal below, with
+	# nothing listening to it.
+	#
+	# It presented as a network fault and is not one: sending returned OK on
+	# every call, the roster was populated and named, and thirty hellos went out
+	# over fifteen seconds while `_on_data` was never entered once. The plugin's
+	# own guide connects both signals, which is the tell.
+	current_match.data_received_for_recipient_from_player.connect(_on_data_for)
 	current_match.player_changed.connect(_on_player_changed)
 	current_match.did_fail_with_error.connect(_on_match_error)
 
@@ -481,6 +498,7 @@ func _on_found_match(found, error = null) -> void:
 	_peer_said_hello = false
 	_wait_age = 0.0
 	_hellos_sent = 0
+	_delivery = ""
 	_set_state(State.CONNECTING, "connecting")
 	_check_connected()
 
@@ -536,7 +554,29 @@ func _on_match_error(message: String) -> void:
 	_fail("the connection dropped")
 
 
+## The recipient-addressed form of the same delivery. Everything this game sends
+## is a broadcast, so the recipient is always us and is thrown away — the point
+## is only that the packet arrives at all.
+func _on_data_for(data: PackedByteArray, _recipient: GKPlayer,
+		from: GKPlayer) -> void:
+	_note_delivery("for-recipient")
+	_on_data(data, from)
+
+
+## Which of GameKit's two callbacks is actually feeding us, said once per match.
+## Recorded because the answer is not documented anywhere we control and it is
+## the whole difference between a working match and a silent one — if a future
+## iOS flips it back to the plain form, this line says so on the first packet
+## rather than after another fortnight of "the other player never answered".
+func _note_delivery(how: String) -> void:
+	if _delivery == how:
+		return
+	_delivery = how
+	print("[GC] data arriving via %s" % how)
+
+
 func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
+	_note_delivery(_delivery if _delivery != "" else "from-remote-player")
 	var packet = JSON.parse_string(data.get_string_from_utf8())
 	if typeof(packet) != TYPE_DICTIONARY:
 		return
