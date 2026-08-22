@@ -5089,11 +5089,17 @@ func _draw_solo(size: Vector2) -> void:
 		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
 			Color("#ffd166") if on else Color(accent, 0.9 if hot else 0.28), 10.0,
 			3.0 if on else 2.0)
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 26.0),
-			String(c["name"]).to_upper(), 17, r.size.x - 20.0,
-			Color.WHITE if hot else Color("#e6ecff"))
-		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 48.0),
-			String(c["note"]), 11, r.size.x - 14.0, Color("#8d99bd"), 9)
+		# Placed off the card's own height rather than at +26/+48, so the taller
+		# portrait card carries the pair down with it instead of leaving them
+		# huddled at the top. `_text_fit_overlay` shrinks to fit, so raising the
+		# starting sizes can only help a card that has the room and costs nothing
+		# to one that does not.
+		_text_fit_overlay(_font_bold,
+			Vector2(r.get_center().x, r.position.y + r.size.y * 0.38),
+			String(c["name"]).to_upper(), 20, r.size.x - 20.0,
+			Color.WHITE if hot else Color("#e6ecff"), 14)
+		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + r.size.y * 0.72),
+			String(c["note"]), 14, r.size.x - 14.0, Color("#8d99bd"), 10)
 
 	_draw_kind_cards(_solo_kinds_top(), true)
 
@@ -5144,11 +5150,13 @@ func _draw_kind_cards(top: float, editable: bool) -> float:
 		# as wide and the text was hugging the left edge of them.
 		var tx: float = r.position.x + (r.size.x - 70.0) * 0.5
 		var tw: float = r.size.x - 90.0
-		_otext(_font_bold, Vector2(tx, r.get_center().y - 8.0),
-			String(c["name"]).to_upper(), 14,
-			Color("#e6ecff") if on else Color("#5d6a92"))
-		_text_fit_overlay(_font, Vector2(tx, r.get_center().y + 11.0),
-			String(c["note"]), 10, tw, Color("#7c88ad") if on else Color("#3d4666"), 8)
+		# Fitted rather than fixed, because the name shares the row with a switch
+		# and a note — raising it blind would have run BLOCK KINDS into the toggle.
+		_text_fit_overlay(_font_bold, Vector2(tx, r.get_center().y - 9.0),
+			String(c["name"]).to_upper(), 17, tw,
+			Color("#e6ecff") if on else Color("#5d6a92"), 12)
+		_text_fit_overlay(_font, Vector2(tx, r.get_center().y + 12.0),
+			String(c["note"]), 13, tw, Color("#7c88ad") if on else Color("#3d4666"), 9)
 		# A switch rather than a tick: these are settings, and a tick reads as
 		# "done" where a switch reads as "on".
 		var sw := Rect2(r.end.x - 62.0, r.get_center().y - 11.0, 46.0, 22.0)
