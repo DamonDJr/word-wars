@@ -452,6 +452,10 @@ func _draw_scrollbar(size: Vector2) -> void:
 ## Whether the premium row is waiting for its second tap. Deliberately not
 ## saved: an armed purchase should not survive leaving the screen.
 var _buy_armed := false
+## What Game Center last said it was doing. Shown on the title screen, because
+## matchmaking happens behind a native sheet and the moment it closes the player
+## is looking at a menu with no explanation of what is going on.
+var net_status := ""
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
@@ -568,8 +572,9 @@ var _hover_action := ""
 
 
 func _ready() -> void:
-	MultiplayerManager.match_ready.connect(_on_match_ready)
-	MultiplayerManager.player_connected.connect(_on_player_connected)
+	MultiplayerManager.match_started.connect(_on_match_started)
+	MultiplayerManager.match_ended.connect(_on_match_ended)
+	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
 	
 	randomize()
@@ -640,12 +645,37 @@ func _ready() -> void:
 
 	_net_setup()
 
-func _on_match_ready() -> void:
-	start_match("Duelist", 0, [], Mode.NORMAL)
+## Both ends have shaken hands, so both start now.
+##
+## This used to run the moment the match object arrived, which is before the
+## other player has attached — one device would count down into an empty game
+## while the other was still connecting, and neither could see why.
+func _on_match_started() -> void:
+	net_status = ""
+	start_match("Versus", 0, [], Mode.NORMAL)
 
-func _on_player_connected(player: GKPlayer) -> void:
-	print("Opponent connected: ", player.display_name)
-	
+
+## Matchmaking was cancelled, refused, or the opponent left.
+func _on_match_ended(reason: String) -> void:
+	net_status = ""
+	if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
+		# Mid-match: you win by default rather than being dumped to the title
+		# with nothing to show for it.
+		winner = "YOU"
+		_log(reason, Color("#ff6b6b"))
+		_end_match(ai_side)
+		return
+	if reason != "cancelled":
+		_say(reason, Color("#ff6b6b"))
+
+
+## What Game Center is doing, so the title screen can say so instead of looking
+## frozen behind a sheet that has closed.
+func _on_net_status(text: String) -> void:
+	net_status = text if MultiplayerManager.state != MultiplayerManager.State.PLAYING \
+		else ""
+
+
 ## Measure the window and pick a design space to match it. Called on boot and on
 ## every resize, so rotating a phone — or dragging a desktop window narrow — lands
 ## in the other layout immediately.
@@ -1082,6 +1112,9 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 			var who: String = lineup[s.slot -1]
 			s.label = who.to_upper() if slots_in_play > 2 else "CPU"
 			s.bot = AiOpponent.new()
+			# Without this the bot keeps its defaults — no words per minute, no
+			# vocabulary, no reaction — and sits there for the whole match.
+			s.bot.configure(who)
 			s.peer_id = 0
 		if s.bot != null and not s.in_match:
 			s.bot = null
@@ -1351,7 +1384,7 @@ func _credit_topout(culprit: int, victim: SideState) -> void:
 		_log("%s overfilled %s — +%s" % [_show(who.label), _show(victim.label),
 			_commas(Scoring.TOPOUT_BONUS)], Color("#ffd166"))
 	elif net_active():
-		Link.send_topout(culprit)
+		MultiplayerManager.send_event("topout", {})
 
 
 ## Their attack ended one of our lives, and they are owed for it.
@@ -1807,15 +1840,31 @@ func _on_multiplayer_data(
 	player: GKPlayer	
 ) -> void:
 	
-	match packet.get("type"):
+	# Every message the match needs, in one place. Only `attack` was wired
+	# before, so a connected game had no salvos, no ambient pressure, no mirror
+	# of the opponent's board and no way to end — which is most of what "it
+	# connects and then nothing happens" was.
+	var payload: Dictionary = packet.get("payload", {})
+	match String(packet.get("type", "")):
 		"attack":
-			_on_multiplayer_attack(packet["payload"])
-
-func _on_multiplayer_attack(data: Dictionary) -> void:
-	var word: String = String(data["word"])
-	var tier: int = int(data["tier"])
-	
-	_on_net_attack(word, tier)
+			_on_net_attack(String(payload.get("word", "")),
+				int(payload.get("tier", 0)))
+		"salvo":
+			_on_net_salvo(String(payload.get("word", "")),
+				int(payload.get("count", 0)))
+		"pressure":
+			# Ambient pressure is minted from a word both ends agree on, so the
+			# clock stays in step rather than drifting apart.
+			_seed_pressure(String(payload.get("word", "")))
+		"state":
+			_on_net_state(payload)
+		"topout":
+			_on_topout_credit(0)
+		"topped_out":
+			# They lost their last board, so the match is over and we took it.
+			if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
+				winner = "YOU"
+				_end_match(ai_side)
 
 ## Which special this block is, if any. Rolled per block on the machine that
 ## owns the board, which is safe over a network because each board is simulated
@@ -2032,7 +2081,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	var power := SALVO_BLOCKS + combo
 
 	if net_active() and not _owned_here(defender):
-		Link.send_salvo(defender.peer_id, word, power)
+		MultiplayerManager.send_event("salvo", {"word": word, "count": power})
 		defender.flash = 1.0
 	else:
 		for i in power:
@@ -2461,7 +2510,7 @@ func _tick_pressure(delta: float) -> void:
 		return
 	var source := WordBank.random_common()
 	if net_active():
-		Link.send_pressure(source)
+		MultiplayerManager.send_event("pressure", {"word": source})
 	_seed_pressure(source)
 
 
@@ -2722,7 +2771,7 @@ func _lose_life(side: SideState) -> void:
 		side.pending.clear()
 		_log("%s is out" % side.label, Color("#ff6b6b"))
 		if side == player and net_active():
-			Link.send_topped_out()
+			MultiplayerManager.send_event("topped_out", {})
 		_aim_everyone()
 		var standing := _living()
 		if standing.size() <= 1:
@@ -5652,16 +5701,19 @@ func net_active() -> bool:
 	return MultiplayerManager.current_match != null
 
 
+## Nothing. Kept as a marker rather than deleted, because the shape of what used
+## to be here is the shape of what Game Center still needs.
+##
+## This wired ten signals from `Link`, the netfox/noray/EOS transport. That stack
+## is still autoloaded and still compiled in, but nothing calls `Link.host` or
+## `Link.join` any more, so none of those signals can ever fire — the connections
+## were live wires to a dead switchboard. Every message they carried has been
+## re-pointed at `MultiplayerManager` and arrives through `_on_multiplayer_data`.
+##
+## `net_link.gd`, the noray addon and the EOS autoloads are all still in the
+## project and can go whenever the versus path has been proven on a device.
 func _net_setup() -> void:
-	Link.match_begin.connect(_on_net_match_begin)
-	Link.peer_left.connect(_on_net_peer_left)
-	Link.rematch_agreed.connect(_on_net_rematch)
-	Link.attack_received.connect(_on_net_attack)
-	Link.salvo_received.connect(_on_net_salvo)
-	Link.pressure_received.connect(_seed_pressure)
-	Link.opponent_topped_out.connect(func(): _end_match(ai_side))
-	Link.state_received.connect(_on_net_state)
-	Link.topout_credit.connect(_on_topout_credit)
+	pass
 
 
 func _on_net_match_begin() -> void:
@@ -5775,8 +5827,10 @@ func _on_net_attack(word: String, tier: int) -> void:
 	side.flash = 1.0
 
 
-func _on_net_salvo(word: String, count: int, victim: int) -> void:
-	var side := _side_for_entity(victim)
+## A salvo aimed at us. There is no victim to look up in a one-on-one match —
+## anything that arrives is arriving here.
+func _on_net_salvo(word: String, count: int) -> void:
+	var side: SideState = player
 	if side == null:
 		return
 	for i in mini(count, 40):
@@ -5803,8 +5857,11 @@ func _side_for_entity(id: int) -> SideState:
 
 
 func _on_net_state(payload: Dictionary) -> void:
-	var ai_side := _side_for_entity(int(payload.get("own", 0)))
-	if ai_side == null or ai_side == player:
+	# The board on the other end of the match. Routing this by entity id was for
+	# a four-way table with peer ids in it; a Game Center match has exactly two
+	# boards, and the one arriving is never ours.
+	var ai_side: SideState = sides[1] if sides.size() > 1 else null
+	if ai_side == null or not ai_side.in_match:
 		return
 	ai_side.board.mirror_blocks(payload.get("b", []))
 
@@ -5844,11 +5901,9 @@ func _push_state(delta: float) -> void:
 		return
 	_net_state_timer = 1.0 / NET_STATE_HZ
 
-	Link.send_state(_state_of(player, multiplayer.get_unique_id()))
-	# The host also speaks for every bot at the table.
-	for s: SideState in sides:
-		if s.bot != null and s.in_match:
-			Link.send_state(_state_of(s, s.peer_id))
+	# One board goes over the wire, because a Game Center match is one on one and
+	# the only board the other end cannot see is this one.
+	MultiplayerManager.send_state(_state_of(player, 0))
 
 
 func _state_of(who: SideState, own: int) -> Dictionary:
@@ -6129,6 +6184,20 @@ func _draw_title_bands() -> void:
 const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
 
 
+## What the versus door has to say for itself.
+##
+## Matchmaking happens behind a native sheet. The moment it closes — found,
+## cancelled, or still waiting on the other player to attach — the player is
+## looking at this menu again, and without this line there is nothing anywhere
+## on screen saying whether anything is happening.
+func _versus_sub() -> String:
+	if not MultiplayerManager.available():
+		return "needs an iPhone or a Mac"
+	if net_status != "":
+		return net_status
+	return "One on one, over Game Center"
+
+
 func _title_modes() -> Array:
 	var fresh: bool = not bool(Profile.pref("taught"))
 	var dkey := daily_key()
@@ -6151,7 +6220,7 @@ func _title_modes() -> Array:
 		["DAI", "DAILY", dsub, "daily",
 			Color("#5d6a92") if spent else Color("#ffd166"), 1],
 		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 1],
-		["VER", "VERSUS", "Room codes, up to four", "versus", Color("#c77dff"), 1],
+		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 1],
 		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
 			Color("#f8961e"), 2],
 		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
