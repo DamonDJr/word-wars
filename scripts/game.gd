@@ -356,6 +356,8 @@ class SideState extends RefCounted:
 	## Power word name -> times earned this match, and the longest word played.
 	var power_tally: Dictionary = {}
 	var longest_word := ""
+	## Only ever set for a peer, from their own machine. See `_wpm_of`.
+	var wpm := 0.0
 	var tier_bonus := 0
 	## Seconds of CLUTCH reprieve still running on this board.
 	var slowdown := 0.0
@@ -1578,7 +1580,24 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	# So OVER gets its own two keys and nothing else: the two things drawn on the
 	# screen. Everything else is ignored rather than repurposed.
 	if phase == Phase.OVER:
+		# The card answers first. It is a question, so ENTER takes it and ESC
+		# declines — and declining hangs up as well as leaving, so they stop
+		# waiting on somebody who has gone.
 		if over_age < OVER_LOCKOUT:
+			return
+		# The card answers first. It is a question, so ENTER takes it and ESC
+		# declines — and declining hangs up as well as leaving, so they stop
+		# waiting on somebody who has gone.
+		#
+		# Behind the lockout with everything else, deliberately: ENTER is the key
+		# that fires a word, so it is the single most likely keystroke to still
+		# be in flight when a match ends. Accepting a rematch with it a
+		# millisecond after the scoreboard appears is the same accident the
+		# lockout exists to prevent, and a worse one — it starts a whole match.
+		if _rematch_popup():
+			match k.keycode:
+				KEY_ENTER, KEY_KP_ENTER: _activate("rematch")
+				KEY_ESCAPE: _activate("title")
 			return
 		# One key, and it is the one nobody presses by accident.
 		#
@@ -1959,6 +1978,76 @@ func _on_net_rematch() -> void:
 	rematch_offered = true
 	if rematch_asked:
 		_begin_rematch()
+
+
+## Whether the "they want a rematch" card is up.
+##
+## A subtitle change on a button was too quiet to notice — the whole event is
+## somebody else asking you a question, and the summary screen is busy. So it
+## gets a card over the top, which is also what makes Yes and No a pair of real
+## choices rather than one button that has quietly changed meaning.
+##
+## Only ever raised for a request that arrived, never for one we sent: if this
+## device asked first there is nothing to decide, and the match starts by itself
+## the moment they agree.
+func _rematch_popup() -> bool:
+	# `net_active` as well as the flag. Only a packet can set `rematch_offered`
+	# and only a peer sends one, so the two cannot disagree today — but the card
+	# is a person asking a question, and nothing about a CPU match should ever be
+	# able to raise one.
+	return phase == Phase.OVER and net_active() and rematch_offered \
+		and not rematch_asked and _rematch_possible()
+
+
+## The card, and the two answers under it.
+func _rematch_popup_buttons() -> Array:
+	if not _rematch_popup():
+		return []
+	var size := get_viewport_rect().size
+	var w: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
+	var cx := size.x * 0.5
+	var card := _rematch_popup_rect()
+	var bw: float = (w - 60.0 - 16.0) * 0.5
+	var by: float = card.end.y - 30.0 - 66.0
+	return [
+		{"rect": Rect2(cx - w * 0.5 + 30.0, by, bw, 66.0), "key": "",
+			"label": "Play again", "sub": "", "note": "", "rating": 0,
+			"accent": PLAYER_ACCENT, "action": "rematch"},
+		{"rect": Rect2(cx - w * 0.5 + 30.0 + bw + 16.0, by, bw, 66.0), "key": "ESC",
+			"label": "No thanks", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"},
+	]
+
+
+func _rematch_popup_rect() -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
+	var h: float = 250.0
+	return Rect2(size.x * 0.5 - w * 0.5, size.y * 0.5 - h * 0.5, w, h)
+
+
+func _draw_rematch_popup(size: Vector2) -> void:
+	if not _rematch_popup():
+		return
+	# Everything behind it is dimmed and unclickable, because this is a question
+	# and the screen under it is the answer to the last one.
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.82), true)
+	var r := _rematch_popup_rect()
+	_panel(r, Color("#111730"), Color(PLAYER_ACCENT, 0.75), 14.0, 3.0)
+	var cx := r.get_center().x
+	var who := _show(ai_side.label).to_upper() if net_active() else "THEY"
+	var pulse := 0.65 + 0.35 * sin(Time.get_ticks_msec() / 320.0)
+	_otext(_font, Vector2(cx, r.position.y + 40.0), "REMATCH", 14,
+		Color(PLAYER_ACCENT, pulse))
+	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + 84.0),
+		"%s WANT ANOTHER" % who, 30, r.size.x - 50.0, Color("#e6ecff"), 17)
+	_text_fit_overlay(_font, Vector2(cx, r.position.y + 120.0),
+		"same opponent, straight into it", 16, r.size.x - 50.0,
+		Color("#8d99bd"), 12)
+	for b: Dictionary in _rematch_popup_buttons():
+		_draw_menu_button(b)
 
 
 func _begin_rematch() -> void:
@@ -2934,10 +3023,12 @@ func _end_match(loser: SideState) -> void:
 	# Taking the match is worth points, and how comfortably you took it is worth
 	# more. Without this a win and a loss scored the same, which is why the
 	# scoreboard could crown somebody who had just lost.
+	win_spoils = 0
 	if mode == Mode.NORMAL and winner == "YOU" and player.alive:
 		var lives_left: int = maxi(0, player.lives)
 		var spoils: int = Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS
 		player.score += spoils
+		win_spoils = spoils
 		_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
 		score_kick = 1.0
 		_log("victory — +%s (%d %s left)" % [_commas(spoils), lives_left,
@@ -4047,6 +4138,9 @@ func _draw_overlay() -> void:
 		_draw_countdown(size)
 	elif phase == Phase.OVER:
 		_draw_gameover(size)
+		# Over the summary rather than inside it, and last, so nothing the
+		# scoreboard draws lands on top of the question.
+		_draw_rematch_popup(size)
 
 	# Last, so it sits over whatever the screen drew — several of these paint a
 	# full-width header straight through the corner it lives in.
@@ -5996,23 +6090,40 @@ func _draw_gameover(size: Vector2) -> void:
 	# The score is the headline, above the tiles rather than inside one. Winning
 	# is binary and says nothing about how well you played; this is the number
 	# worth arguing over afterwards.
-	_otext(_font, Vector2(cx, 204), "SCORE", 13, Color("#7c88ad"))
-	_otext(_font_bold, Vector2(cx, 248), _commas(player.score), 62, Color("#ffd166"))
+	_otext(_font, Vector2(cx, 204), "SCORE", _over_size(15), Color("#7c88ad"))
+	_otext(_font_bold, Vector2(cx, 248), _commas(player.score),
+		_over_size(62), Color("#ffd166"))
+	var line_y := 288.0
+	# The headline jumps at the end of a won match and the reason was on screen
+	# for one second, as a pop that has faded by the time anybody reads the
+	# total. Two numbers that do not add up look like a bug in the scoring, so
+	# the summary shows its working: this is the only place the win bonus is
+	# still legible when you are actually looking at the score it changed.
+	if win_spoils > 0:
+		_text_fit_overlay(_font, Vector2(cx, line_y),
+			"%s in play  +  %s for the win" % [
+				_commas(player.score - win_spoils), _commas(win_spoils)],
+			_over_size(15), size.x - GRID_MARGIN * 2.0, Color("#90be6d"), 11)
+		line_y += 26.0
 	if player.best_word != "":
-		_otext(_font, Vector2(cx, 288),
+		_text_fit_overlay(_font, Vector2(cx, line_y),
 			"best word — %s for %s" % [_show(player.best_word.to_upper()),
-				_commas(player.best_word_score)], 14, Color("#8d99bd"))
+				_commas(player.best_word_score)], _over_size(15),
+			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
 
 	# Time and words-per-minute are the two numbers here that are only ever
 	# yours: there is no such thing as a CPU's typing speed, and a peer's is not
 	# sent. Everything else is comparable, so everything else went into the
 	# table below rather than being said twice.
-	var subtitle := "%d:%02d  ·  %d wpm  ·  %s" % [
-		int(match_time) / 60, int(match_time) % 60, int(round(_wpm())),
+	# WPM moved into the table, where it can be compared. Repeating it here
+	# would be the same number twice on one screen.
+	var subtitle := "%d:%02d  ·  %s" % [
+		int(match_time) / 60, int(match_time) % 60,
 		difficulty.to_upper() if not net_active() else "VERSUS"]
 	if mode == Mode.DAILY:
 		subtitle = "DAILY BOARD  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
-	_otext(_font, Vector2(cx, 312), subtitle, 13, Color("#7c88ad"))
+	_text_fit_overlay(_font, Vector2(cx, _scoreboard_top() - 30.0), subtitle,
+		_over_size(15), size.x - GRID_MARGIN * 2.0, Color("#7c88ad"), 11)
 
 	_draw_scoreboard(size, _scoreboard_top(), tint)
 
@@ -6049,21 +6160,64 @@ func _draw_gameover(size: Vector2) -> void:
 			"click Rematch to go again      ESC — title", 13, Color("#4d5878"))
 
 
+## What the win was worth, kept so the summary can reconcile its own headline.
+## Zero on a loss, on a daily and on anything that is not a normal match.
+var win_spoils := 0
+
 const SCORE_ROW_H := 34.0
 const SCORE_HEAD_H := 22.0
 
 
+## The summary was laid out in the 720-tall landscape design space and then
+## handed a phone twice that height, where it kept the same 34px rows and 10px
+## column heads — a table built for a monitor, printed small in the middle of a
+## screen with room to spare. Both the rows and the type they carry scale now.
+func _over_fill() -> float:
+	return 1.35 if portrait else 1.0
+
+
+func _over_size(base: int) -> int:
+	return int(round(float(base) * (1.25 if portrait else 1.0)))
+
+
+func _score_row_h() -> float:
+	return SCORE_ROW_H * _over_fill()
+
+
 func _scoreboard_top() -> float:
-	return 342.0 + safe_top
+	# The win line only exists on a won match, so the table starts lower only
+	# when there is something above it to make room for.
+	return 342.0 + safe_top + (26.0 if win_spoils > 0 else 0.0)
 
 
 ## Which columns the table carries. Powers and salvos are the first to go on a
 ## narrow screen: they are the rarest events in a match and often read 0 across
 ## every row, where words and clears always say something.
+##
+## WPM earns a place in both. It used to be excluded on the grounds that it is
+## "only ever yours" — true of the measurement, but the conclusion was wrong:
+## typing speed is the most directly comparable number in the game and the whole
+## point of the table is comparing. It travels in the state payload now, so a
+## peer's is real rather than a local default of zero.
 func _scoreboard_cols() -> Array:
 	if portrait:
-		return ["SCORE", "WORDS", "CLEARED", "CHAIN"]
-	return ["SCORE", "WORDS", "CLEARED", "CHAIN", "POWERS", "SALVOS"]
+		return ["SCORE", "WPM", "WORDS", "CHAIN"]
+	return ["SCORE", "WPM", "WORDS", "CLEARED", "CHAIN", "POWERS", "SALVOS"]
+
+
+## Typing speed for any row, from whichever of the three places knows it.
+##
+## Yours is measured from keystrokes on this machine; a peer's arrives in their
+## state payload; a CPU has no keystrokes at all and reports the rate it was
+## configured to type at, which is the same number the solo screen advertises it
+## by. A bot before `configure` and a peer on an older build both read zero, and
+## zero is shown as a dash rather than as a claim.
+func _wpm_of(s: SideState) -> float:
+	if s == player:
+		return _wpm()
+	if s.bot != null:
+		return s.bot.wpm
+	return s.wpm
 
 
 ## Everyone who played, best first.
@@ -6095,17 +6249,18 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 	var col_w: float = (tw - name_w) / float(cols.size())
 
 	for i in cols.size():
-		_otext(_font, Vector2(x0 + name_w + col_w * (float(i) + 0.5), top), cols[i], 10,
-			Color("#5d6a92"))
+		_text_fit_overlay(_font,
+			Vector2(x0 + name_w + col_w * (float(i) + 0.5), top), cols[i],
+			_over_size(12), col_w - 6.0, Color("#7c88ad"), 9)
 
-	var y := top + SCORE_HEAD_H
+	var y := top + SCORE_HEAD_H * _over_fill()
 	for s: SideState in rows:
 		var mine: bool = s == player
 		# Who actually won, not who happened to still be standing — in a
 		# free-for-all the match can end with three boards alive, and marking
 		# all of them is the same as marking none.
 		var won: bool = (winner == "YOU") if mine else (s.label == winner)
-		var r := Rect2(x0, y, tw, SCORE_ROW_H)
+		var r := Rect2(x0, y, tw, _score_row_h())
 		# Your own row is picked out because it is the one you are looking for,
 		# and the winner's because it is the one the match was about. When they
 		# are the same row it simply gets both.
@@ -6116,11 +6271,13 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 				r.size.y - 14.0), Color("#ffd166"), true)
 
 		_text_fit_overlay(_font_bold, Vector2(x0 + name_w * 0.5, r.get_center().y),
-			_show(s.label).to_upper(), 15, name_w - 26.0,
-			Color("#e6ecff") if (mine or won) else Color("#8d99bd"))
+			_show(s.label).to_upper(), _over_size(17), name_w - 26.0,
+			Color("#e6ecff") if (mine or won) else Color("#8d99bd"), 11)
 
+		var rate := _wpm_of(s)
 		var vals := {
 			"SCORE": _commas(s.score),
+			"WPM": "—" if rate <= 0.0 else str(int(round(rate))),
 			"WORDS": str(s.words_played),
 			"CLEARED": str(s.blocks_cleared),
 			"CHAIN": "x%d" % s.best_chain,
@@ -6132,9 +6289,9 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 			var lead: bool = key == "SCORE" and s == rows[0]
 			_text_fit_overlay(_font_bold,
 				Vector2(x0 + name_w + col_w * (float(i) + 0.5), r.get_center().y),
-				String(vals[key]), 17 if key == "SCORE" else 15, col_w - 10.0,
-				Color("#ffd166") if lead else Color("#e6ecff"))
-		y += SCORE_ROW_H + 6.0
+				String(vals[key]), _over_size(19 if key == "SCORE" else 17),
+				col_w - 8.0, Color("#ffd166") if lead else Color("#e6ecff"), 11)
+		y += _score_row_h() + 6.0
 
 	# The longest word anyone managed, which is the other thing worth arguing
 	# over and does not fit in a column.
@@ -6143,15 +6300,20 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 		if best == null or s.longest_word.length() > best.longest_word.length():
 			best = s
 	if best != null and best.longest_word != "":
-		_otext(_font, Vector2(size.x * 0.5, y + 12.0),
+		_text_fit_overlay(_font, Vector2(size.x * 0.5, y + 14.0),
 			"longest word — %s by %s" % [_show(best.longest_word.to_upper()),
-				_show(best.label).to_upper()], 12, Color(tint, 0.75))
+				_show(best.label).to_upper()], _over_size(14),
+			size.x - GRID_MARGIN * 2.0, Color(tint, 0.75), 11)
 
 
 ## The bottom of the table, which the buttons and the mastery strip hang off.
 func _over_foot() -> float:
 	var n := maxi(1, _scoreboard_sides().size())
-	return _scoreboard_top() + SCORE_HEAD_H + float(n) * (SCORE_ROW_H + 6.0) + 20.0
+	# Measured with the same numbers the table is drawn from. These were the raw
+	# constants, so the moment the rows grew for portrait the buttons stayed put
+	# and the table grew underneath them.
+	return _scoreboard_top() + SCORE_HEAD_H * _over_fill() \
+		+ float(n) * (_score_row_h() + 6.0) + 20.0 * _over_fill()
 
 
 ## What the match just did to your record. This is the hook — win or lose, the
@@ -6415,6 +6577,7 @@ func _on_net_state(payload: Dictionary) -> void:
 	ai_side.powers_fired = int(payload.get("pw", ai_side.powers_fired))
 	ai_side.salvos = int(payload.get("sv", ai_side.salvos))
 	ai_side.longest_word = String(payload.get("lw", ai_side.longest_word))
+	ai_side.wpm = float(payload.get("wm", ai_side.wpm))
 	ai_side.salvo_flash = float(payload.get("sf", 0.0))
 	ai_side.lives = int(payload.get("lv", LIVES))
 	ai_side.respite = float(payload.get("rs", 0.0))
@@ -6455,6 +6618,10 @@ func _state_of(who: SideState, own: int) -> Dictionary:
 		# nothing. A CPU looked right because a CPU is simulated on this machine.
 		"sc": who.score, "bc": who.best_chain, "bk": who.best_combo,
 		"pw": who.powers_fired, "sv": who.salvos, "lw": who.longest_word,
+		# Typing speed is measured from keystrokes, which only exist on the
+		# machine they were typed on — so unlike every other column this one
+		# cannot be derived at the far end and has to travel.
+		"wm": _wpm(),
 	}
 
 
@@ -7277,6 +7444,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _action_at(p: Vector2) -> String:
+	# The rematch card is a question over the top of the summary, so it takes
+	# every press while it is up — including the ones that land outside it, which
+	# would otherwise reach the buttons showing through behind.
+	if _rematch_popup():
+		for b: Dictionary in _rematch_popup_buttons():
+			if (b["rect"] as Rect2).has_point(p):
+				return String(b["action"])
+		return ""
 	for b: Dictionary in _menu_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
@@ -7511,6 +7686,15 @@ func _activate(action: String) -> void:
 	elif action == "title":
 		Link.leave()
 		Link.status = ""
+		# Walking away from a finished match never actually hung up. The Game
+		# Center match stayed open, so the opponent still saw us connected and a
+		# rematch we had asked for went on standing after we had left — their
+		# summary offering "they want to go again" on behalf of somebody already
+		# back at the title screen. Leaving is leaving.
+		if net_active():
+			MultiplayerManager.leave_match()
+		rematch_asked = false
+		rematch_offered = false
 		# Shut behind you, so the next visit opens on the choice rather than on
 		# whatever list was up when you last left.
 		versus_inviting = false

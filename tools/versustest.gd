@@ -173,12 +173,74 @@ func _rematch_button_follows_the_opponent() -> void:
 	_expect("so the summary keeps Rematch (%s)" % ", ".join(acts2),
 		acts2.has("rematch"))
 
+	# The card is only ever raised for a request that arrived, and only while
+	# there is still somebody on the other end of it.
+	game.phase = game.Phase.OVER
+	game.rematch_offered = true
+	game.rematch_asked = false
+	game.difficulty = "Versus"
+	_expect("no card once the opponent has gone", not game._rematch_popup())
+	game.difficulty = "Rookie"
+	_expect("nor for a CPU match that never asked", not game._rematch_popup())
+	game.rematch_offered = false
+
 	# The negotiation flags must never outlive the match they belong to.
 	game.rematch_asked = true
 	game.rematch_offered = true
 	game.start_match("Rookie", 1)
 	_expect("starting a match clears a stale ask",
 		not game.rematch_asked and not game.rematch_offered)
+
+	# Leaving cancels: the flags go, so the peer is not left being told that
+	# somebody who is back at the title screen still wants another game.
+	game.phase = game.Phase.OVER
+	game.rematch_asked = true
+	game._activate("title")
+	_expect("leaving to title cancels the ask",
+		not game.rematch_asked and not game.rematch_offered)
+	_expect("and lands on the title screen", game.phase == game.Phase.TITLE)
+
+
+## The summary was built in the landscape design space. Its foot is measured
+## rather than drawn, so if the rows grow and the measurement does not, the
+## buttons end up underneath the table.
+func _summary_grows_for_a_phone() -> void:
+	print("--- the summary fits a phone ---")
+	game.phase = game.Phase.OVER
+	game.mode = game.Mode.NORMAL
+	game.difficulty = "Rookie"
+	game.win_spoils = 0
+
+	_orient(false)
+	var land_row: float = game._score_row_h()
+	var land_foot: float = game._over_foot()
+	_orient(true)
+	var tall_row: float = game._score_row_h()
+	var tall_foot: float = game._over_foot()
+	_expect("rows are taller in portrait (%.0f -> %.0f)" % [land_row, tall_row],
+		tall_row > land_row)
+	_expect("and the foot moves down with them (%.0f -> %.0f)" % [
+		land_foot, tall_foot], tall_foot > land_foot)
+
+	# The buttons hang off the foot, so they must clear the last row.
+	var rows: int = max(1, game._scoreboard_sides().size())
+	var last_row_bottom: float = game._scoreboard_top() \
+		+ game.SCORE_HEAD_H * game._over_fill() \
+		+ float(rows) * (game._score_row_h() + 6.0)
+	_expect("buttons start below the last row (%.0f >= %.0f)" % [
+		tall_foot, last_row_bottom], tall_foot >= last_row_bottom)
+
+	# A win pushes the table down to make room for the reconciliation line.
+	var plain: float = game._scoreboard_top()
+	game.win_spoils = 1650
+	_expect("a win bonus makes room above the table (%.0f -> %.0f)" % [
+		plain, game._scoreboard_top()], game._scoreboard_top() > plain)
+	game.win_spoils = 0
+
+	_expect("WPM is a column in both orientations",
+		game._scoreboard_cols().has("WPM"))
+	_orient(false)
+	_expect("and in landscape too", game._scoreboard_cols().has("WPM"))
 	game.phase = game.Phase.TITLE
 
 
@@ -205,6 +267,7 @@ func _init() -> void:
 	_prediction_matches_the_grid()
 	_doors_do_what_they_say()
 	_rematch_button_follows_the_opponent()
+	_summary_grows_for_a_phone()
 
 	print("--- what the screen says with Game Center off ---")
 	print("  status: %s" % game._versus_state_line())
