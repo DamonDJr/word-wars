@@ -239,7 +239,7 @@ const GRAIN := 0.05
 const VIGNETTE := 0.40
 
 enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
-	COUNTDOWN, PLAY, OVER, COSMETICS }
+	COUNTDOWN, PLAY, OVER, COSMETICS, VERSUS }
 
 ## What a match is for. A tutorial and a training run use the whole machine —
 ## real board, real typing, real rules — and differ only in what is switched off
@@ -406,7 +406,7 @@ func _scrollable() -> bool:
 		return false
 	match phase:
 		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
-				Phase.SETTINGS, Phase.LOBBY:
+				Phase.SETTINGS, Phase.LOBBY, Phase.VERSUS:
 			return true
 	return false
 
@@ -420,6 +420,8 @@ func _screen_laid() -> float:
 				+ 3.0 * float(m["band_gap"]) + 80.0
 		Phase.PRACTICE:
 			return 214.0 + _practice_laid()
+		Phase.VERSUS:
+			return 214.0 + _versus_laid()
 		Phase.SOLO:
 			return 118.0 + _solo_laid()
 		Phase.MASTERY:
@@ -661,6 +663,9 @@ func _ready() -> void:
 ## while the other was still connecting, and neither could see why.
 func _on_match_started() -> void:
 	net_status = ""
+	# The picker has done its job. Left open it would be the first thing waiting
+	# behind the summary screen when this match ends.
+	versus_inviting = false
 	start_match("Versus", 0, [], Mode.NORMAL)
 
 
@@ -1493,6 +1498,22 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_activate("pick:%d" % (k.keycode - KEY_1))
 		return
 
+	if phase == Phase.VERSUS:
+		match k.keycode:
+			# The doors are the numbers next to them, and there are no doors while
+			# a search is running — so 1 and 2 cannot start a second one.
+			KEY_1:
+				if not _versus_busy():
+					_activate("quick_match")
+			KEY_2:
+				if not _versus_busy():
+					_activate("invite")
+			# Escape backs out of the drawer before it backs out of the screen, so
+			# the key agrees with the chevron.
+			KEY_ESCAPE:
+				_activate("invite" if _versus_drawer() else "title")
+		return
+
 	if phase == Phase.SETTINGS:
 		if settings_editing:
 			# The name field owns the keyboard while it is open, so nothing else
@@ -2321,7 +2342,8 @@ func _process(delta: float) -> void:
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
 		and phase != Phase.LOBBY and phase != Phase.MASTERY \
 		and phase != Phase.SOLO and phase != Phase.SETTINGS \
-		and phase != Phase.PRACTICE and phase != Phase.COSMETICS
+		and phase != Phase.PRACTICE and phase != Phase.COSMETICS \
+		and phase != Phase.VERSUS
 	for s: SideState in sides:
 		# There is no rival in a lesson or a practice run, so its board is not
 		# drawn at all — an empty playfield sitting there reads as an opponent
@@ -2404,7 +2426,7 @@ func _tick_music(delta: float) -> void:
 	var want := "menu"
 	match phase:
 		Phase.SPLASH, Phase.TITLE, Phase.SOLO, Phase.LOBBY, Phase.MASTERY, Phase.SETTINGS, \
-				Phase.PRACTICE, Phase.COSMETICS:
+				Phase.PRACTICE, Phase.COSMETICS, Phase.VERSUS:
 			want = "menu"
 		Phase.COUNTDOWN:
 			want = "main"
@@ -3037,9 +3059,13 @@ func _back_action() -> String:
 	# have — so without this the only door in is a door with no way out.
 	if phase == Phase.TITLE and show_rules:
 		return "rules"
+	# The invite list is a drawer inside the versus screen, so the first press
+	# shuts it rather than leaving — the same rule the rules sheet gets above.
+	if phase == Phase.VERSUS and _versus_drawer():
+		return "invite"
 	match phase:
 		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER, \
-				Phase.COSMETICS:
+				Phase.COSMETICS, Phase.VERSUS:
 			return "title"
 		Phase.LOBBY:
 			return "leave" if Link.connected else "title"
@@ -3928,6 +3954,8 @@ func _draw_overlay() -> void:
 		_draw_solo(size)
 	elif phase == Phase.PRACTICE:
 		_draw_practice(size)
+	elif phase == Phase.VERSUS:
+		_draw_versus(size)
 	elif phase == Phase.MASTERY:
 		_draw_mastery(size)
 	elif phase == Phase.COSMETICS:
@@ -4509,6 +4537,308 @@ func _draw_practice(size: Vector2) -> void:
 	_text_fit_overlay(_font, Vector2(cx, foot + 22.0),
 		"neither mode earns XP, so neither can be farmed", 12,
 		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
+
+
+# ----------------------------------------------------------------- versus
+#
+# Versus used to be a door that did one thing: tapping the title plate fired
+# auto-match and the plate's own subtitle became the only progress report
+# anywhere on screen. That made the single most social mode in the game the one
+# with no choices in it — there was no way to play a specific person from inside
+# the app at all, only to be matched with a stranger or to start the game from
+# Game Center's own app and come in through `invite_accepted`.
+#
+# So Versus is a screen now, with the two things you can actually want from it
+# as two doors: take whoever is looking, or pick somebody. The picker is ours
+# because Apple's is a sheet this build cannot dismiss — see the header of
+# `multiplayer_manager.gd` — which is also why every state Game Center can be in
+# has to be printed here rather than left to a system UI to explain.
+
+## The invite drawer. Shut on arrival, and deliberately: opening it is what asks
+## Apple for the friend list, and that is a system permission prompt. Nobody
+## should be asked to hand over their friends for walking past the door.
+var versus_inviting := false
+
+## How many friends the picker will show at once.
+##
+## The list scrolls on a phone but not on a desktop, where the screen is a fixed
+## composition — so an account with sixty Game Center friends would run the last
+## fifty off the bottom with no way to reach them. Capped and counted instead,
+## with whoever is taking invitations sorted to the top by `MultiplayerManager`.
+const VERSUS_FRIENDS_MAX := 12
+
+const VERSUS_NATURAL := 2.0 * 104.0 + 16.0 + 66.0 + 4.0 * 62.0 + 74.0
+
+
+func _versus_fill() -> float:
+	return _menu_fill(VERSUS_NATURAL, 1.7)
+
+
+func _versus_spread() -> float:
+	return _menu_spread(VERSUS_NATURAL)
+
+
+## A friend row is a name, not a mode, so it does not grow the way a door does —
+## enough for a thumb and no more.
+func _versus_row_h() -> float:
+	return 62.0 * (1.3 if portrait else 1.0)
+
+
+## Anything Game Center is in the middle of. While one of these is true there is
+## nothing to choose, so the screen collapses to a single stop.
+func _versus_busy() -> bool:
+	return MultiplayerManager.state in [
+		MultiplayerManager.State.MATCHMAKING,
+		MultiplayerManager.State.CONNECTING,
+		MultiplayerManager.State.HANDSHAKING]
+
+
+## Whether the invite drawer is actually open, which is three conditions and not
+## one: asked for, reachable, and nothing already in flight. Kept in a single
+## place because every part of the screen — the height it reports, where its foot
+## is, what the back button does — has to agree about it or the layout and the
+## hit-testing part company.
+func _versus_drawer() -> bool:
+	return versus_inviting and not _versus_busy() and MultiplayerManager.available()
+
+
+## The one line that says where matchmaking has got to. Headless matchmaking has
+## no sheet of its own, so if this does not say it nothing does.
+func _versus_state_line() -> String:
+	if not MultiplayerManager.available():
+		return "Game Center needs an iPhone, an iPad or a Mac"
+	if MultiplayerManager.state == MultiplayerManager.State.MATCHMAKING \
+			and MultiplayerManager.invited != "":
+		return "waiting for %s to accept" % MultiplayerManager.invited
+	if net_status != "":
+		return net_status
+	return "signed in to Game Center"
+
+
+## The doors, as data, so drawing and hit-testing cannot disagree about how many
+## there are — which changes, because a search in flight replaces both of them
+## with the way out of it.
+##
+## Format matches the title plates: stamp, word, sub, action, tint.
+func _versus_doors() -> Array:
+	if _versus_busy():
+		return [["STOP", "STOP LOOKING", _versus_state_line(), "versus_stop",
+			Color("#ff6b6b")]]
+	if not MultiplayerManager.available():
+		return []
+	var invite_sub := "Pick a Game Center friend"
+	if versus_inviting:
+		invite_sub = "Tap a name below · tap again to close"
+	return [
+		["QUI", "QUICK MATCH", "Anyone else looking, right now", "quick_match",
+			Color("#c77dff")],
+		["INV", "INVITE A FRIEND", invite_sub, "invite", Color("#7bdff2")],
+	]
+
+
+func _versus_door_rects() -> Array:
+	var count := _versus_doors().size()
+	if count == 0:
+		return []
+	return _grid_rects(count, 214.0 + safe_top + _menu_offset(_versus_laid()), 2,
+		320.0, 104.0 * _versus_fill(), 20.0, 340.0, 16.0 * _versus_spread())
+
+
+## One column on a phone, two on a desktop. `min_w` of zero forbids the wrap, so
+## the row count here is the row count `_versus_laid` predicts — a list whose
+## height cannot be worked out is a list that scrolls to the wrong place.
+func _versus_friend_cols() -> int:
+	return 1 if portrait else 2
+
+
+## Who the picker is offering. Capped, and the cap is reported rather than hidden.
+func _versus_friends() -> Array:
+	var all: Array = MultiplayerManager.friends
+	if all.size() <= VERSUS_FRIENDS_MAX:
+		return all
+	return all.slice(0, VERSUS_FRIENDS_MAX)
+
+
+## True when the drawer is open and has names in it. The other states it can be
+## in — loading, refused, empty — are a line of text and a retry, not a list.
+func _versus_listing() -> bool:
+	return _versus_drawer() \
+		and MultiplayerManager.friends_state == MultiplayerManager.Friends.READY
+
+
+func _versus_roster_top() -> float:
+	return _grid_bottom(_versus_door_rects(),
+		214.0 + safe_top + _menu_offset(_versus_laid())) + 66.0 * _versus_spread()
+
+
+func _versus_friend_rects() -> Array:
+	if not _versus_listing():
+		return []
+	return _grid_rects(_versus_friends().size(), _versus_roster_top(),
+		_versus_friend_cols(), 340.0, _versus_row_h(), 12.0, 0.0, 10.0)
+
+
+## Each friend as something clickable.
+##
+## The action carries Apple's player id rather than a row number, because an
+## action is a string all the way through `_activate` and a row number is only
+## true for as long as the row is there. A refresh landing between the frame you
+## read and the tap you made would have renumbered the list under your finger and
+## invited somebody else — which is the one mistake on this screen a player
+## cannot take back, because the invitation has already gone out with their name
+## on it.
+func _versus_friend_cards() -> Array:
+	var out: Array = []
+	var list := _versus_friends()
+	var rects := _versus_friend_rects()
+	for i in rects.size():
+		var p: GKPlayer = list[i]
+		var who := String(p.display_name)
+		if who == "":
+			who = String(p.alias)
+		out.append({
+			"rect": rects[i], "name": who,
+			"action": "invite:%s" % String(p.game_player_id),
+			"open": p.is_invitable,
+		})
+	return out
+
+
+## The friend an `invite:` action names, or null if the list has moved on.
+func _versus_friend_by_id(id: String) -> GKPlayer:
+	for p: GKPlayer in _versus_friends():
+		if String(p.game_player_id) == id:
+			return p
+	return null
+
+
+## The bottom of the last thing on the screen, whatever that turned out to be.
+func _versus_foot() -> float:
+	if _versus_listing():
+		return _grid_bottom(_versus_friend_rects(), _versus_roster_top())
+	if _versus_drawer():
+		# The drawer is open on a message rather than a list, and the retry plate
+		# sits under it.
+		return _versus_roster_top() + 24.0 + _versus_row_h()
+	return _grid_bottom(_versus_door_rects(),
+		214.0 + safe_top + _menu_offset(_versus_laid()))
+
+
+## How tall the screen wants to be, for the scroll limit and for centring it.
+## Measured the way `_versus_door_rects` and `_versus_friend_rects` will lay it
+## out rather than from them, because both of those ask `_menu_offset` — which
+## asks this — and a layout cannot be its own input.
+func _versus_laid() -> float:
+	var f := _versus_fill()
+	var sp := _versus_spread()
+	var doors := _versus_doors().size()
+	# `_grid_rects` wraps two 340-wide doors to one column on anything as narrow
+	# as a phone, which is the same rule the practice screen is measured by.
+	var rows: float = float(doors) if portrait else ceilf(float(doors) * 0.5)
+	var block: float = rows * 104.0 * f + maxf(0.0, rows - 1.0) * 16.0 * sp
+
+	if _versus_drawer():
+		block += 66.0 * sp
+		if _versus_listing():
+			var cols := float(_versus_friend_cols())
+			var frows := ceilf(float(_versus_friends().size()) / cols)
+			block += frows * _versus_row_h() + maxf(0.0, frows - 1.0) * 10.0
+		else:
+			# A line of explanation and the plate that asks Apple again.
+			block += 24.0 + _versus_row_h()
+	return block + 74.0
+
+
+## Quick match, invite, and what Game Center is doing about either.
+func _draw_versus(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.93), true)
+	_draw_decor()
+
+	var hy := safe_top + _menu_offset(_versus_laid())
+	_otext(_font_bold, Vector2(cx, hy + 78.0), "VERSUS", 32, Color("#e6ecff"))
+	# The status line lives in the header while there is a choice to make, and
+	# moves into the stop door once there is not — so it is never in two places
+	# saying the same thing.
+	var head := _versus_state_line() if not _versus_busy() \
+		else "one on one, over Game Center"
+	_text_fit_overlay(_font, Vector2(cx, hy + 118.0), head, 13,
+		size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	if _versus_drawer():
+		_draw_versus_friends(size)
+
+	if not MultiplayerManager.available():
+		_text_fit_overlay(_font, Vector2(cx, hy + 214.0),
+			"Game Center is how this game finds people, and this build cannot reach it",
+			14, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 11)
+		return
+
+	# The hint sits just under the content and the Back button goes below it at
+	# +96, which is the order the practice screen uses.
+	var foot := _versus_foot() + 36.0
+	if _versus_busy():
+		_text_fit_overlay(_font, Vector2(cx, foot),
+			"this runs in the background — Game Center will bring you back", 12,
+			size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+	elif not portrait:
+		_otext(_font, Vector2(cx, foot), "1 quick match · 2 invite · ESC back", 12,
+			Color("#5d6a92"))
+
+
+## The picker, or the reason there is nothing to pick from.
+func _draw_versus_friends(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	var top := _versus_roster_top()
+	var listing: int = MultiplayerManager.friends_state
+
+	if listing != MultiplayerManager.Friends.READY:
+		var note: String = MultiplayerManager.friends_note
+		if listing == MultiplayerManager.Friends.UNASKED:
+			note = "Game Center will ask before sharing your friends"
+		_text_fit_overlay(_font, Vector2(cx, top - 26.0),
+			note if note != "" else "asking Game Center", 13,
+			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
+		# Said once, under the reason, because a picker with nothing in it and no
+		# explanation is indistinguishable from one that is broken.
+		if listing == MultiplayerManager.Friends.DENIED:
+			_text_fit_overlay(_font, Vector2(cx, top),
+				"you can still take a quick match, or start one from the Game Center app",
+				12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+		elif listing == MultiplayerManager.Friends.EMPTY:
+			_text_fit_overlay(_font, Vector2(cx, top),
+				"add someone in Game Center and they will show up here", 12,
+				size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
+		return
+
+	var shown := _versus_friends().size()
+	var total: int = MultiplayerManager.friends.size()
+	var label := "%d FRIEND%s" % [shown, "" if shown == 1 else "S"]
+	if total > shown:
+		label = "%d OF %d FRIENDS" % [shown, total]
+	_otext(_font_bold, Vector2(cx, top - 26.0), label, 13, Color("#7c88ad"))
+
+	for c: Dictionary in _versus_friend_cards():
+		var r: Rect2 = c["rect"]
+		var hot: bool = _hover_action == String(c["action"])
+		if hot:
+			r = Rect2(r.position - Vector2(0, 3), r.size)
+		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
+			Color(Color("#7bdff2"), 0.9 if hot else 0.28), 10.0, 2.0)
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 24.0),
+			String(c["name"]).to_upper(), 17, r.size.x - 20.0,
+			Color.WHITE if hot else Color("#e6ecff"))
+		# `is_invitable` is a hint and not a promise — the invitation is sent
+		# either way — so it is phrased as one rather than as a gate.
+		_text_fit_overlay(_font, Vector2(r.get_center().x, r.position.y + 46.0),
+			("%s to invite" % ["tap" if portrait else "click"]) if bool(c["open"])
+				else "may not be taking invites", 11, r.size.x - 14.0,
+			Color("#8d99bd") if bool(c["open"]) else Color("#5d6a92"), 9)
 
 
 ## The lesson card, and the live readout a practice run is for. Both sit in the
@@ -5275,13 +5605,17 @@ func _draw_pause(size: Vector2) -> void:
 ## says how many are on so nobody has to open it to find out.
 var kinds_open := false
 
-## The VERSUS door, which is a toggle rather than a button. Matchmaking has no
-## Game Center sheet to back out of — it runs headless behind our own screen —
-## so the door itself has to be the way out, or a player who changes their mind
-## is stuck watching "finding an opponent" until someone turns up.
-func _on_find_match_pressed() -> void:
-	if MultiplayerManager.state == MultiplayerManager.State.MATCHMAKING:
-		MultiplayerManager.cancel_find()
+## Quick match: whoever else is looking, right now.
+##
+## This used to be a toggle — one tap of the title's VERSUS plate started a
+## search and the next abandoned it — because matchmaking runs headless behind
+## our own screens and that plate was the only thing on screen while it did, so
+## the door you came in by had to double as the way out. The versus screen has a
+## stop of its own now, which is a better place for it: a door that starts a
+## search on one press and throws it away on the next is a door nobody can press
+## twice safely.
+func _start_quick_match() -> void:
+	if _versus_busy():
 		return
 	# A rematch arrives here with the finished match still open, and matchmaking
 	# refuses to start on top of one. Hang up first.
@@ -6163,6 +6497,34 @@ func _menu_buttons() -> Array:
 				"rect": Rect2(cx - 90.0, _grid_bottom(paces, 464.0) + 96.0, 180.0, 40.0),
 				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.VERSUS:
+		var vdoors := _versus_doors()
+		var vrects := _versus_door_rects()
+		for i in vrects.size():
+			var d: Array = vdoors[i]
+			out.append({
+				"rect": vrects[i], "key": "" if _versus_busy() else str(i + 1),
+				"label": String(d[1]), "sub": String(d[2]), "note": "", "rating": 0,
+				"accent": d[4], "action": String(d[3]), "stamp": String(d[0]),
+				"on": String(d[3]) == "invite" and versus_inviting})
+		# The drawer is open but Apple gave us no list. The way to ask again has to
+		# be on screen, or a player who declined the prompt once has permanently
+		# lost the invite half of the mode with no hint that it is recoverable.
+		if _versus_drawer() and not _versus_listing() \
+				and MultiplayerManager.friends_state != MultiplayerManager.Friends.LOADING:
+			var rw: float = minf(340.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+			out.append({
+				"rect": Rect2(cx - rw * 0.5, _versus_roster_top() + 24.0, rw,
+					_versus_row_h()),
+				"key": "", "label": "Ask again" if MultiplayerManager.friends_state \
+					== MultiplayerManager.Friends.DENIED else "Refresh",
+				"sub": "", "note": "", "rating": 0,
+				"accent": Color("#7bdff2"), "action": "friends_refresh"})
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - 90.0, _versus_foot() + 96.0, 180.0, 40.0),
+				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.SETTINGS:
 		# Portrait has the chevron, and 598 was landing on top of the name row —
 		# the rows start lower once the safe area pushes them down.
@@ -6282,19 +6644,19 @@ const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
 ## What the versus door has to say for itself.
 ##
 ## Matchmaking is headless — there is no native sheet, deliberately, because the
-## plugin cannot dismiss one once a match is found. So this line is the only
-## thing anywhere on screen saying whether anything is happening, from "finding
-## an opponent" through to "saying hello".
+## plugin cannot dismiss one once a match is found. A search can therefore still
+## be running while the player is back out here, and if this line does not say so
+## nothing on the title screen does.
 func _versus_sub() -> String:
 	if not MultiplayerManager.available():
 		return "needs an iPhone or a Mac"
-	if MultiplayerManager.state == MultiplayerManager.State.MATCHMAKING:
-		return "%s — tap again to stop" % net_status
+	if _versus_busy():
+		return net_status
 	# "signed in" is the resting state, not news. Saying it forever would turn
 	# the door's one line of copy into a status light nobody needs.
 	if net_status != "" and MultiplayerManager.state != MultiplayerManager.State.READY:
 		return net_status
-	return "One on one, over Game Center"
+	return "Quick match, or invite a friend"
 
 
 func _title_modes() -> Array:
@@ -6785,6 +7147,10 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _kind_cards(_solo_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
+	if phase == Phase.VERSUS:
+		for c: Dictionary in _versus_friend_cards():
+			if (c["rect"] as Rect2).has_point(p):
+				return String(c["action"])
 	if phase == Phase.LOBBY and Link.connected:
 		var dw2: float = minf(560.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 		if Rect2(get_viewport_rect().size.x * 0.5 - dw2 * 0.5,
@@ -6843,14 +7209,56 @@ func _activate(action: String) -> void:
 		Sfx.play("back")
 	elif action == "versus":
 		paused = false
-		_on_find_match_pressed()
+		phase = Phase.VERSUS
+		_hover_action = ""
+		_scroll = 0.0
+		Sfx.play("count", 1.1)
+	elif action == "quick_match":
+		_start_quick_match()
 		Sfx.play("back", 1.2)
+	elif action == "invite":
+		versus_inviting = not versus_inviting
+		_hover_action = ""
+		# Asked for on opening rather than on arriving at the screen: this is the
+		# call that raises Apple's permission prompt, and it should be answering a
+		# question the player just asked.
+		if versus_inviting:
+			MultiplayerManager.load_friends()
+		Sfx.play("key", 1.2)
+	elif action.begins_with("invite:"):
+		# Gone means the list was reloaded under the tap. Refused rather than
+		# guessed at — the next name along is not who was asked for — and the list
+		# is pulled again so the screen stops offering a row that is not there.
+		# `_say` is no use here: the message banner is drawn by the playfield HUD
+		# and there is no playfield on a menu.
+		var picked := _versus_friend_by_id(action.substr(7))
+		if picked != null:
+			MultiplayerManager.invite_players([picked])
+			Sfx.play("count", 1.3)
+		else:
+			MultiplayerManager.load_friends(true)
+			Sfx.play("reject", 1.2)
+	elif action == "friends_refresh":
+		MultiplayerManager.load_friends(true)
+		Sfx.play("key", 1.2)
+	elif action == "versus_stop":
+		# Covers both halves of "stop": `leave_match` cancels a search that is
+		# still looking and hangs up one that already found somebody.
+		MultiplayerManager.leave_match()
+		_hover_action = ""
+		Sfx.play("back")
 	elif action == "rematch":
 		# Still connected? Both players go back to the room and ready up again.
 		if Link.connected:
 			Link.request_rematch()
 		elif net_active() or difficulty == "Versus":
+			# To the versus screen and straight into the queue. Rematch is a
+			# decision already made, so it does not stop to ask again — but
+			# matchmaking is headless, and firing it from the summary screen used
+			# to leave a search running with nothing anywhere saying so and no way
+			# to call it off.
 			_activate("versus")
+			_start_quick_match()
 		else:
 			# Straight from the seats, so a random opponent is genuinely rolled
 			# again rather than quietly becoming whoever it was last time.
@@ -6951,6 +7359,9 @@ func _activate(action: String) -> void:
 	elif action == "title":
 		Link.leave()
 		Link.status = ""
+		# Shut behind you, so the next visit opens on the choice rather than on
+		# whatever list was up when you last left.
+		versus_inviting = false
 		phase = Phase.TITLE
 		_hover_action = ""
 		Sfx.play("back")

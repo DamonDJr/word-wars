@@ -32,6 +32,12 @@ const GAME_CONNECTIONS := {
 	"data_received": "_on_multiplayer_data",
 }
 
+## Signals the manager emits that nothing in `game.gd` connects to, on purpose.
+## The versus screen is drawn every frame and reads the friend list straight out
+## of the manager, so a handler would only be a second copy of state that can go
+## stale. Listed rather than left out, so "no handler" reads as a decision.
+const UNCONNECTED := ["friends_changed"]
+
 ## class -> signal -> the manager method we connect to it.
 const CONNECTIONS := {
 	"GameCenterManager": {
@@ -52,7 +58,8 @@ const CONNECTIONS := {
 ## class -> method -> how many arguments the manager passes.
 const CALLS := {
 	"GameCenterManager": {"authenticate": 0},
-	"GKLocalPlayer": {"register_listener": 0, "load_challengeable_friends": 1},
+	"GKLocalPlayer": {"register_listener": 0, "load_challengeable_friends": 1,
+		"load_friends": 1},
 	"GKMatchmaker": {
 		"find_match": 2,
 		"match_for_invite": 2,
@@ -66,7 +73,11 @@ const CALLS := {
 const PROPERTIES := {
 	"GameCenterManager": ["local_player"],
 	"GKMatch": ["expected_player_count"],
-	"GKPlayer": ["game_player_id", "display_name"],
+	# `alias` and `is_invitable` are what the in-app friend picker draws each row
+	# from. Neither is load-bearing enough to crash if it moves — a missing one is
+	# a blank name or a wrong hint — which is exactly why nothing else would catch
+	# it before somebody saw it on a phone.
+	"GKPlayer": ["game_player_id", "display_name", "alias", "is_invitable"],
 	"GKMatchRequest": ["min_players", "max_players", "invite_message", "recipients"],
 }
 
@@ -74,6 +85,11 @@ const PROPERTIES := {
 ## them: class -> method taking the Callable -> arguments Apple passes back.
 const CALLBACK_ARITY := {
 	"_on_found_match": 2,
+	# `(Array[GKPlayer] friends, Variant error)`, and either can be null. Getting
+	# this wrong is the `invite_accepted` bug again: Godot accepts the Callable
+	# and then throws inside Apple's completion handler, so the friend picker
+	# would simply never fill in and nothing would say why.
+	"_on_friends_loaded": 2,
 }
 
 var fails := 0
@@ -182,6 +198,12 @@ func _game_takes_what_the_manager_sends() -> void:
 	var game_handlers := {}
 	for m in (load(GAME) as GDScript).get_script_method_list():
 		game_handlers[m.name] = m
+
+	# Every signal is either wired up or deliberately not. A new one that is
+	# neither is a message being emitted into nothing.
+	for name in sends:
+		_expect("MultiplayerManager.%s is accounted for" % name,
+			GAME_CONNECTIONS.has(name) or UNCONNECTED.has(name))
 
 	for sig in GAME_CONNECTIONS:
 		var handler: String = GAME_CONNECTIONS[sig]

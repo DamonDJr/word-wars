@@ -33,6 +33,11 @@ extends Node
 ## Invites go out through `recipients` and come back through `match_for_invite`,
 ## both of which are equally headless.
 ##
+## The cost of refusing Apple's sheet is that we also refuse Apple's friend
+## picker, so the game has to draw its own — which is what `load_friends` below
+## is for, and why an invitation from inside the app is a list of `GKPlayer`
+## rather than a view controller.
+##
 ## Everything here is guarded on the platform rather than commented out for
 ## desktop testing: the plugin ships a Linux stub whose classes refuse to
 ## instantiate, so `available()` answers honestly and the rest of the game runs
@@ -42,8 +47,18 @@ signal state_changed(text: String)
 signal match_started
 signal match_ended(reason: String)
 signal data_received(packet: Dictionary)
+signal friends_changed
 
 enum State { OFF, AUTHENTICATING, READY, MATCHMAKING, CONNECTING, HANDSHAKING, PLAYING }
+
+## Where the friend list is up to.
+##
+## Apple gates the list behind a permission prompt we do not own and cannot
+## pre-empt, so every answer it can give — including "no" — has to be a state the
+## picker can say out loud. A screen that shows an empty list for "you declined",
+## "you have none" and "it is still loading" alike is a screen that looks broken
+## three different ways.
+enum Friends { UNASKED, LOADING, READY, EMPTY, DENIED }
 
 ## How long to keep repeating the hello before giving up on the other end. The
 ## first one can land before the peer has finished attaching, so it is repeated
@@ -70,6 +85,15 @@ var _local_id := ""
 var _hello_timer := 0.0
 var _wait_age := 0.0
 var _peer_said_hello := false
+
+## The people the in-app picker offers, as `GKPlayer`.
+var friends: Array = []
+var friends_state: int = Friends.UNASKED
+## Why the list is the way it is, when that needs saying.
+var friends_note := ""
+## Who an outstanding invitation went to, so a screen can name them instead of
+## saying "waiting" at nobody in particular.
+var invited := ""
 
 
 ## Whether this build can talk to Game Center at all.
@@ -133,6 +157,13 @@ func _on_authenticated(signed_in: bool = true) -> void:
 	if not signed_in:
 		local_player = null
 		_local_id = ""
+		# The friend list belongs to whoever was signed in. Left standing it would
+		# offer the next account the last one's friends, and inviting them would
+		# fail with no way to see why.
+		friends = []
+		friends_state = Friends.UNASKED
+		friends_note = ""
+		friends_changed.emit()
 		_set_state(State.OFF, "not signed in to Game Center")
 		return
 
@@ -201,6 +232,7 @@ func find_match() -> void:
 		return
 	if state != State.READY:
 		return
+	invited = ""
 	_set_state(State.MATCHMAKING, "finding an opponent")
 	_mm().find_match(_request(), _on_found_match)
 
@@ -213,8 +245,31 @@ func invite_players(players: Array) -> void:
 		return
 	if state != State.READY:
 		return
-	_set_state(State.MATCHMAKING, "waiting for them to accept")
+	invited = _names_of(players)
+	var waiting := "waiting for them to accept"
+	if invited != "":
+		waiting = "waiting for %s to accept" % invited
+	_set_state(State.MATCHMAKING, waiting)
 	_mm().find_match(_request(players), _on_found_match)
+
+
+## Whoever we are inviting, in a form a status line can use. Two names joined,
+## and anything longer counted — a request can in principle carry a whole friend
+## list, and a status line is one line.
+func _names_of(players: Array) -> String:
+	var names: PackedStringArray = []
+	for p in players:
+		if p is GKPlayer:
+			var n := String((p as GKPlayer).display_name)
+			if n != "":
+				names.append(n)
+	if names.is_empty():
+		return ""
+	if names.size() == 1:
+		return names[0]
+	if names.size() == 2:
+		return "%s and %s" % [names[0], names[1]]
+	return "%s and %d others" % [names[0], names.size() - 1]
 
 
 ## Stop looking. Safe to call when nothing is in flight.
@@ -222,6 +277,7 @@ func cancel_find() -> void:
 	if state != State.MATCHMAKING:
 		return
 	_mm().cancel()
+	invited = ""
 	_set_state(State.READY, "matchmaking cancelled")
 	match_ended.emit("cancelled")
 
@@ -230,6 +286,73 @@ func cancel_find() -> void:
 ## picking is already done, so this is just `invite_players` with Apple's list.
 func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
 	invite_players(recipients)
+
+
+# ---------------------------------------------------------------- friends
+
+## Apple's friend list, so the game can run its own picker.
+##
+## The obvious way to send an invitation from inside an app is
+## `GKMatchmakerViewController` in invite-only mode, and that is the sheet this
+## file exists to avoid: it cannot be dismissed from GDScript, so a successful
+## invite would leave Apple's "Starting Game…" parked over a match nobody can
+## see. Until that changes, the only route to inviting a *specific* person from
+## inside the app is to know who your friends are and pass them to `find_match`
+## as recipients — which is exactly what `load_friends` is for.
+##
+## The first call raises Apple's permission prompt. A refusal comes back as an
+## error rather than an empty array, which is what lets "you said no" and "you
+## have no friends here" be told apart and said differently.
+func load_friends(force := false) -> void:
+	if not available() or local_player == null:
+		friends = []
+		friends_state = Friends.DENIED
+		friends_note = "sign in to Game Center first"
+		friends_changed.emit()
+		return
+	if friends_state == Friends.LOADING:
+		return
+	# Already answered, and asking again re-prompts. Only a deliberate retry —
+	# after a refusal, or after adding someone — goes back to Apple.
+	if friends_state != Friends.UNASKED and not force:
+		return
+	friends_state = Friends.LOADING
+	friends_note = "asking Game Center"
+	friends_changed.emit()
+	local_player.load_friends(_on_friends_loaded)
+
+
+func _on_friends_loaded(list, error = null) -> void:
+	if error != null:
+		# Nearly always the player declining the prompt, which is an answer and
+		# not a fault — so it is reported as a state the screen can offer a way
+		# out of rather than as a failure.
+		friends = []
+		friends_state = Friends.DENIED
+		friends_note = "Game Center would not share your friends"
+		push_warning("Game Center: load_friends failed — %s" % str(error))
+		friends_changed.emit()
+		return
+
+	friends = []
+	if list != null:
+		for p in list:
+			if p is GKPlayer:
+				friends.append(p)
+	# Whoever is taking invitations comes first, then alphabetically. `is_invitable`
+	# is only ever a sort key here and never a gate: if the plugin leaves it false
+	# for everyone the order is simply alphabetical, whereas gating on it would
+	# turn one unpopulated property into a picker with nothing pickable in it.
+	friends.sort_custom(_friend_before)
+	friends_state = Friends.READY if not friends.is_empty() else Friends.EMPTY
+	friends_note = "" if not friends.is_empty() else "no Game Center friends yet"
+	friends_changed.emit()
+
+
+func _friend_before(a: GKPlayer, b: GKPlayer) -> bool:
+	if a.is_invitable != b.is_invitable:
+		return a.is_invitable
+	return String(a.display_name).nocasecmp_to(String(b.display_name)) < 0
 
 
 func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
@@ -354,6 +477,7 @@ func leave_match() -> void:
 		current_match = null
 	_peer_id = ""
 	_peer_said_hello = false
+	invited = ""
 	if available():
 		_set_state(State.READY, "signed in")
 	else:
@@ -365,6 +489,7 @@ func _fail(reason: String) -> void:
 		current_match.disconnect()
 		current_match = null
 	_peer_said_hello = false
+	invited = ""
 	_set_state(State.READY if available() else State.OFF, reason)
 	match_ended.emit(reason)
 

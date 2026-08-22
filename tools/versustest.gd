@@ -1,0 +1,178 @@
+extends SceneTree
+## The versus screen is a layout that predicts itself, which is the interesting
+## way for it to break.
+##
+## `_versus_laid` cannot measure the rects it lays out: those rects ask
+## `_menu_offset` where the screen starts, and `_menu_offset` asks `_versus_laid`
+## how tall it is. So the height is *predicted* — how many rows two doors will
+## wrap to, how many rows a list of friends will take — and a prediction that
+## disagrees with `_grid_rects` is a screen that scrolls to the wrong place, or
+## stops scrolling before its last row. Nothing about that looks wrong until
+## somebody cannot reach the bottom of their friend list on a phone.
+##
+## So the prediction is checked against the grid itself, at both design sizes,
+## and every button is clicked at its own centre to prove that what is drawn and
+## what is hit-tested are the same screen.
+##
+## Two things here are only real on a device, and are checked by `gctest.gd`
+## against the plugin's registration instead: `GKPlayer` refuses to instantiate
+## on the Linux stub, so the picker is exercised at zero friends, and
+## `available()` is false, so the doors are exercised by the shape of the screen
+## rather than by a live Game Center.
+##
+##   godot --headless --script tools/versustest.gd
+
+var game: Node
+var mm: Node
+## The headless display server will not go narrower than 1280, and `portrait` is
+## decided by the window — so the phone's 720-wide design space only exists if we
+## build one. `_grid_rects` measures whatever viewport its node sits under, which
+## makes a SubViewport a real test of the wrap rules rather than a re-derivation
+## of them in the test.
+var stage: SubViewport
+var fails := 0
+
+
+func _expect(what: String, ok: bool) -> void:
+	if not ok:
+		fails += 1
+	print("  %-56s %s" % [what, "ok" if ok else "FAILED"])
+
+
+## How many distinct rows a grid actually came back as.
+func _rows_in(rects: Array) -> int:
+	var tops: Array = []
+	for r: Rect2 in rects:
+		if not tops.has(r.position.y):
+			tops.append(r.position.y)
+	return tops.size()
+
+
+func _orient(tall: bool) -> void:
+	stage.size = game.PORTRAIT_SIZE if tall else game.LANDSCAPE_SIZE
+	game.portrait = tall
+
+
+## Everything on the screen has to be clickable where it is drawn, and the doors
+## have to come with as many rects as there are doors.
+func _reachable(where: String) -> void:
+	var doors: Array = game._versus_doors()
+	var rects: Array = game._versus_door_rects()
+	_expect("%s: %d doors, %d rects" % [where, doors.size(), rects.size()],
+		doors.size() == rects.size())
+
+	var stray := ""
+	for b: Dictionary in game._menu_buttons():
+		var hit: String = game._action_at((b["rect"] as Rect2).get_center())
+		if hit != String(b["action"]):
+			stray = "%s hit %s" % [String(b["action"]), hit if hit != "" else "nothing"]
+	for c: Dictionary in game._versus_friend_cards():
+		var hit2: String = game._action_at((c["rect"] as Rect2).get_center())
+		if hit2 != String(c["action"]):
+			stray = "%s hit %s" % [String(c["action"]), hit2 if hit2 != "" else "nothing"]
+	_expect("%s: every button is where it is drawn%s" % [
+		where, "" if stray == "" else " — " + stray], stray == "")
+
+
+## The drawer has four states and only one of them is a list. The other three
+## are a sentence and a way to ask again, and each has to lay out.
+func _sweep(label: String) -> void:
+	game.versus_inviting = false
+	_reachable("%s closed" % label)
+	game.versus_inviting = true
+	for st in [mm.Friends.UNASKED, mm.Friends.LOADING, mm.Friends.DENIED,
+			mm.Friends.EMPTY, mm.Friends.READY]:
+		mm.friends_state = st
+		_reachable("%s open/%s" % [label, String(mm.Friends.keys()[st]).to_lower()])
+		_expect("%s open/%s: measured taller than shut" % [
+			label, String(mm.Friends.keys()[st]).to_lower()],
+			game._versus_laid() > 0.0 and game._versus_foot() > 0.0)
+	game.versus_inviting = false
+	mm.friends_state = mm.Friends.UNASKED
+
+
+## The heights `_versus_laid` guesses at, against the grid that will lay them out.
+func _prediction_matches_the_grid() -> void:
+	print("--- the predicted row counts are the grid's ---")
+	for tall in [false, true]:
+		_orient(tall)
+		var where := "portrait" if tall else "landscape"
+		for n in [1, 2]:
+			var real := _rows_in(game._grid_rects(n, 0.0, 2, 320.0, 104.0, 20.0,
+				340.0, 16.0))
+			var guess: int = n if tall else int(ceil(float(n) * 0.5))
+			_expect("%s: %d doors lay out in %d rows" % [where, n, real],
+				real == guess)
+		for n2 in [1, 5, 12]:
+			var cols: int = game._versus_friend_cols()
+			var real2 := _rows_in(game._grid_rects(n2, 0.0, cols, 340.0,
+				game._versus_row_h(), 12.0, 0.0, 10.0))
+			var guess2: int = int(ceil(float(n2) / float(cols)))
+			_expect("%s: %d friends lay out in %d rows" % [where, n2, real2],
+				real2 == guess2)
+	_orient(false)
+
+
+## The doors are a toggle, a search and a way out of one, and none of them may
+## leave the screen somewhere it cannot come back from.
+func _doors_do_what_they_say() -> void:
+	print("--- the doors ---")
+	game._activate("versus")
+	_expect("versus opens the screen", game.phase == game.Phase.VERSUS)
+
+	game._activate("invite")
+	_expect("invite opens the drawer", game.versus_inviting)
+	_expect("and asks Game Center for the list",
+		mm.friends_state != mm.Friends.UNASKED)
+	game._activate("invite")
+	_expect("invite shuts it again", not game.versus_inviting)
+
+	# Every one of these is a no-op with Game Center switched off, and a no-op is
+	# what they have to be — not an error, and not a screen with no way out.
+	game._activate("quick_match")
+	game._activate("friends_refresh")
+	# A name that is not in the list any more must be refused, not rounded to
+	# whoever is nearest.
+	game._activate("invite:not-a-real-player-id")
+	game._activate("versus_stop")
+	_expect("none of them leave the versus screen",
+		game.phase == game.Phase.VERSUS)
+
+	game.versus_inviting = true
+	_expect("back shuts the drawer before the screen",
+		game._back_action() == "invite" or not mm.available())
+	game._activate("title")
+	_expect("title leaves", game.phase == game.Phase.TITLE)
+	_expect("and shuts the drawer behind it", not game.versus_inviting)
+
+
+func _init() -> void:
+	await process_frame
+	mm = root.get_node("MultiplayerManager")
+	# `--script` boots the autoloads but not the main scene, so put it up by hand.
+	game = load("res://scenes/main.tscn").instantiate()
+	stage = SubViewport.new()
+	stage.size = Vector2i(1280, 720)
+	root.add_child(stage)
+	stage.add_child(game)
+	await process_frame
+	await process_frame
+
+	game._activate("versus")
+	print("--- the screen holds together at both sizes ---")
+	_orient(false)
+	_sweep("landscape")
+	_orient(true)
+	_sweep("portrait")
+	_orient(false)
+
+	_prediction_matches_the_grid()
+	_doors_do_what_they_say()
+
+	print("--- what the screen says with Game Center off ---")
+	print("  status: %s" % game._versus_state_line())
+	print("  title:  %s" % game._versus_sub())
+
+	print("--- %s ---" % ("the versus screen holds up" if fails == 0
+		else "%d FAILURES" % fails))
+	quit(1 if fails > 0 else 0)
