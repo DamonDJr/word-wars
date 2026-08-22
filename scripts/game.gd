@@ -1071,7 +1071,7 @@ func _bloom(color: Color, amount: float) -> void:
 	flash_color = color
 
 
-## `bots` is how many CPU rivals to line up. leave_match passes 0 and fills the extra
+## `bots` is how many CPU rivals to line up. Versus passes 0 and fills the extra
 ## slots with peers instead.
 ## `lineup` names each CPU outright — that is what single-player setup passes.
 ## Left empty, the roster picks for you, which is what the networked path and a
@@ -1551,11 +1551,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_1: _activate("practice")
 			KEY_2: _activate("daily")
 			KEY_3: _activate("solo")
-			KEY_4: _activate("leave_match")
+			KEY_4: _activate("versus")
 			KEY_5: _activate("mastery")
 			KEY_6: _activate("cosmetics")
 			KEY_7: _activate("settings")
-			KEY_V: _activate("leave_match")
+			KEY_V: _activate("versus")
 			KEY_P: _activate("mastery")
 			KEY_H:
 				show_rules = not show_rules
@@ -1835,11 +1835,13 @@ func _send_block(
 	defender.pending.append(p)
 	defender.flash = 1.0
 
-func _on_multiplayer_data(
-	packet: Dictionary,
-	player: GKPlayer	
-) -> void:
-	
+## Everything the other player sends, once the handshake has finished.
+##
+## This took a second `player: GKPlayer` argument, which `data_received` does not
+## send — so Godot dropped every emit and with it every attack, salvo, pressure
+## tick and board mirror. Two players connected and then sat in silence. The
+## sender is not needed anyway: a 1v1 has exactly one of them.
+func _on_multiplayer_data(packet: Dictionary) -> void:
 	# Every message the match needs, in one place. Only `attack` was wired
 	# before, so a connected game had no salvos, no ambient pressure, no mirror
 	# of the opponent's board and no way to end — which is most of what "it
@@ -2504,9 +2506,15 @@ func _tick_pressure(delta: float) -> void:
 		pressure_interval = maxf(PRESSURE_MIN, pressure_interval - PRESSURE_STEP)
 		pressure_timer = pressure_interval
 
-	# Both peers run the clock so both HUDs agree, but only the host decides when
-	# it actually fires — otherwise the two boards drift apart.
-	if net_active() and not Link.is_host:
+	# Both peers run the clock so both HUDs agree, but only one of them decides
+	# when it actually fires — otherwise the two boards drift apart.
+	#
+	# That used to be the host. Game Center has no host, and `Link.is_host` is
+	# now false on both devices, so this read `not false` at both ends and both
+	# returned: ambient pressure stopped firing at all in a versus match, and the
+	# only symptom was a game that felt strangely easy. `is_first` is the
+	# replacement — both ends sort the two player ids and reach the same answer.
+	if net_active() and not MultiplayerManager.is_first():
 		return
 	var source := WordBank.random_common()
 	if net_active():
@@ -3933,7 +3941,7 @@ func _draw_countdown(size: Vector2) -> void:
 	var pop: float = 1.0 + (1.0 - frac) * 0.35
 	_otext(_font_bold, Vector2(cx, cy), label, int(96 * pop), Color(tint, 0.5 + 0.5 * frac))
 	_otext(_font, Vector2(cx, cy + 96.0),
-		"leave_match %s" % _show(ai_side.label if net_active() else difficulty), 16,
+		"versus %s" % _show(ai_side.label if net_active() else difficulty), 16,
 		Color("#8d99bd"))
 
 
@@ -4512,7 +4520,7 @@ func _draw_coaching(size: Vector2) -> void:
 			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
 
 
-## Who you are lining up against. Deliberately shaped like the leave_match lobby:
+## Who you are lining up against. Deliberately shaped like the versus lobby:
 ## seats along the top, and a roster underneath that fills whichever seat you
 ## have picked. Choosing an opponent was the title screen's job until it had
 ## seven of them on it — and it never let you choose more than one at a time,
@@ -4597,7 +4605,7 @@ func _draw_solo(size: Vector2) -> void:
 
 
 ## The special-block switches. The same row of cards serves single-player setup
-## and the leave_match room, so the two can never drift apart or explain themselves
+## and the versus room, so the two can never drift apart or explain themselves
 ## differently.
 func _kind_cards(top: float) -> Array:
 	var out: Array = []
@@ -5186,15 +5194,27 @@ func _draw_pause(size: Vector2) -> void:
 
 ## The house rules live in a drawer.
 ##
-## Six switches is the longest thing on the leave_match screen and the least often
+## Six switches is the longest thing on the versus screen and the least often
 ## touched — most rooms play the base game — so it was pushing the buttons that
 ## matter, Ready and Leave, off the bottom of a phone. Shut by default, and it
 ## says how many are on so nobody has to open it to find out.
 var kinds_open := false
 
+## The VERSUS door, which is a toggle rather than a button. Matchmaking has no
+## Game Center sheet to back out of — it runs headless behind our own screen —
+## so the door itself has to be the way out, or a player who changes their mind
+## is stuck watching "finding an opponent" until someone turns up.
 func _on_find_match_pressed() -> void:
+	if MultiplayerManager.state == MultiplayerManager.State.MATCHMAKING:
+		MultiplayerManager.cancel_find()
+		return
+	# A rematch arrives here with the finished match still open, and matchmaking
+	# refuses to start on top of one. Hang up first.
+	if MultiplayerManager.current_match != null:
+		MultiplayerManager.leave_match()
 	MultiplayerManager.find_match()
-	
+
+
 func _lobby_fill() -> float:
 	return 1.25 if portrait else 1.0
 
@@ -6186,14 +6206,18 @@ const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
 
 ## What the versus door has to say for itself.
 ##
-## Matchmaking happens behind a native sheet. The moment it closes — found,
-## cancelled, or still waiting on the other player to attach — the player is
-## looking at this menu again, and without this line there is nothing anywhere
-## on screen saying whether anything is happening.
+## Matchmaking is headless — there is no native sheet, deliberately, because the
+## plugin cannot dismiss one once a match is found. So this line is the only
+## thing anywhere on screen saying whether anything is happening, from "finding
+## an opponent" through to "saying hello".
 func _versus_sub() -> String:
 	if not MultiplayerManager.available():
 		return "needs an iPhone or a Mac"
-	if net_status != "":
+	if MultiplayerManager.state == MultiplayerManager.State.MATCHMAKING:
+		return "%s — tap again to stop" % net_status
+	# "signed in" is the resting state, not news. Saying it forever would turn
+	# the door's one line of copy into a status light nobody needs.
+	if net_status != "" and MultiplayerManager.state != MultiplayerManager.State.READY:
 		return net_status
 	return "One on one, over Game Center"
 
@@ -6702,6 +6726,7 @@ func _activate(action: String) -> void:
 	Haptics.fire("tap")
 	if action.begins_with("diff:"):
 		Link.leave()
+		MultiplayerManager.leave_match()
 		start_match(action.substr(5), 1)
 	elif action == "resume":
 		paused = false
@@ -6710,6 +6735,11 @@ func _activate(action: String) -> void:
 	elif action == "leave_match":
 		paused = false
 		Link.leave()
+		# `Link` is the dead netfox transport, so on its own this walked back to
+		# the title with the Game Center match still open: the opponent never
+		# heard you go, and `net_active()` stayed true so the next match refused
+		# to start.
+		MultiplayerManager.leave_match()
 		phase = Phase.TITLE
 		_hover_action = ""
 		Sfx.play("back")
@@ -6721,8 +6751,8 @@ func _activate(action: String) -> void:
 		# Still connected? Both players go back to the room and ready up again.
 		if Link.connected:
 			Link.request_rematch()
-		elif net_active() or difficulty == "leave_match":
-			_activate("leave_match")
+		elif net_active() or difficulty == "Versus":
+			_activate("versus")
 		else:
 			# Straight from the seats, so a random opponent is genuinely rolled
 			# again rather than quietly becoming whoever it was last time.

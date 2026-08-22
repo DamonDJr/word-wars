@@ -7,16 +7,31 @@ extends Node
 ## transport. So the rules the old netfox build got from the high-level API have
 ## to be written out by hand here, and there are three of them:
 ##
-## 1. **A match is not ready when you receive it.** `didFindMatch` hands back a
-##    `GKMatch` whose `expected_player_count` is still counting down; players
-##    attach afterwards. Anything sent before that reaches nobody.
+## 1. **A match is not ready when you receive it.** The match object can arrive
+##    with `expected_player_count` still counting down; players attach
+##    afterwards. Anything sent before that reaches nobody.
 ## 2. **Both ends have to agree when to start.** Each device's callback fires at
 ##    its own moment, so without an exchange one player is mid-countdown while
 ##    the other is still on the title screen — which looks exactly like a game
 ##    that connected and then hung.
 ## 3. **Invites are a separate door.** Accepting one outside the app does
-##    nothing at all unless a listener was registered first, which is why the
-##    invite path can look broken while auto-match half works.
+##    nothing at all unless a listener was registered first.
+##
+## ## Why there is no Game Center sheet
+##
+## `GKMatchmakerViewController` is the obvious way to do this and it is a trap
+## with this plugin. Apple requires the app to dismiss that sheet itself from
+## `matchmakerViewController(_:didFind:)`, and the plugin never does: both of its
+## delegate classes — `Proxy` and `RequestMatchDelegate` — dismiss only from
+## `matchmakerViewControllerWasCancelled`, and no `dismiss` is exposed to
+## GDScript to do it by hand. So a *successful* match leaves Apple's sheet parked
+## on screen saying "Starting Game…" forever, with the game running underneath
+## where nobody can see or reach it.
+##
+## `GKMatchmaker` does the same matchmaking with no view controller at all, so
+## there is no sheet to be stuck behind and the game's own screens stay in front.
+## Invites go out through `recipients` and come back through `match_for_invite`,
+## both of which are equally headless.
 ##
 ## Everything here is guarded on the platform rather than commented out for
 ## desktop testing: the plugin ships a Linux stub whose classes refuse to
@@ -35,6 +50,9 @@ enum State { OFF, AUTHENTICATING, READY, MATCHMAKING, CONNECTING, HANDSHAKING, P
 ## rather than sent once and hoped for.
 const HELLO_EVERY := 0.5
 const HANDSHAKE_TIMEOUT := 15.0
+## A match whose players never finish attaching. Without this the game sits in
+## "waiting for the other player" with no way out but force-quitting.
+const CONNECT_TIMEOUT := 30.0
 
 var state: int = State.OFF
 var status := "offline"
@@ -42,7 +60,7 @@ var status := "offline"
 var game_center: GameCenterManager
 var local_player: GKLocalPlayer
 var current_match: GKMatch
-var _controller
+var _matchmaker: GKMatchmaker
 
 ## The other player's Game Center id, learned from their hello. Also the thing
 ## that decides seating: both ends sort the two ids the same way, so both agree
@@ -50,7 +68,7 @@ var _controller
 var _peer_id := ""
 var _local_id := ""
 var _hello_timer := 0.0
-var _handshake_age := 0.0
+var _wait_age := 0.0
 var _peer_said_hello := false
 
 
@@ -82,130 +100,164 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if state == State.CONNECTING:
+		_wait_age += delta
+		# Poll rather than trust `player_changed` alone: if both players were
+		# already attached when the match arrived, that signal has nothing left
+		# to fire and the only thing that ever moves is the count.
+		_check_connected()
+		if state == State.CONNECTING and _wait_age >= CONNECT_TIMEOUT:
+			_fail("the other player never joined")
+		return
+
 	if state != State.HANDSHAKING:
 		return
 	# Repeat the hello until the other end answers. A single one sent the
 	# instant the match arrives can be dropped while the peer is still
 	# attaching, and a dropped hello is a game that never starts.
-	_handshake_age += delta
+	_wait_age += delta
 	_hello_timer -= delta
 	if _hello_timer <= 0.0:
 		_hello_timer = HELLO_EVERY
 		_send_raw({"type": "hello", "id": _local_id})
-	if _handshake_age >= HANDSHAKE_TIMEOUT:
+	if _wait_age >= HANDSHAKE_TIMEOUT:
 		_fail("the other player never answered")
 
 
 # ----------------------------------------------------------------- sign-in
 
-func _on_authenticated(_result: Variant = null) -> void:
+## Apple calls its authentication handler more than once — on sign-in, and again
+## whenever the account changes underneath the app — so this has to be safe to
+## run twice, and it has to believe `signed_in` when it says no.
+func _on_authenticated(signed_in: bool = true) -> void:
+	if not signed_in:
+		local_player = null
+		_local_id = ""
+		_set_state(State.OFF, "not signed in to Game Center")
+		return
+
 	local_player = game_center.local_player
 	if local_player != null:
 		_local_id = _player_id(local_player)
 		# Without this, an invite accepted from outside the app arrives nowhere
 		# and the invite half of matchmaking looks broken while auto-match works.
-		local_player.invite_accepted.connect(_on_invite_accepted)
+		if not local_player.invite_accepted.is_connected(_on_invite_accepted):
+			local_player.invite_accepted.connect(_on_invite_accepted)
+		# The other direction: a player picking friends in the Game Center app
+		# and starting a Word Wars match from there. Apple has already run the
+		# friend picker at that point and just hands us the names, which is the
+		# whole invite-sending flow with none of the UI we cannot dismiss.
+		if not local_player.match_requested_with_other_players.is_connected(
+				_on_match_requested):
+			local_player.match_requested_with_other_players.connect(_on_match_requested)
 		local_player.register_listener()
-	_set_state(State.READY, "signed in")
+	# Only announce readiness from a standing start. A re-authentication that
+	# lands mid-match must not knock the match back to the title screen.
+	if state == State.OFF or state == State.AUTHENTICATING:
+		_set_state(State.READY, "signed in")
 
 
-func _on_auth_failed(error: Variant) -> void:
+func _on_auth_failed(message: String) -> void:
 	_set_state(State.OFF, "Game Center sign-in failed")
-	push_warning("Game Center: authentication failed — %s" % str(error))
+	push_warning("Game Center: authentication failed — %s" % message)
 
 
-## Game Center identifies a player by `game_player_id` on modern OS versions.
-## Falls back to the display name, which is not guaranteed unique but is only
-## used to break a tie between exactly two people.
-func _player_id(p) -> String:
+## Game Center identifies a player by `game_player_id`. Falls back to the display
+## name, which is not guaranteed unique but is only ever used to break a tie
+## between exactly two people.
+func _player_id(p: GKPlayer) -> String:
 	if p == null:
 		return ""
-	for key in ["game_player_id", "gamePlayerID", "player_id"]:
-		if key in p:
-			var v = p.get(key)
-			if typeof(v) == TYPE_STRING and String(v) != "":
-				return String(v)
-	return String(p.display_name) if "display_name" in p else ""
+	if String(p.game_player_id) != "":
+		return String(p.game_player_id)
+	return String(p.display_name)
+
+
+## The shared matchmaker, built on first use. Kept because Apple's `cancel()`
+## applies to the shared instance and we need to be able to call it.
+func _mm() -> GKMatchmaker:
+	if _matchmaker == null:
+		_matchmaker = GKMatchmaker.new()
+	return _matchmaker
 
 
 # ------------------------------------------------------------- matchmaking
 
-func find_match() -> void:
-	if not available():
-		_set_state(State.OFF, "multiplayer needs an Apple device")
-		return
-	if state == State.MATCHMAKING or state == State.CONNECTING:
-		return
-
+func _request(for_players: Array = []) -> GKMatchRequest:
 	var request := GKMatchRequest.new()
 	request.min_players = 2
 	request.max_players = 2
 	request.invite_message = "Join my Word Wars battle!"
-
-	_set_state(State.MATCHMAKING, "finding an opponent")
-	_present(request, null)
-
-
-## One place that opens the matchmaker, whether it came from the button or from
-## an accepted invite — so the two paths cannot drift, which is how one of them
-## ends up working and the other not.
-func _present(request, invite) -> void:
-	_controller = null
-	# The controller form is preferred because it carries `cancelled` and
-	# `failed_with_error`, and without those a dismissed sheet leaves the game
-	# sitting in "finding an opponent" forever with nothing to say.
-	if ClassDB.can_instantiate("GKMatchmakerViewController"):
-		var vc = GKMatchmakerViewController.new()
-		var made = null
-		if invite != null:
-			made = vc.create_controller_from_invite(invite)
-		else:
-			made = vc.create_controller(request)
-		_controller = made if made != null else vc
-		if _controller.has_signal("did_find_match"):
-			_controller.did_find_match.connect(_on_found_match)
-			_controller.cancelled.connect(_on_cancelled)
-			_controller.failed_with_error.connect(_on_matchmaking_failed)
-			_controller.present()
-			return
-	# Fallback: the convenience call, which presents and dismisses itself but
-	# reports nothing when the sheet is cancelled.
-	if invite == null:
-		GKMatchmakerViewController.request_match(request, _on_found_match_cb)
+	if not for_players.is_empty():
+		request.recipients = for_players
+	return request
 
 
-func _on_found_match_cb(found, error: Variant) -> void:
-	if error:
-		_on_matchmaking_failed(error)
+## Auto-match: ask Game Center for anyone else looking for a game. Headless, so
+## the game's own screen keeps saying what is happening.
+func find_match() -> void:
+	if not available():
+		_set_state(State.OFF, "multiplayer needs an Apple device")
 		return
-	_on_found_match(found)
+	if state != State.READY:
+		return
+	_set_state(State.MATCHMAKING, "finding an opponent")
+	_mm().find_match(_request(), _on_found_match)
 
 
-func _on_invite_accepted(invite) -> void:
-	_set_state(State.MATCHMAKING, "joining the invite")
-	_present(null, invite)
+## Invite specific people. Same call — Game Center sends the invitations itself
+## when the request carries recipients, and hands back the match once they
+## accept.
+func invite_players(players: Array) -> void:
+	if not available() or players.is_empty():
+		return
+	if state != State.READY:
+		return
+	_set_state(State.MATCHMAKING, "waiting for them to accept")
+	_mm().find_match(_request(players), _on_found_match)
 
 
-func _on_cancelled() -> void:
-	_controller = null
+## Stop looking. Safe to call when nothing is in flight.
+func cancel_find() -> void:
+	if state != State.MATCHMAKING:
+		return
+	_mm().cancel()
 	_set_state(State.READY, "matchmaking cancelled")
 	match_ended.emit("cancelled")
 
 
-func _on_matchmaking_failed(error: Variant) -> void:
-	_controller = null
-	push_warning("Game Center: matchmaking failed — %s" % str(error))
-	_set_state(State.READY, "could not find a match")
-	match_ended.emit("matchmaking failed")
+## Someone chose friends in the Game Center app and asked for a match. The
+## picking is already done, so this is just `invite_players` with Apple's list.
+func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
+	invite_players(recipients)
+
+
+func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
+	if not available() or invite == null:
+		return
+	# An invite can arrive at any moment, including mid-match — accepting one
+	# from the notification banner is a decision to abandon whatever is running.
+	if current_match != null:
+		leave_match()
+	_set_state(State.MATCHMAKING, "joining the invite")
+	_mm().match_for_invite(invite, _on_found_match)
 
 
 # ------------------------------------------------------- the match itself
 
-func _on_found_match(found) -> void:
-	_controller = null
-	if found == null:
-		_on_matchmaking_failed("no match")
+## Both matchmaking calls land here: `(GKMatch match, Variant error)`, with
+## exactly one of the two non-null.
+func _on_found_match(found, error = null) -> void:
+	if error != null:
+		push_warning("Game Center: matchmaking failed — %s" % str(error))
+		_set_state(State.READY, "could not find a match")
+		match_ended.emit("matchmaking failed")
 		return
+	if found == null:
+		_set_state(State.READY, "could not find a match")
+		match_ended.emit("matchmaking failed")
+		return
+
 	current_match = found
 	current_match.data_received.connect(_on_data)
 	current_match.player_changed.connect(_on_player_changed)
@@ -213,21 +265,25 @@ func _on_found_match(found) -> void:
 
 	_peer_id = ""
 	_peer_said_hello = false
+	_wait_age = 0.0
 	_set_state(State.CONNECTING, "connecting")
 	_check_connected()
 
 
-## A match arrives before its players do. Nothing may be sent until the count
+## A match can arrive before its players do. Nothing may be sent until the count
 ## reaches zero, so this is the gate everything else waits behind.
 func _check_connected() -> void:
 	if current_match == null:
 		return
-	if current_match.expected_player_count > 0:
-		_set_state(State.CONNECTING, "waiting for the other player")
-		return
 	if state == State.HANDSHAKING or state == State.PLAYING:
 		return
-	_handshake_age = 0.0
+	if current_match.expected_player_count > 0:
+		if status != "waiting for the other player":
+			_set_state(State.CONNECTING, "waiting for the other player")
+		return
+	# Nobody else is coming, so stop Game Center looking for more.
+	_mm().finish_matchmaking(current_match)
+	_wait_age = 0.0
 	_hello_timer = 0.0
 	_set_state(State.HANDSHAKING, "saying hello")
 
@@ -241,8 +297,8 @@ func _on_player_changed(player: GKPlayer, connected: bool) -> void:
 		_fail("%s left" % String(player.display_name))
 
 
-func _on_match_error(error: String) -> void:
-	push_warning("Game Center: match error — %s" % error)
+func _on_match_error(message: String) -> void:
+	push_warning("Game Center: match error — %s" % message)
 	_fail("the connection dropped")
 
 
@@ -289,6 +345,9 @@ func is_first() -> bool:
 
 
 func leave_match() -> void:
+	if state == State.MATCHMAKING:
+		cancel_find()
+		return
 	if current_match != null:
 		_send_raw({"type": "bye"})
 		current_match.disconnect()

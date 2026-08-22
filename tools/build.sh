@@ -85,6 +85,21 @@ if ! grep -q "net state behaves" <<<"$NET"; then
 	exit 1
 fi
 
+# A signal connected to a handler of the wrong arity is accepted by Godot and
+# then fails at emit time, on a device, inside a callback nobody is watching.
+# That is how `invite_accepted(player, invite)` met a handler taking `(invite)`
+# and killed every Game Center invite while looking like an Apple problem. The
+# plugin registers its API on the desktop stub too, so the shapes can be checked
+# from here rather than found on a phone.
+echo "==> Game Center API check"
+GC=$("$(command -v godot)" --headless --script tools/gctest.gd 2>&1 || true)
+if ! grep -q "the Game Center API matches" <<<"$GC"; then
+	echo "FAILED: multiplayer_manager.gd disagrees with the Game Center plugin." >&2
+	grep -E "FAILED" <<<"$GC" >&2 || true
+	echo "        Run: godot --headless --script tools/gctest.gd" >&2
+	exit 1
+fi
+
 # You could win a match and finish second on points, because the two hardest
 # things in the game paid nothing. These bonuses are what tie the scoreboard back
 # to the result, and focus fire is invisible by construction — the only symptom
