@@ -97,7 +97,7 @@ func _prediction_matches_the_grid() -> void:
 	for tall in [false, true]:
 		_orient(tall)
 		var where := "portrait" if tall else "landscape"
-		for n in [1, 2]:
+		for n in [1, 2, 3]:
 			var real := _rows_in(game._grid_rects(n, 0.0, 2, 320.0, 104.0, 20.0,
 				340.0, 16.0))
 			var guess: int = n if tall else int(ceil(float(n) * 0.5))

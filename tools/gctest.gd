@@ -52,6 +52,16 @@ const CONNECTIONS := {
 		"invite_accepted": "_on_invite_accepted",
 		"match_requested_with_other_players": "_on_match_requested",
 	},
+	# Apple's own matchmaking screen, under test. Its `did_find_match` carries
+	# only the match — no error argument — which is exactly the arity trap that
+	# killed `invite_accepted`: Godot accepts the wrong handler and then throws
+	# inside Apple's delegate, where the only symptom is a sheet that never
+	# hands the match over.
+	"GKMatchmakerViewController": {
+		"did_find_match": "_on_native_match",
+		"cancelled": "_on_native_cancelled",
+		"failed_with_error": "_on_native_failed",
+	},
 	"GKMatch": {
 		"data_received": "_on_data",
 		# Both, always. GameKit calls the recipient form *instead of* the plain
@@ -76,6 +86,9 @@ const CALLS := {
 		"cancel": 0,
 	},
 	"GKMatch": {"send_data_to_all_players": 2, "disconnect": 0},
+	# `create_controller` is static and takes the request; `present` is called on
+	# what it hands back.
+	"GKMatchmakerViewController": {"create_controller": 1, "present": 0},
 	# `load_leaderboards` is static and takes (ids, callback); the other two are
 	# called on the board object Apple hands back.
 	"GKLeaderboard": {
@@ -98,6 +111,9 @@ const PROPERTIES := {
 	# it before somebody saw it on a phone.
 	"GKPlayer": ["game_player_id", "display_name", "alias", "is_invitable"],
 	"GKMatchRequest": ["min_players", "max_players", "invite_message", "recipients"],
+	# The mode picks which of Apple's three options the sheet offers. Default is
+	# the full screen, which is the one with Invite Friends on it.
+	"GKMatchmakerViewController": ["matchmaking_mode"],
 	# The only thing the summary reads off an entry. A rank that silently stops
 	# arriving leaves the two Game Center rows off the board and looks exactly
 	# like a device that is not signed in.

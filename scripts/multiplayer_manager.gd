@@ -250,6 +250,96 @@ func find_match() -> void:
 	_mm().find_match(_request(), _on_found_match)
 
 
+# ------------------------------------------------- Apple's own matchmaker
+#
+# Under test, deliberately kept beside the headless path rather than replacing
+# it. This is the screen with SharePlay, Invite Friends and Quick Match on it,
+# and Invite Friends is the only route in the whole API that reaches somebody who
+# is not already a Game Center friend: Apple sends them a link, by Messages, to
+# any contact. That is worth a great deal more than the friend picker, which
+# needs a mutual friend request and a permission prompt before it shows anybody.
+#
+# One thing is known to be wrong with it and it is the plugin's, not Apple's.
+# Apple requires the app to dismiss this sheet from `didFind`; the plugin's
+# `didFind` builds the match, hands it over and returns without dismissing —
+# checked by disassembling the shipped framework, not by reading its source,
+# which we do not have. Only `wasCancelled` dismisses.
+#
+# What that means in practice was never actually observed, because until the
+# `data_received_for_recipient_from_player` fix no match ever finished its
+# handshake — so there was never a game behind the sheet to be hidden by it. The
+# whole point of this pass is to find out what the sheet does now that there is.
+#
+# The cancel handler was disassembled too: it dismisses the view controller and
+# never touches the `GKMatch` — no `disconnect`, no reference to the match at
+# all. So a match already delivered by `didFind` survives the user closing the
+# sheet, which is what `_on_native_cancelled` relies on.
+
+## Apple's matchmaking modes. 0 is the full screen; the rest narrow it down.
+enum Native { DEFAULT, NEARBY_ONLY, AUTOMATCH_ONLY, INVITE_ONLY }
+
+## Held because the sheet is presented by an object Apple does not retain for us.
+var _native_vc: GKMatchmakerViewController
+
+
+## Put Apple's matchmaking screen up.
+func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
+	if not available():
+		_set_state(State.OFF, "multiplayer needs an Apple device")
+		return
+	if state != State.READY:
+		print("[GC] native: refused — state is %s, not READY" % State.keys()[state])
+		return
+
+	_native_vc = GKMatchmakerViewController.create_controller(_request())
+	if _native_vc == null:
+		print("[GC] native: create_controller returned null")
+		_set_state(State.READY, "Game Center would not open its own screen")
+		return
+
+	_native_vc.matchmaking_mode = mode
+	_native_vc.did_find_match.connect(_on_native_match)
+	_native_vc.cancelled.connect(_on_native_cancelled)
+	_native_vc.failed_with_error.connect(_on_native_failed)
+
+	invited = ""
+	_set_state(State.MATCHMAKING, "Game Center is asking")
+	print("[GC] native: presenting (mode %d)" % mode)
+	_native_vc.present()
+	print("[GC] native: present() returned — sheet should be up")
+
+
+## Apple found somebody. Same arrival as every other route, minus the error
+## argument this signal does not carry.
+func _on_native_match(found) -> void:
+	print("[GC] native: did_find_match — the sheet is Apple's to close from here")
+	_on_found_match(found, null)
+
+
+## The user closed the sheet.
+##
+## Which may mean they gave up, or may be the only way this build has of getting
+## Apple's sheet off the screen once a match has started behind it — the plugin
+## never dismisses from `didFind`, so closing it by hand is the documented
+## workaround rather than an accident. A match already in hand is therefore kept,
+## not cancelled: the cancel handler was checked and it does not touch the match.
+func _on_native_cancelled(detail: String = "") -> void:
+	if current_match != null:
+		print("[GC] native: cancelled with a match already in hand — sheet dismissed, keeping the match (%s)" % detail)
+		return
+	print("[GC] native: cancelled with no match — giving up (%s)" % detail)
+	_native_vc = null
+	_set_state(State.READY, "matchmaking cancelled")
+	match_ended.emit("cancelled")
+
+
+func _on_native_failed(message: String) -> void:
+	print("[GC] native: failed — %s" % message)
+	_native_vc = null
+	_set_state(State.READY, "Game Center could not set that up")
+	match_ended.emit("matchmaking failed")
+
+
 ## Invite specific people. Same call — Game Center sends the invitations itself
 ## when the request carries recipients, and hands back the match once they
 ## accept.

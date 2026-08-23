@@ -1614,13 +1614,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if phase == Phase.VERSUS:
 		match k.keycode:
 			# The doors are the numbers next to them, and there are no doors while
-			# a search is running — so 1 and 2 cannot start a second one.
+			# a search is running — so none of them can start a second one.
 			KEY_1:
 				if not _versus_busy():
 					_activate("quick_match")
 			KEY_2:
 				if not _versus_busy():
 					_activate("invite")
+			KEY_3:
+				if not _versus_busy():
+					_activate("native_invite")
 			# Escape backs out of the drawer before it backs out of the screen, so
 			# the key agrees with the chevron.
 			KEY_ESCAPE:
@@ -4961,6 +4964,13 @@ func _versus_doors() -> Array:
 		["QUI", "QUICK MATCH", "Anyone else looking, right now", "quick_match",
 			Color("#c77dff")],
 		["INV", "INVITE A FRIEND", invite_sub, "invite", Color("#7bdff2")],
+		# Apple's own screen, under test. It is the only route in the API that
+		# reaches somebody who is not already a Game Center friend — it texts them
+		# a link — which is why it is worth finding out whether the sheet it
+		# leaves behind is survivable. Third rather than first: the two above are
+		# known to work and this one is not, yet.
+		["TEXT", "TEXT A LINK", "Apple's own invite screen · testing",
+			"native_invite", Color("#90be6d")],
 	]
 
 
@@ -5124,7 +5134,8 @@ func _draw_versus(size: Vector2) -> void:
 			"this runs in the background — Game Center will bring you back", 14,
 			size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 12)
 	elif not portrait:
-		_otext(_font, Vector2(cx, foot), "1 quick match · 2 invite · ESC back", 14,
+		_otext(_font, Vector2(cx, foot),
+			"1 quick match · 2 invite · 3 text a link · ESC back", 14,
 			Color("#5d6a92"))
 
 
@@ -7887,6 +7898,11 @@ func _activate(action: String) -> void:
 		else:
 			MultiplayerManager.load_friends(true)
 			Sfx.play("reject", 1.2)
+	elif action == "native_invite":
+		# Everything after this belongs to Apple until the sheet comes back down.
+		# The log is the only witness: see `open_native_matchmaker`.
+		MultiplayerManager.open_native_matchmaker()
+		Sfx.play("count", 1.2)
 	elif action == "friends_refresh":
 		MultiplayerManager.load_friends(true)
 		Sfx.play("key", 1.2)
