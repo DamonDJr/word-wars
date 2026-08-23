@@ -65,10 +65,24 @@ enum Friends { UNASKED, LOADING, READY, EMPTY, DENIED }
 ## rather than sent once and hoped for.
 const HELLO_EVERY := 0.5
 const HANDSHAKE_TIMEOUT := 15.0
-## How long to wait for somebody to close Apple's sheet. Generous, because the
-## only thing on the far side of it is a person deciding to tap — but not
-## unlimited, or a forgotten phone strands the other player forever.
-const SHEET_TIMEOUT := 120.0
+## How long to hold the handshake open for Apple's sheet to take itself down.
+##
+## Short, and it used to be two minutes. The reasoning was that the only thing
+## on the far side of that sheet is a person deciding to tap, which deserves
+## patience — but that got the trade backwards. Holding costs the *other* player
+## a wait they cannot explain or end, and on a device they gave up after five
+## seconds and left. Starting behind a sheet is a cosmetic annoyance; leaving
+## somebody staring at "waiting for them" is a lost match.
+##
+## So this is a grace period for the dismissal, not a wait for a person. If the
+## sheet closes itself the handshake is released the moment it does. If it does
+## not, the match starts anyway and the sheet goes back to being one tap in the
+## way — which is exactly where this started, and no worse.
+## Two seconds, not four and certainly not a hundred and twenty. With the fixed
+## plugin the dismissal is requested *before* the match is handed over, so any
+## wait at all is only covering the animation — and a dismissal that succeeds
+## emits nothing, so there is nothing to wait *for*, only a moment to allow.
+const SHEET_GRACE := 2.0
 ## A match whose players never finish attaching. Without this the game sits in
 ## "waiting for the other player" with no way out but force-quitting.
 const CONNECT_TIMEOUT := 30.0
@@ -167,11 +181,17 @@ func _process(delta: float) -> void:
 	# even though the match is perfectly connected underneath. Saying so keeps
 	# the peer waiting instead of starting without us — see `_native_sheet_up`.
 	if _native_sheet_up:
+		# Grace spent. The sheet is staying, so stop making the other player pay
+		# for it: play the match and let the sheet be a tap in the way.
+		if _wait_age >= SHEET_GRACE:
+			print("[GC] native: sheet still up after %.0fs — starting anyway" % SHEET_GRACE)
+			_native_sheet_up = false
+			_hello_timer = 0.0
+			_set_state(State.HANDSHAKING, "saying hello")
+			return
 		if _hello_timer <= 0.0:
 			_hello_timer = HELLO_EVERY
 			_send_raw({"type": "holding"})
-		if _wait_age >= SHEET_TIMEOUT:
-			_fail("the Game Center screen was never closed")
 		return
 
 	# Repeat the hello until the other end answers. A single one sent the
