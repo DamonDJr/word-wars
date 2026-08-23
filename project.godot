@@ -23,7 +23,7 @@ general/ios/app_id="ca-app-pub-3940256099942544~1458002511"
 
 config/name="Word Wars"
 config/description="Type words to blast garbage blocks onto your opponent's board."
-config/version="0.33.0"
+config/version="0.33.1"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 boot_splash/bg_color=Color(0.003922, 0.023529, 0.101961, 1)
