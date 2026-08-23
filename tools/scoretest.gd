@@ -7,6 +7,13 @@ extends SceneTree
 ## one, and winning scored nothing at all. A scoreboard that can crown the loser
 ## is measuring something other than the game that was just played.
 ##
+## Bonuses alone did not settle it. They were paid raw while a word's score was
+## paid at SCALE, so the hardest thing in the game was worth a fifth of what it
+## reads as — and offence still scored nothing in a match, only in a solo run.
+## Every point in a duel came from clearing your own board, which the combo
+## multiplier pays +60% a block for, so the player being buried out-earned the
+## player doing the burying by tens of thousands.
+##
 ## Also here: focus fire, which is invisible by construction — the only symptom
 ## is that blocks get bigger, and nobody can tell a focus tier from a chain tier
 ## by looking at the block.
@@ -19,7 +26,7 @@ var fails := 0
 ## touching `fails`, so a crash used to be reported as a pass — this is what
 ## makes an incomplete run fail instead of looking clean.
 var done := 0
-const SECTIONS := 4
+const SECTIONS := 6
 
 
 func _init() -> void:
@@ -38,6 +45,8 @@ func _init() -> void:
 	P.since_ad = 0
 	P.ad_gap = P.ADS_EVERY_MAX
 
+	_attacking_pays()
+	_bonuses_are_scaled()
 	_topout_pays()
 	_winning_pays()
 	_focus_needs_a_crowd()
@@ -53,6 +62,54 @@ func _init() -> void:
 	quit(1 if fails > 0 else 0)
 
 
+## The one that let the scoreboard crown the loser by fifty thousand. A block
+## sent used to be its own reward and nothing else: `_strike` handed it to the
+## defender and returned zero, so in the only mode with an opponent, attacking
+## paid nothing. Points came from answering garbage, and the player losing had
+## the most garbage to answer.
+func _attacking_pays() -> void:
+	print("--- attacking pays, with a rival as well as without ---")
+	game.start_match("Rookie", 1)
+	game.phase = game.Phase.PLAY
+	game.mode = game.Mode.NORMAL
+	var me = game.sides[0]
+	var them = game.sides[1]
+	them.in_match = true
+	them.alive = true
+	them.pending.clear()
+
+	var before: int = me.score
+	var paid: int = game._strike(me, them, "strike", 3, 0.0, "ike")
+	_expect("a block sent is paid for, by the cell",
+		paid == game._cells(3) * game.STRIKE_PAY)
+	_expect("and banked", me.score == before + paid)
+	# And it is still an attack, not a payout instead of one.
+	_expect("and it still lands on them", not them.pending.is_empty())
+
+	# A bigger block is a bigger hit is more points, or the chain ladder buys
+	# damage the scoreboard cannot see.
+	_expect("a heavier block pays more",
+		game._strike(me, them, "strike", 5, 0.0, "ike")
+			> game._strike(me, them, "strike", 1, 0.0, "ike"))
+	done += 1
+
+
+## Every flat bonus is quoted in the same raw units a word's letters are counted
+## in, so every one has to be scaled on the way to a scoreboard. The salvo was;
+## the topout and the win were not, which is why they never bit.
+func _bonuses_are_scaled() -> void:
+	print("--- the flat bonuses are paid at scale ---")
+	_expect("a topout is worth more than a salvo",
+		Scoring.flat(Scoring.TOPOUT_BONUS) > Scoring.flat(Scoring.SALVO_BONUS))
+	# The whole point of the win bonus is to outweigh whatever the loser piled up
+	# in the last few seconds, so it has to be the biggest flat thing there is.
+	_expect("and taking the match is worth more than either",
+		Scoring.flat(Scoring.WIN_BONUS) > Scoring.flat(Scoring.TOPOUT_BONUS))
+	_expect("scaling is what SCALE says it is",
+		Scoring.flat(Scoring.WIN_BONUS) == Scoring.WIN_BONUS * Scoring.SCALE)
+	done += 1
+
+
 func _topout_pays() -> void:
 	print("--- overfilling a board pays ---")
 	game.start_match("Rookie", 1)
@@ -65,7 +122,7 @@ func _topout_pays() -> void:
 	var before: int = me.score
 	game._credit_topout(game._entity_of(me), them)
 	_expect("the attacker is paid for it",
-		me.score == before + Scoring.TOPOUT_BONUS)
+		me.score == before + Scoring.flat(Scoring.TOPOUT_BONUS))
 
 	# Ambient pressure has nobody to pay, and a board that fills itself must not
 	# pay its owner.
@@ -90,7 +147,10 @@ func _winning_pays() -> void:
 	game.sides[1].alive = false
 	game._end_match(game.sides[1])
 	var comfortable: int = me.score
-	_expect("taking the match is worth something", comfortable > 0)
+	# Checked against the figure rather than against zero: it was never zero, it
+	# was a fifth of what it should have been, which "worth something" cannot see.
+	_expect("taking the match pays the scaled bonus",
+		comfortable == Scoring.flat(Scoring.WIN_BONUS + 3 * Scoring.LIFE_BONUS))
 
 	# The same win, down to the last life.
 	game.start_match("Rookie", 1)

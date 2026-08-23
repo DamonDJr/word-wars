@@ -312,15 +312,26 @@ const DAILY_OPEN_MAX := 0.45
 ## first second is a wall, not a starting position.
 const DAILY_OPEN_TIERS := [0, 0, 1, 1, 2, 3]
 
-## What an attack is worth when there is nobody to attack it with.
+## What an attack is worth. One cell of block, this many points.
 ##
 ## Everything the game builds towards — the tier a chain earns, the block a
 ## COUNTER sends straight back, the free attack a PERFECT buys, a salvo — has no
 ## target in a solo run. Switching those rules off would leave the daily a
 ## thinner game than the one it is drawn from, so instead each one is paid in
-## score, priced by the damage it would have done: one cell of block you would
-## have put on somebody, this many points.
-const DAILY_STRIKE_PAY := 80
+## score, priced by the damage it would have done.
+##
+## It is paid in a match too, and that is newer than it sounds. It used not to
+## be: with a rival in the room the block was thrown and the attack scored
+## nothing at all. Which means offence paid zero in the only mode that has an
+## opponent, and every point in a match came from clearing your own board —
+## where the combo multiplier pays +60% a block. The more garbage you are buried
+## under, the more each answer is worth, so the player being beaten had the
+## richer board and out-scored the player doing the beating. You could take a
+## match three lives to none and finish fifty thousand points down.
+##
+## A cell of block is a cell of block. It is worth the same whether it lands on
+## a real board or is cashed because there is no board to land on.
+const STRIKE_PAY := 80
 
 ## The key art gets a moment of its own before the menu arrives, then dissolves
 ## into it. Any key or click cuts it short — nobody should have to watch this
@@ -1546,31 +1557,31 @@ func _credit_topout(culprit: int, victim: SideState) -> void:
 	var who := _side_for_entity(culprit)
 	if who == null or who == victim:
 		return
+	var paid := Scoring.flat(Scoring.TOPOUT_BONUS)
 	if _owned_here(who):
-		who.score += Scoring.TOPOUT_BONUS
+		who.score += paid
 		if who == player:
-			_pop_score("+%s" % _commas(Scoring.TOPOUT_BONUS), "TOPPED THEM OUT",
-				Scoring.TOPOUT_BONUS)
+			_pop_score("+%s" % _commas(paid), "TOPPED THEM OUT", paid)
 			score_kick = 1.0
 			Sfx.play("salvo", 1.1)
 			Haptics.fire("salvo")
 			_say("TOPPED OUT %s — +%s" % [_show(victim.label),
-				_commas(Scoring.TOPOUT_BONUS)], Color("#ffd166"))
+				_commas(paid)], Color("#ffd166"))
 		_log("%s overfilled %s — +%s" % [_show(who.label), _show(victim.label),
-			_commas(Scoring.TOPOUT_BONUS)], Color("#ffd166"))
+			_commas(paid)], Color("#ffd166"))
 	elif net_active():
 		MultiplayerManager.send_event("topout", {})
 
 
 ## Their attack ended one of our lives, and they are owed for it.
 func _on_topout_credit(_culprit: int) -> void:
-	player.score += Scoring.TOPOUT_BONUS
-	_pop_score("+%s" % _commas(Scoring.TOPOUT_BONUS), "TOPPED THEM OUT",
-		Scoring.TOPOUT_BONUS)
+	var paid := Scoring.flat(Scoring.TOPOUT_BONUS)
+	player.score += paid
+	_pop_score("+%s" % _commas(paid), "TOPPED THEM OUT", paid)
 	score_kick = 1.0
 	Sfx.play("salvo", 1.1)
 	Haptics.fire("salvo")
-	_say("TOPPED THEM OUT — +%s" % _commas(Scoring.TOPOUT_BONUS), Color("#ffd166"))
+	_say("TOPPED THEM OUT — +%s" % _commas(paid), Color("#ffd166"))
 
 
 ## A side as a network entity id: 0 for your own board, its peer id otherwise.
@@ -2029,13 +2040,12 @@ func _note_best(side: SideState, word: String, earned: int) -> void:
 ## Every hit in the game funnels through here, which is the point: the rules
 ## that decide how big a hit is — the chain ladder, the combo, a tier owed by an
 ## earlier COMBO — are the same rules in a solo run as in a match, and only the
-## last step differs. With a rival, the block is sent and thrown. Without one it
-## is cashed at `DAILY_STRIKE_PAY` a cell, so the ladder still pays for exactly
-## what it paid for before and the daily is the same game rather than a
-## defanged copy of it.
+## delivery differs. With a rival the block is sent and thrown; without one there
+## is nothing to send it to. Either way it is paid at `STRIKE_PAY` a cell, so the
+## ladder pays for exactly what it always paid for and the daily is the same game
+## rather than a defanged copy of it.
 ##
-## Returns what it was worth in points, which is zero whenever it was worth a
-## block instead.
+## Returns what it was worth in points.
 func _strike(attacker: SideState, defender: SideState, word: String, tier: int,
 		delay: float, text: String = "") -> int:
 	if tier < 0:
@@ -2043,8 +2053,7 @@ func _strike(attacker: SideState, defender: SideState, word: String, tier: int,
 	if not solo_run():
 		_send_block(defender, word, tier, delay, attacker)
 		_throw(attacker, defender, tier, text)
-		return 0
-	var pay := _cells(tier) * DAILY_STRIKE_PAY
+	var pay := _cells(tier) * STRIKE_PAY
 	attacker.score += pay
 	if attacker == player:
 		_pop_score("+%s" % _commas(pay), _tier_name(tier), pay)
@@ -2546,34 +2555,34 @@ func _voice_attack(attacker: SideState, cleared: int, intercepted: int, out_tier
 func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: int) -> void:
 	var power := SALVO_BLOCKS + combo
 
-	# Ten cells of damage is ten cells of damage. A solo salvo pays for all of
-	# them at the same rate every other hit is paid at, which makes riding a
-	# chain to the top of the ladder the single biggest thing you can do in a
-	# minute — as it should be, since it costs nine clean words in a row.
-	var rain := 0
-	if solo_run():
-		rain = power * DAILY_STRIKE_PAY
-	elif net_active() and not _owned_here(defender):
-		MultiplayerManager.send_event("salvo", {"word": word, "count": power})
-		defender.flash = 1.0
-	else:
-		for i in power:
-			var p := Pending.new()
-			p.from = _entity_of(attacker)
-			p.tier = 0
-			p.prefix = _mint_stamp(word, STAMP_WANT, defender)
-			p.cells = 1
-			p.timer = DROP_DELAY + i * 0.10
-			defender.pending.append(p)
-			_throw(attacker, defender, 0, "")
-		if power > 0:
+	# Ten cells of damage is ten cells of damage. A salvo pays for all of them at
+	# the same rate every other hit is paid at, which makes riding a chain to the
+	# top of the ladder the single biggest thing you can do in a minute — as it
+	# should be, since it costs nine clean words in a row. It is worth that
+	# whether the cells rain on somebody or there is nobody to rain on.
+	var rain := power * STRIKE_PAY
+	if not solo_run():
+		if net_active() and not _owned_here(defender):
+			MultiplayerManager.send_event("salvo", {"word": word, "count": power})
 			defender.flash = 1.0
+		else:
+			for i in power:
+				var p := Pending.new()
+				p.from = _entity_of(attacker)
+				p.tier = 0
+				p.prefix = _mint_stamp(word, STAMP_WANT, defender)
+				p.cells = 1
+				p.timer = DROP_DELAY + i * 0.10
+				defender.pending.append(p)
+				_throw(attacker, defender, 0, "")
+			if power > 0:
+				defender.flash = 1.0
 
 	attacker.salvos += 1
 	attacker.salvo_flash = 1.0
 	# Paid on top of the word that cashed the run in, which `_play_word` has
 	# already banked at full chain.
-	var bounty: int = Scoring.SALVO_BONUS * Scoring.SCALE + rain
+	var bounty: int = Scoring.flat(Scoring.SALVO_BONUS) + rain
 	attacker.score += bounty
 	if attacker == player:
 		_pop_score("SALVO +%s" % _commas(bounty), "", bounty)
@@ -2590,7 +2599,7 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	if mine:
 		Haptics.fire("salvo")
 		_say("SALVO — %s, chain spent" % [("+%s" % _commas(bounty)) if solo_run()
-			else ("%d blocks away" % power)], Color("#ffd166"))
+			else ("%d blocks away, +%s" % [power, _commas(bounty)])], Color("#ffd166"))
 		shake = maxf(shake, 0.5)
 		_bloom(Color("#ffd166"), 0.30)
 		_hitstop(HITSTOP_SALVO)
@@ -3334,7 +3343,8 @@ func _end_match(loser: SideState) -> void:
 	win_spoils = 0
 	if mode == Mode.NORMAL and winner == "YOU" and player.alive:
 		var lives_left: int = maxi(0, player.lives)
-		var spoils: int = Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS
+		var spoils: int = Scoring.flat(
+			Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS)
 		player.score += spoils
 		win_spoils = spoils
 		_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
@@ -6305,8 +6315,9 @@ func _draw_rules_panel(size: Vector2) -> void:
 			+ "A tenth word cashes the run in as a SALVO of single blocks and resets you to "
 			+ "nothing. Pause or fire a non-word and the run is gone.",
 		"Topping out costs one of THREE LIVES and wipes your board — it does not end the "
-			+ "match. Words score by their letters, times your chain, times what they broke. "
-			+ "Overfilling somebody's board pays a bonus, and so does winning.",
+			+ "match. Words score by their letters, times your chain, times what they broke, "
+			+ "and every cell of block you send pays on top. Overfilling somebody's board "
+			+ "pays a bonus, and so does winning.",
 		"With three or more boards in play, every attacker past the first aiming at "
 			+ "the same board hits a tier harder. Ganging up works, and being ganged "
 			+ "up on is worth re-aiming over.",

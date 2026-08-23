@@ -236,7 +236,7 @@ func _damage_becomes_score() -> void:
 	var before: int = game.player.score
 	var paid: int = game._strike(game.player, null, "alignment", 3, 2.8, "ent")
 	_expect("a strike pays rather than sends",
-		paid == game._cells(3) * game.DAILY_STRIKE_PAY)
+		paid == game._cells(3) * game.STRIKE_PAY)
 	_expect("and the points are banked", game.player.score == before + paid)
 	_expect("a bigger tier pays more",
 		game._strike(game.player, null, "alignment", 5, 2.8)
@@ -287,7 +287,7 @@ func _damage_becomes_score() -> void:
 	var salvo: int = game.player.score - before
 	_expect("a salvo pays out", salvo > 0)
 	_expect("and beats any single strike",
-		salvo > game._cells(game.TIERS.size() - 1) * game.DAILY_STRIKE_PAY)
+		salvo > game._cells(game.TIERS.size() - 1) * game.STRIKE_PAY)
 	_expect("and still spends the chain", game.player.chain == 0)
 
 

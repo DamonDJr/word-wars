@@ -56,6 +56,21 @@ const WIN_BONUS := 900
 const LIFE_BONUS := 250
 
 
+## Every flat bonus is quoted above in the same raw units a word's letters are
+## counted in, so they can be read against each other at a glance: a topout is
+## worth twice a salvo, and you can see that it is. Which means every one of them
+## has to come through here on the way to a scoreboard, or it is being compared
+## against words that were scaled and it was not.
+##
+## Only the salvo did. TOPOUT, WIN and LIFE were all banked raw, so the hardest
+## thing in the game paid 400 against the salvo's 1000 — the exact opposite of
+## what the comment above TOPOUT_BONUS says it is worth — and taking a match paid
+## less than two good words. The three bonuses that exist to stop the scoreboard
+## crowning the loser were a fifth of the size they read as.
+static func flat(bonus: int) -> int:
+	return bonus * SCALE
+
+
 static func letters(word: String) -> int:
 	var n := 0
 	for c in word.to_lower():
