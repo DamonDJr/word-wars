@@ -20,6 +20,10 @@ extends SceneTree
 
 const MANAGER := "res://scripts/multiplayer_manager.gd"
 const GAME := "res://scripts/game.gd"
+## The daily leaderboard. Held to the same standard and for a stronger reason:
+## nothing in it can be exercised anywhere but a signed-in Apple device, so the
+## registration is not merely the cheapest check available, it is the only one.
+const BOARDS := "res://scripts/leaderboards.gd"
 
 ## The manager's own signals, and what `game.gd` connects to each. Same failure
 ## mode as the plugin's, and it bit just as hard: `_on_multiplayer_data` took a
@@ -72,6 +76,13 @@ const CALLS := {
 		"cancel": 0,
 	},
 	"GKMatch": {"send_data_to_all_players": 2, "disconnect": 0},
+	# `load_leaderboards` is static and takes (ids, callback); the other two are
+	# called on the board object Apple hands back.
+	"GKLeaderboard": {
+		"load_leaderboards": 2,
+		"submit_score": 4,
+		"load_local_player_entries": 5,
+	},
 }
 
 ## class -> properties the manager reads or writes.
@@ -87,6 +98,10 @@ const PROPERTIES := {
 	# it before somebody saw it on a phone.
 	"GKPlayer": ["game_player_id", "display_name", "alias", "is_invitable"],
 	"GKMatchRequest": ["min_players", "max_players", "invite_message", "recipients"],
+	# The only thing the summary reads off an entry. A rank that silently stops
+	# arriving leaves the two Game Center rows off the board and looks exactly
+	# like a device that is not signed in.
+	"GKLeaderboardEntry": ["rank", "score"],
 }
 
 ## Callbacks Game Center invokes on us that are not signals, so nothing checks
@@ -104,6 +119,25 @@ const CALLBACK_ARITY := {
 	"_on_friends_authorization": 2,
 }
 
+## The same, for `leaderboards.gd`. Every one of these runs inside an Apple
+## completion handler on a device, where a wrong arity throws where nobody is
+## looking and the only symptom is a rank that never turns up.
+const BOARD_CALLBACK_ARITY := {
+	# `(Array[GKLeaderboard] boards, Variant error)`.
+	"_on_boards_loaded": 2,
+	# `(Variant error)` — null on success.
+	"_on_submitted": 1,
+	# `(GKLeaderboardEntry local, Array entries, Variant range, Variant error)`.
+	# Four, not three: `load_local_player_entries` sends a total alongside the
+	# entries where `load_entries` does not, and taking the shorter form is the
+	# `invite_accepted` bug over again.
+	"_on_global": 4,
+	"_on_friends": 4,
+}
+
+## Scope and time constants the daily board asks Apple for by name.
+const BOARD_CONSTANTS := ["GLOBAL", "FRIENDS_ONLY", "TODAY"]
+
 var fails := 0
 var handlers := {}
 
@@ -116,6 +150,19 @@ func _init() -> void:
 
 	var script: GDScript = load(MANAGER)
 	for m in script.get_script_method_list():
+		handlers[m.name] = m
+	# Both files hand Callables to Apple, and `_accepts` looks methods up by name
+	# in one table. Only the handlers this suite actually pins are taken from the
+	# second file, so a name the two happen to share — `available`, `_set_state`
+	# — cannot quietly stand in for the other and have its arity checked as if it
+	# were. A genuine clash between two pinned handlers is a failure, not a
+	# silent overwrite.
+	var boards: GDScript = load(BOARDS)
+	for m in boards.get_script_method_list():
+		if not BOARD_CALLBACK_ARITY.has(m.name):
+			continue
+		if handlers.has(m.name):
+			_expect("%s is not a handler in both files" % m.name, false)
 		handlers[m.name] = m
 
 	_classes_exist()
@@ -134,7 +181,8 @@ func _init() -> void:
 func _classes_exist() -> void:
 	print("--- the plugin is installed ---")
 	var names := ["GameCenterManager", "GKLocalPlayer", "GKPlayer", "GKMatch",
-		"GKMatchmaker", "GKMatchRequest", "GKInvite"]
+		"GKMatchmaker", "GKMatchRequest", "GKInvite", "GKLeaderboard",
+		"GKLeaderboardEntry"]
 	for n in names:
 		_expect("%s is registered" % n, ClassDB.class_exists(n))
 
@@ -214,6 +262,14 @@ func _callbacks_take_what_apple_sends() -> void:
 	for name in CALLBACK_ARITY:
 		_expect("%s takes %d" % [name, CALLBACK_ARITY[name]],
 			_accepts(name, CALLBACK_ARITY[name]))
+
+	print("--- the daily leaderboard's, and the scopes it asks by name ---")
+	for name in BOARD_CALLBACK_ARITY:
+		_expect("%s takes %d" % [name, BOARD_CALLBACK_ARITY[name]],
+			_accepts(name, BOARD_CALLBACK_ARITY[name]))
+	for name in BOARD_CONSTANTS:
+		_expect("GKLeaderboard.%s exists" % name,
+			ClassDB.class_has_integer_constant("GKLeaderboard", name))
 
 
 func _game_takes_what_the_manager_sends() -> void:

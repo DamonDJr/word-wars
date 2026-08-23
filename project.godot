@@ -53,6 +53,7 @@ Music="*res://scripts/music.gd"
 Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
 Ads="*res://scripts/ads.gd"
+Boards="*res://scripts/leaderboards.gd"
 
 [display]
 

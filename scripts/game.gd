@@ -3212,6 +3212,11 @@ func _finish_daily() -> void:
 	winner = "YOU" if survived else ""
 	Profile.record_daily(daily_key(), player.score, int(round(_wpm())),
 		player.words_played, player.best_chain)
+	# After the run is banked, never before: the local board is the one the
+	# summary is about to draw, and it must not be waiting on Apple to do it.
+	# `submit_daily` is a no-op off an Apple device and holds the score when
+	# signed out, so there is nothing to check here.
+	Boards.submit_daily(player.score)
 	earned = {}
 	Sfx.play("win" if survived else "lose")
 	Haptics.fire("win" if survived else "life")
@@ -5783,6 +5788,10 @@ func _draw_mastery(size: Vector2) -> void:
 		["LONGEST", _show(Profile.longest_word.to_upper())
 			if Profile.longest_word != "" else "—"],
 		["DAILY BEST", _commas(Profile.daily_best)],
+		# The record rather than the live count. This screen is the record, and a
+		# number that goes down when you miss a day does not belong on it.
+		["BEST STREAK", "%d day%s" % [Profile.daily_best_streak,
+			"" if Profile.daily_best_streak == 1 else "s"]],
 	]
 	var strip := _mastery_stat_rects(stats.size())
 	for i in stats.size():
@@ -5813,9 +5822,10 @@ func _draw_mastery(size: Vector2) -> void:
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
-	if Profile.daily_streak > 1:
+	var streak: int = Profile.daily_streak(daily_key())
+	if streak > 1:
 		_otext(_font, Vector2(cx, _grid_bottom(pw, pfoot) + 34.0),
-			"%d daily boards running" % Profile.daily_streak, 12, Color("#ffd166"))
+			"%d daily boards running" % streak, 12, Color("#ffd166"))
 
 
 ## What a cosmetic actually looks like, before you commit to it.
@@ -6511,18 +6521,22 @@ func _draw_gameover(size: Vector2) -> void:
 
 	_draw_scoreboard(size, _scoreboard_top(), tint)
 
+	# Between the table and the buttons, and `_over_foot` already counts it — so
+	# this is drawn before them rather than over them.
+	if mode == Mode.DAILY:
+		_draw_daily_board(size, _over_foot() - _daily_board_h(), tint)
+
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
 	if mode == Mode.DAILY:
+		# The board says where today came; this says whether it was the best there
+		# has ever been, which is the one thing a ranking of your own history
+		# cannot show you at a glance when you have played sixty of them.
 		var run: Dictionary = Profile.daily_result(daily_key())
-		var line := "best ever %s" % _commas(Profile.daily_best)
-		if Profile.daily_streak > 1:
-			line += "      %d days running" % Profile.daily_streak
 		if int(run.get("score", 0)) >= Profile.daily_best and Profile.daily_best > 0:
-			line = "a new best      " + line
-		_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0), line, 14,
-			size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
+			_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0),
+				"a new best", 14, size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
@@ -6685,14 +6699,208 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 			size.x - GRID_MARGIN * 2.0, Color(tint, 0.75), 11)
 
 
-## The bottom of the table, which the buttons and the mastery strip hang off.
-func _over_foot() -> float:
+## The bottom of the score table. Split out from `_over_foot` because the daily
+## board sits between the two and has to know where it starts without asking the
+## thing that is measuring it.
+func _over_table_foot() -> float:
 	var n := maxi(1, _scoreboard_sides().size())
 	# Measured with the same numbers the table is drawn from. These were the raw
 	# constants, so the moment the rows grew for portrait the buttons stayed put
 	# and the table grew underneath them.
 	return _scoreboard_top() + SCORE_HEAD_H * _over_fill() \
 		+ float(n) * (_score_row_h() + 6.0) + 20.0 * _over_fill()
+
+
+## The bottom of everything the buttons and the mastery strip hang off.
+func _over_foot() -> float:
+	return _over_table_foot() + _daily_board_h()
+
+
+# ------------------------------------------------------------- the daily board
+#
+# A match summary compares you against whoever you played. A daily summary has
+# nobody to compare you against, so it compares you against yourself: every run
+# on file, ranked, with today's picked out of it. That is the only comparison
+# that means anything in a mode where everybody plays the same board once — and
+# unlike a global ranking it is there on the first day, on a plane, and on a
+# machine that has never heard of Game Center.
+#
+# Where a global ranking *is* reachable it is two more lines underneath, from
+# `Boards`. Never more than that: it can be missing, stale or signed out, and
+# the board above it has to stand on its own.
+
+## How many past runs the board shows at most. Small on purpose — this is the
+## tail of the summary, under a table and above the buttons, and a scrolling
+## history belongs on a screen of its own rather than in the last third of this
+## one. Today's run is drawn on top of this when it did not make the cut, so the
+## board is at most one row taller than this says.
+const DAILY_BOARD_ROWS := 8
+const DAILY_ROW_H := 26.0
+const DAILY_HEAD_H := 30.0
+
+## What the board must leave below itself: the buttons, the mastery strip and
+## the key hints. The summary does not scroll — `_scrollable` deliberately
+## excludes `Phase.OVER`, because it is a composition rather than a list — so
+## anything this block takes is taken from something that has nowhere to go.
+##
+## Not scaled by `_over_fill`, unlike everything else down here, because none of
+## what it is reserving for is either: the buttons under the summary are laid out
+## at a flat 96 high in both orientations. Scaling it cost the phone — which has
+## 1440 to play with and half of it empty — five rows it had room for, while the
+## 720-tall desktop window it was meant to protect is the one that actually needs
+## every pixel of this.
+const DAILY_BOARD_RESERVE := 180.0
+
+
+## How many rows there is actually room for, which is not the same question as
+## how many there are. Zero is a real answer and means the board is left out.
+func _daily_board_fit() -> int:
+	var fill := _over_fill()
+	var avail: float = get_viewport_rect().size.y - safe_bottom \
+		- DAILY_BOARD_RESERVE - _over_table_foot() \
+		- (DAILY_HEAD_H + 16.0) * fill
+	if _daily_has_global():
+		avail -= DAILY_ROW_H * fill
+	return maxi(0, int(floor(avail / ((DAILY_ROW_H + 4.0) * fill))))
+
+
+## The rows to draw: the best few runs, plus today's wherever it landed.
+##
+## Today is always on the board even when it was a bad run, because "where did I
+## come today" is the question the screen is being asked. A run that missed the
+## cut is appended at its real rank rather than promoted into the list, so the
+## numbers down the left stay honest and the gap says what it means.
+func _daily_board_rows() -> Array:
+	var all := Profile.daily_ranked()
+	if all.is_empty():
+		return []
+	var room := _daily_board_fit()
+	if room <= 0:
+		return []
+	var key := daily_key()
+	var here := Profile.daily_rank(key)
+	var top_n := mini(mini(DAILY_BOARD_ROWS, all.size()), room)
+	# Today's own row is the one that must survive a squeeze. Whether it needs a
+	# row of its own depends on how many rows there is room for and not on the
+	# cap: at two rows and a run that came eighth, today is outside the list
+	# however generous the cap is. Testing against the cap instead dropped it
+	# altogether on a landscape window — the summary ranked two old scores and
+	# said nothing at all about the run just played.
+	if here > top_n:
+		top_n = maxi(0, mini(top_n, room - 1))
+
+	var out: Array = []
+	for i in top_n:
+		var row: Dictionary = (all[i] as Dictionary).duplicate()
+		row["rank"] = i + 1
+		out.append(row)
+	if here > top_n:
+		var mine: Dictionary = (all[here - 1] as Dictionary).duplicate()
+		mine["rank"] = here
+		out.append(mine)
+	return out
+
+
+## Whether Game Center has a placing worth printing. A rank of zero is every
+## reason at once — no device, signed out, never submitted, Apple said no — and
+## all of them come to the same thing on screen: say nothing.
+func _daily_has_global() -> bool:
+	return Boards.rank > 0 or Boards.friend_rank > 0
+
+
+## How much room the whole block wants, and zero when it is not on screen. Every
+## piece of the summary below the table hangs off `_over_foot`, so this has to
+## agree with what `_draw_daily_board` actually draws or the buttons land on it.
+func _daily_board_h() -> float:
+	if phase != Phase.OVER or mode != Mode.DAILY:
+		return 0.0
+	var rows := _daily_board_rows()
+	if rows.is_empty():
+		return 0.0
+	var h := (DAILY_HEAD_H + float(rows.size()) * (DAILY_ROW_H + 4.0)) * _over_fill()
+	if _daily_has_global():
+		h += DAILY_ROW_H * _over_fill()
+	return h + 16.0 * _over_fill()
+
+
+## "2026-08-19" as "19 AUG". The year is the same for every row that matters and
+## a column of it is four characters of nothing.
+func _daily_short_day(key: String) -> String:
+	const MONTHS := ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+		"JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+	var bits := key.split("-")
+	if bits.size() != 3:
+		return key
+	var m := int(bits[1])
+	if m < 1 or m > 12:
+		return key
+	return "%d %s" % [int(bits[2]), MONTHS[m - 1]]
+
+
+func _draw_daily_board(size: Vector2, top: float, tint: Color) -> void:
+	var rows := _daily_board_rows()
+	if rows.is_empty():
+		return
+	var key := daily_key()
+	var fill := _over_fill()
+	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
+	var x0: float = size.x * 0.5 - tw * 0.5
+
+	# The header carries the streak, because the streak is a fact about this
+	# board rather than about today's run — and because it is the one number on
+	# the summary that a player can lose by not coming back tomorrow.
+	_otext_left(_font, Vector2(x0 + 4.0, top + 10.0 * fill), "YOUR DAILY BOARD",
+		_over_size(12), Color("#7c88ad"))
+	var streak: int = Profile.daily_streak(key)
+	if streak > 0:
+		var note := "%d DAY%s RUNNING" % [streak, "" if streak == 1 else "S"]
+		if Profile.daily_best_streak > streak:
+			note += "   ·   BEST %d" % Profile.daily_best_streak
+		var m := _font_bold.get_string_size(note, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			_over_size(12))
+		_otext_left(_font_bold, Vector2(x0 + tw - m.x - 4.0, top + 10.0 * fill),
+			note, _over_size(12), Color("#ffd166"))
+
+	var y := top + DAILY_HEAD_H * fill
+	for row: Dictionary in rows:
+		var day := String(row["day"])
+		var mine: bool = day == key
+		var r := Rect2(x0, y, tw, DAILY_ROW_H * fill)
+		_panel(r, Color("#1b2444") if mine else Color("#121930"),
+			Color(tint if mine else Color("#2b3560"), 0.85 if mine else 0.5),
+			6.0, 2.0 if mine else 1.0)
+
+		var cy := r.get_center().y
+		_otext_left(_font_bold, Vector2(x0 + 12.0, cy), "#%d" % int(row["rank"]),
+			_over_size(13), Color("#ffd166") if int(row["rank"]) == 1
+				else Color("#7c88ad"))
+		# TODAY rather than the date, on the one row where the date is a thing
+		# the player already knows and the word is what they are looking for.
+		_otext_left(_font if not mine else _font_bold, Vector2(x0 + 58.0, cy),
+			"TODAY" if mine else _daily_short_day(day), _over_size(13),
+			Color("#e6ecff") if mine else Color("#8d99bd"))
+
+		var score := _commas(int(row["score"]))
+		var sm := _font_bold.get_string_size(score, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			_over_size(15))
+		_otext_left(_font_bold, Vector2(x0 + tw - sm.x - 12.0, cy), score,
+			_over_size(15), Color("#ffd166") if mine else Color("#e6ecff"))
+		y += DAILY_ROW_H * fill + 4.0
+
+	if not _daily_has_global():
+		return
+	# Two placings on one line. They are a footnote to the board above rather
+	# than rows of it — they rank a different population and can be absent — so
+	# they are typed smaller and are not panelled.
+	var bits: Array = []
+	if Boards.rank > 0:
+		bits.append("GLOBAL #%s%s" % [_commas(Boards.rank),
+			(" of %s" % _commas(Boards.total)) if Boards.total > 0 else ""])
+	if Boards.friend_rank > 0:
+		bits.append("FRIENDS #%d%s" % [Boards.friend_rank,
+			(" of %d" % Boards.friend_total) if Boards.friend_total > 0 else ""])
+	_text_fit_overlay(_font, Vector2(size.x * 0.5, y + DAILY_ROW_H * fill * 0.5),
+		"      ".join(bits), _over_size(12), tw, Color("#64dfdf"), 9)
 
 
 ## What the match just did to your record. This is the hook — win or lose, the
@@ -7337,6 +7545,14 @@ func _title_modes() -> Array:
 	if spent:
 		dsub = "Played — %s. New board at midnight." % _commas(
 			int(Profile.daily_result(dkey).get("score", 0)))
+	# The streak belongs on the door rather than only on the summary, because the
+	# summary is the one screen you have already earned it on. Here it is a
+	# reason to go through — and on the day it is about to lapse, a warning.
+	var dstreak: int = Profile.daily_streak(dkey)
+	if dstreak > 1:
+		dsub += "  ·  %d days running" % dstreak
+		if not spent:
+			dsub += ", don't drop it"
 	# stamp, word, sub, action, tint, band
 	#
 	# The stamp is the fragment on the block; the word is the whole word that

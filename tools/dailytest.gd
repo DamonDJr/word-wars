@@ -35,6 +35,9 @@ func _init() -> void:
 	_the_seed_reproduces()
 	_the_day_is_stable()
 	_one_run_a_day()
+	_a_broken_streak_knows_it()
+	_the_board_ranks_every_run()
+	_the_board_fits_the_screen()
 	_the_day_is_the_players_own()
 	_it_is_a_run_alone()
 	_it_opens_part_buried()
@@ -95,7 +98,7 @@ func _one_run_a_day() -> void:
 	p.save_path = "user://profile-daily-test.cfg"
 	p.daily = {}
 	p.daily_best = 0
-	p.daily_streak = 0
+	p.daily_best_streak = 0
 
 	_expect("a fresh day is available", not p.daily_done("2026-05-01"))
 	p.record_daily("2026-05-01", 5000, 40, 30, 6)
@@ -110,10 +113,174 @@ func _one_run_a_day() -> void:
 
 	# Consecutive days build a streak; a gap starts over.
 	p.record_daily("2026-05-02", 6000, 40, 30, 6)
-	_expect("a day after yesterday continues the streak", p.daily_streak == 2)
+	_expect("a day after yesterday continues the streak",
+		p.daily_streak("2026-05-02") == 2)
 	p.record_daily("2026-05-09", 100, 10, 5, 1)
-	_expect("a gap starts the streak again", p.daily_streak == 1)
+	_expect("a gap starts the streak again", p.daily_streak("2026-05-09") == 1)
 	_expect("the best is still the best", p.daily_best == 6000)
+	_expect("and the longest run is remembered", p.daily_best_streak == 2)
+
+
+## The streak is counted from the history rather than stored, because a stored
+## one is only ever corrected by playing — which is the one thing somebody who
+## has broken their streak has not done.
+func _a_broken_streak_knows_it() -> void:
+	print("--- a streak that lapses says so, before you play again ---")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+	p.save_path = "user://profile-daily-test.cfg"
+	p.daily = {}
+	p.daily_best = 0
+	p.daily_best_streak = 0
+
+	for day in ["2026-05-01", "2026-05-02", "2026-05-03"]:
+		p.record_daily(day, 1000, 40, 30, 6)
+	_expect("three days running is a streak of three",
+		p.daily_streak("2026-05-03") == 3)
+
+	# Today, not yet played. The streak is not broken — there is still time.
+	_expect("today being unplayed does not break it",
+		p.daily_streak("2026-05-04") == 3)
+	# Yesterday missed as well. Now it is gone, and nothing had to be played for
+	# the count to notice.
+	_expect("a missed day breaks it without being told",
+		p.daily_streak("2026-05-05") == 0)
+	_expect("and a long gap stays broken", p.daily_streak("2026-06-01") == 0)
+	_expect("while the record survives it", p.daily_best_streak == 3)
+
+	# Coming back starts a new one rather than resuming the old.
+	p.record_daily("2026-05-20", 1000, 40, 30, 6)
+	_expect("returning starts again at one", p.daily_streak("2026-05-20") == 1)
+	_expect("and the record is untouched", p.daily_best_streak == 3)
+
+
+## The board the daily summary ranks you on.
+func _the_board_ranks_every_run() -> void:
+	print("--- the leaderboard ranks every run on file ---")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+	p.save_path = "user://profile-daily-test.cfg"
+	p.daily = {}
+	p.daily_best = 0
+	p.daily_best_streak = 0
+
+	p.record_daily("2026-05-01", 5000, 40, 30, 6)
+	p.record_daily("2026-05-02", 9000, 40, 30, 6)
+	p.record_daily("2026-05-03", 7000, 40, 30, 6)
+
+	var rows: Array = p.daily_ranked()
+	_expect("every run is on it", rows.size() == 3)
+	_expect("best first", int(rows[0]["score"]) == 9000)
+	_expect("worst last", int(rows[2]["score"]) == 5000)
+	_expect("and each row knows its day", String(rows[0]["day"]) == "2026-05-02")
+	_expect("a day can find its own place", p.daily_rank("2026-05-03") == 2)
+	_expect("and a day never played has none", p.daily_rank("2026-05-04") == 0)
+
+	# Matching a score you already set is not beating it.
+	p.record_daily("2026-05-04", 9000, 40, 30, 6)
+	_expect("a tie goes to whoever got there first",
+		String(p.daily_ranked()[0]["day"]) == "2026-05-02")
+
+
+## The summary is a composition, not a list — `_scrollable` leaves `Phase.OVER`
+## out on purpose — so anything the leaderboard takes is taken from the buttons
+## underneath it, which have nowhere to go. Landscape is half the height of
+## portrait and is where that runs out.
+##
+## The headless display server will not go narrower than 1280, so the phone's
+## design space only exists inside a SubViewport. `_daily_board_fit` measures
+## whatever viewport the node sits under, which makes this a real test of the
+## rule rather than a re-derivation of it here.
+func _the_board_fits_the_screen() -> void:
+	print("--- the leaderboard fits on the screen it is drawn on ---")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+	p.save_path = "user://profile-daily-test.cfg"
+
+	var stage := SubViewport.new()
+	get_root().add_child(stage)
+	var g = load("res://scenes/main.tscn").instantiate()
+	stage.add_child(g)
+
+	# Two shapes, because they fail differently. "worst" puts today far outside
+	# the row cap; "middling" puts it *inside* the cap but outside the two rows a
+	# landscape window has room for — which is the one that actually broke, and
+	# which a test using only the first shape passes straight through.
+	for shape in ["worst", "middling"]:
+		for tall in [false, true]:
+			_board_fits_at(p, g, stage, shape, tall)
+
+	stage.queue_free()
+
+
+func _board_fits_at(p, g, stage: SubViewport, shape: String, tall: bool) -> void:
+	stage.size = g.PORTRAIT_SIZE if tall else g.LANDSCAPE_SIZE
+	g.portrait = tall
+	var where := "%s/%s" % [shape, "portrait" if tall else "landscape"]
+
+	p.daily = {}
+	p.daily_best = 0
+	p.daily_best_streak = 0
+
+	# The calendar comes from the game's own key, walked backwards with the same
+	# function the streak counts with. Building the dates out of
+	# `get_datetime_dict_from_unix_time` instead reads them in UTC, which is a
+	# day ahead of `daily_key`'s local midnight for part of every evening — so
+	# the run recorded as "today" was a day the game had never heard of, today's
+	# row was correctly absent from the board, and the suite passed all morning
+	# and failed after eight.
+	var today: String = g.daily_key()
+	var days: Array = [today]
+	while days.size() < 12:
+		days.append(p._day_before(days[days.size() - 1]))
+
+	for i in range(days.size() - 1, -1, -1):
+		# i == 0 is today: dead last, or fourth of twelve — inside the row cap
+		# but outside the two rows a landscape window has room for.
+		var score: int = (100 if shape == "worst" else 5250) if i == 0 \
+			else 1000 + i * 500
+		p.record_daily(String(days[i]), score, 40, 30, 6)
+
+	g.start_match("Rookie", 1, [], g.Mode.DAILY)
+	g.phase = g.Phase.OVER
+	g.mode = g.Mode.DAILY
+	g.winner = "YOU"
+	g.earned = {}
+	g.win_spoils = 0
+
+	var rows: Array = g._daily_board_rows()
+	_expect("%s: the board has rows to show" % where, rows.size() > 0)
+
+	# The one row that must never be dropped. It went missing on a landscape
+	# window: the squeeze was measured against the row cap rather than against
+	# the space, so the summary ranked two old scores and said nothing at all
+	# about the run just played.
+	# Today's row can be inside the run of best scores or carried in underneath
+	# it, depending on how it went and how much room there is — but wherever it
+	# is, the rank against it has to be its real standing rather than the row it
+	# happens to occupy.
+	var mine := -1
+	for i in rows.size():
+		if String((rows[i] as Dictionary)["day"]) == today:
+			mine = i
+	_expect("%s: today is on it, however tight it is" % where, mine >= 0)
+	if mine >= 0:
+		_expect("%s: and at its real rank" % where,
+			int((rows[mine] as Dictionary)["rank"]) == p.daily_rank(today))
+
+	# Every other row is a placing too, and they have to read in order.
+	var ordered := true
+	for i in range(1, rows.size()):
+		if int((rows[i] as Dictionary)["rank"]) <= int((rows[i - 1] as Dictionary)["rank"]):
+			ordered = false
+	_expect("%s: and the ranks down the column climb" % where, ordered)
+
+	# Nothing below the board may fall off the bottom.
+	var foot: float = g._over_foot()
+	var buttons: float = 0.0
+	for b in g._menu_buttons():
+		buttons = maxf(buttons, (b["rect"] as Rect2).end.y)
+	var bottom: float = maxf(foot, buttons) + 26.0
+	var limit: float = float(stage.size.y) - g.safe_bottom
+	_expect("%s: the buttons stay on screen (%.0f of %.0f)" % [
+		where, bottom, limit], bottom <= limit)
 
 
 ## The board turns over at the player's midnight, and the date is the whole of

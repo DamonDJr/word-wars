@@ -464,7 +464,16 @@ func record_match(r: Dictionary) -> void:
 ##    out. Saves written before that may carry a grant nobody paid for, and one
 ##    of the things it buys is silence from the ad break — so a forgotten test
 ##    tap reads, forever after, as a game whose ads are broken. See `_migrate`.
-const SCHEMA := 2
+## 3: the daily streak stopped being stored and started being counted from the
+##    history. The number that used to be on disk was the live streak; there is
+##    now a best-streak record instead, and the old value is the only evidence
+##    of it that an existing save carries.
+const SCHEMA := 3
+
+## The streak an older file had on disk, held between `_read` and `_migrate`.
+## Nothing outside those two should look at it — after a migration it is a number
+## about a schema that no longer exists.
+var _legacy_streak := 0
 
 # ---------------------------------------------------------------- the daily
 #
@@ -472,10 +481,17 @@ const SCHEMA := 2
 # of date -> result rather than just "today", so the streak survives and there
 # is something to look back at.
 
+## How many days of history to keep. The streak is counted out of this, so it is
+## also the longest streak that can be *proved* from the file — see
+## `daily_best_streak`, which is what remembers anything longer.
+const DAILY_KEPT := 60
+
 ## "YYYY-MM-DD" -> {"score", "wpm", "words", "chain"}.
 var daily: Dictionary = {}
 var daily_best := 0
-var daily_streak := 0
+## The longest run of consecutive days ever put together. Stored rather than
+## counted, because the history it happened in gets trimmed away.
+var daily_best_streak := 0
 
 
 ## Has today's run already been spent?
@@ -487,6 +503,33 @@ func daily_result(key: String) -> Dictionary:
 	return daily.get(key, {})
 
 
+## How many days in a row are behind you, as of `today`.
+##
+## Counted from the history every time it is asked for rather than kept as a
+## number that `record_daily` increments. A stored streak is only ever corrected
+## by playing, which is exactly the case it needs to be right about: miss three
+## days and nothing runs, so the menu went on advertising a five-day streak that
+## had been dead since Tuesday. The first thing it did on your return was
+## congratulate you on a sixth consecutive day.
+##
+## A streak survives a day you have not played *yet* — today is still ahead of
+## you until midnight — so the count starts at today if it is done and yesterday
+## if it is not. Two missed days is a streak of nothing.
+func daily_streak(today: String) -> int:
+	var at := today
+	if not daily.has(at):
+		at = _day_before(at)
+		if not daily.has(at):
+			return 0
+	var n := 0
+	while daily.has(at) and n <= DAILY_KEPT:
+		n += 1
+		at = _day_before(at)
+		if at == "":
+			break
+	return n
+
+
 ## Bank a finished run. Refuses to overwrite a day that already has one, so a
 ## crash, a rematch or a reload cannot buy a second attempt at the same board.
 func record_daily(key: String, score: int, wpm: int, words: int, chain: int) -> void:
@@ -494,17 +537,45 @@ func record_daily(key: String, score: int, wpm: int, words: int, chain: int) -> 
 		return
 	daily[key] = {"score": score, "wpm": wpm, "words": words, "chain": chain}
 	daily_best = maxi(daily_best, score)
-	# Yesterday continues a streak; anything older starts a new one.
-	var y := _day_before(key)
-	daily_streak = (daily_streak + 1) if daily.has(y) else 1
+	# Read back out of the history this run has just joined, so the record and
+	# the live count can never be two different opinions.
+	daily_best_streak = maxi(daily_best_streak, daily_streak(key))
 	# Trim, or a year of play turns the profile into a log file.
-	if daily.size() > 60:
+	if daily.size() > DAILY_KEPT:
 		var keys: Array = daily.keys()
 		keys.sort()
-		while keys.size() > 60:
+		while keys.size() > DAILY_KEPT:
 			daily.erase(keys.pop_front())
 	save()
 	changed.emit()
+
+
+## Every run on file, best first, for the leaderboard. Ties go to the older run:
+## somebody matching a score they set last week has not beaten it.
+##
+## Each row is the stored result plus the `day` it belongs to, because the board
+## needs to say *when* — a column of scores with no dates is not a history, and
+## "today" has to be findable in it to be highlighted.
+func daily_ranked() -> Array:
+	var rows: Array = []
+	for day: String in daily:
+		var row: Dictionary = (daily[day] as Dictionary).duplicate()
+		row["day"] = day
+		rows.append(row)
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a["score"]) != int(b["score"]):
+			return int(a["score"]) > int(b["score"])
+		return String(a["day"]) < String(b["day"]))
+	return rows
+
+
+## Where a day sits on that board, 1-based, or 0 if it was never played.
+func daily_rank(key: String) -> int:
+	var rows := daily_ranked()
+	for i in rows.size():
+		if String(rows[i]["day"]) == key:
+			return i + 1
+	return 0
 
 
 ## The day before a "YYYY-MM-DD", by going through unix time so month and year
@@ -590,7 +661,13 @@ func _read(path: String) -> Error:
 		ad_gap = 0
 	daily = cfg.get_value("daily", "runs", {})
 	daily_best = int(cfg.get_value("daily", "best", 0))
-	daily_streak = int(cfg.get_value("daily", "streak", 0))
+	daily_best_streak = int(cfg.get_value("daily", "best_streak", 0))
+	# Schema 2 and older kept the *live* streak here and had no record of the
+	# best one. Read into the record: it is the only number in the old file that
+	# says anything about a streak, and the alternative is telling somebody who
+	# has played forty days running that their best is zero. `_migrate` decides
+	# whether to keep it.
+	_legacy_streak = int(cfg.get_value("daily", "streak", 0))
 	equipped = cfg.get_value("worn", "equipped", {})
 	prefs = cfg.get_value("worn", "prefs", {})
 	# Last, so everything a migration might have to rewrite has been read first.
@@ -627,6 +704,15 @@ func _migrate(from: int) -> void:
 			if id != "" and not is_unlocked(slot, id):
 				equipped.erase(slot)
 
+	# The streak on an old file was the live one, which means it is a lower bound
+	# on the best one and the only evidence the file has. Taken as the record if
+	# it beats what the history can prove — a forty-day streak that has since
+	# been trimmed out of `daily` is otherwise simply forgotten.
+	if from < 3:
+		daily_best_streak = maxi(daily_best_streak, _legacy_streak)
+		for day: String in daily:
+			daily_best_streak = maxi(daily_best_streak, daily_streak(day))
+
 
 func save() -> void:
 	if read_failed:
@@ -652,7 +738,7 @@ func save() -> void:
 	cfg.set_value("shop", "ad_gap", ad_gap)
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
-	cfg.set_value("daily", "streak", daily_streak)
+	cfg.set_value("daily", "best_streak", daily_best_streak)
 	cfg.set_value("worn", "equipped", equipped)
 	cfg.set_value("worn", "prefs", prefs)
 
