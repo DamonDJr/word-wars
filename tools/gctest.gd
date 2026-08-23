@@ -37,10 +37,9 @@ const GAME_CONNECTIONS := {
 }
 
 ## Signals the manager emits that nothing in `game.gd` connects to, on purpose.
-## The versus screen is drawn every frame and reads the friend list straight out
-## of the manager, so a handler would only be a second copy of state that can go
-## stale. Listed rather than left out, so "no handler" reads as a decision.
-const UNCONNECTED := ["friends_changed"]
+## Empty now that the friend picker is gone; kept because the check below is what
+## makes a *new* unhandled signal a failure rather than a silence.
+const UNCONNECTED: Array = []
 
 ## class -> signal -> the manager method we connect to it.
 const CONNECTIONS := {
@@ -77,8 +76,7 @@ const CONNECTIONS := {
 ## class -> method -> how many arguments the manager passes.
 const CALLS := {
 	"GameCenterManager": {"authenticate": 0},
-	"GKLocalPlayer": {"register_listener": 0, "load_challengeable_friends": 1,
-		"load_friends": 1, "load_friends_authorization_status": 1},
+	"GKLocalPlayer": {"register_listener": 0},
 	"GKMatchmaker": {
 		"find_match": 2,
 		"match_for_invite": 2,
@@ -105,11 +103,7 @@ const PROPERTIES := {
 	# `expected_player_count` and is the one that says whether a broadcast has
 	# anywhere to go.
 	"GKMatch": ["expected_player_count", "players"],
-	# `alias` and `is_invitable` are what the in-app friend picker draws each row
-	# from. Neither is load-bearing enough to crash if it moves — a missing one is
-	# a blank name or a wrong hint — which is exactly why nothing else would catch
-	# it before somebody saw it on a phone.
-	"GKPlayer": ["game_player_id", "display_name", "alias", "is_invitable"],
+	"GKPlayer": ["game_player_id", "display_name"],
 	"GKMatchRequest": ["min_players", "max_players", "invite_message", "recipients"],
 	# The mode picks which of Apple's three options the sheet offers. Default is
 	# the full screen, which is the one with Invite Friends on it.
@@ -124,15 +118,6 @@ const PROPERTIES := {
 ## them: class -> method taking the Callable -> arguments Apple passes back.
 const CALLBACK_ARITY := {
 	"_on_found_match": 2,
-	# `(Array[GKPlayer] friends, Variant error)`, and either can be null. Getting
-	# this wrong is the `invite_accepted` bug again: Godot accepts the Callable
-	# and then throws inside Apple's completion handler, so the friend picker
-	# would simply never fill in and nothing would say why.
-	"_on_friends_loaded": 2,
-	# `(int status, Variant error)`. Only ever logged, which is exactly why it
-	# needs pinning: a wrong arity here throws inside Apple's handler and takes
-	# the one line that says whether the player granted access with it.
-	"_on_friends_authorization": 2,
 }
 
 ## The same, for `leaderboards.gd`. Every one of these runs inside an Apple
@@ -256,15 +241,7 @@ func _constants_exist() -> void:
 		_expect("GKMatch.SendDataMode.%s exists" % name,
 			ClassDB.class_has_integer_constant("GKMatch", name))
 
-	print("--- and the refusals the friend picker tells apart ---")
-	# `_friends_refused` turns each of these into different advice for a
-	# different person. If one is renamed the match arm stops matching and every
-	# refusal quietly collapses back to the catch-all that hid
-	# FRIEND_LIST_DESCRIPTION_MISSING in the first place.
-	for name in ["FRIEND_LIST_DESCRIPTION_MISSING", "FRIEND_LIST_DENIED",
-			"FRIEND_LIST_RESTRICTED", "NOT_AUTHENTICATED", "CANCELLED"]:
-		_expect("GKError.Code.%s exists" % name,
-			ClassDB.class_has_integer_constant("GKError", name))
+	print("--- and the error fields the log reads ---")
 	for name in ["code", "domain", "message"]:
 		var have := false
 		for p in ClassDB.class_get_property_list("GKError", true):

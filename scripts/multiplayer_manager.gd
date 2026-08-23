@@ -33,10 +33,12 @@ extends Node
 ## Invites go out through `recipients` and come back through `match_for_invite`,
 ## both of which are equally headless.
 ##
-## The cost of refusing Apple's sheet is that we also refuse Apple's friend
-## picker, so the game has to draw its own — which is what `load_friends` below
-## is for, and why an invitation from inside the app is a list of `GKPlayer`
-## rather than a view controller.
+## That reasoning held until the plugin was fixed. `didFind` dismisses now, so
+## Apple's screen is the door the game uses — see `open_native_matchmaker` — and
+## it brings the one thing headless matchmaking never had: an invite that texts a
+## link to any contact, rather than only to Game Center friends. The headless
+## calls below are kept for the invite that arrives from outside the app, which
+## has no sheet of its own and never did.
 ##
 ## Everything here is guarded on the platform rather than commented out for
 ## desktop testing: the plugin ships a Linux stub whose classes refuse to
@@ -47,18 +49,8 @@ signal state_changed(text: String)
 signal match_started
 signal match_ended(reason: String)
 signal data_received(packet: Dictionary)
-signal friends_changed
 
 enum State { OFF, AUTHENTICATING, READY, MATCHMAKING, CONNECTING, HANDSHAKING, PLAYING }
-
-## Where the friend list is up to.
-##
-## Apple gates the list behind a permission prompt we do not own and cannot
-## pre-empt, so every answer it can give — including "no" — has to be a state the
-## picker can say out loud. A screen that shows an empty list for "you declined",
-## "you have none" and "it is still loading" alike is a screen that looks broken
-## three different ways.
-enum Friends { UNASKED, LOADING, READY, EMPTY, DENIED }
 
 ## How long to keep repeating the hello before giving up on the other end. The
 ## first one can land before the peer has finished attaching, so it is repeated
@@ -78,6 +70,7 @@ const HANDSHAKE_TIMEOUT := 15.0
 ## sheet closes itself the handshake is released the moment it does. If it does
 ## not, the match starts anyway and the sheet goes back to being one tap in the
 ## way — which is exactly where this started, and no worse.
+##
 ## Two seconds, not four and certainly not a hundred and twenty. With the fixed
 ## plugin the dismissal is requested *before* the match is handed over, so any
 ## wait at all is only covering the animation — and a dismissal that succeeds
@@ -124,11 +117,6 @@ var _native_sheet_up := false
 ## Which GameKit callback delivered this match's packets. See `_note_delivery`.
 var _delivery := ""
 
-## The people the in-app picker offers, as `GKPlayer`.
-var friends: Array = []
-var friends_state: int = Friends.UNASKED
-## Why the list is the way it is, when that needs saying.
-var friends_note := ""
 ## Who an outstanding invitation went to, so a screen can name them instead of
 ## saying "waiting" at nobody in particular.
 var invited := ""
@@ -220,13 +208,6 @@ func _on_authenticated(signed_in: bool = true) -> void:
 	if not signed_in:
 		local_player = null
 		_local_id = ""
-		# The friend list belongs to whoever was signed in. Left standing it would
-		# offer the next account the last one's friends, and inviting them would
-		# fail with no way to see why.
-		friends = []
-		friends_state = Friends.UNASKED
-		friends_note = ""
-		friends_changed.emit()
 		_set_state(State.OFF, "not signed in to Game Center")
 		return
 
@@ -467,153 +448,9 @@ func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
 	invite_players(recipients)
 
 
-# ---------------------------------------------------------------- friends
-
-## Apple's friend list, so the game can run its own picker.
-##
-## The obvious way to send an invitation from inside an app is
-## `GKMatchmakerViewController` in invite-only mode, and that is the sheet this
-## file exists to avoid: it cannot be dismissed from GDScript, so a successful
-## invite would leave Apple's "Starting Game…" parked over a match nobody can
-## see. Until that changes, the only route to inviting a *specific* person from
-## inside the app is to know who your friends are and pass them to `find_match`
-## as recipients — which is exactly what `load_friends` is for.
-##
-## Two things about this call are not obvious and both have bitten already.
-##
-## It needs `NSGKFriendListUsageDescription` in the app's Info.plist, the same
-## way the camera does. Without it Apple refuses with
-## `FRIEND_LIST_DESCRIPTION_MISSING` — which looks exactly like the player
-## declining, and is not: it is the build being wrong, and no amount of tapping
-## "ask again" will fix it. It is set in `export_presets.cfg` for iOS and macOS.
-##
-## And it is mutual: Apple returns the friends who have *also* granted this game
-## access to them, so a short list — or an empty one — is normal and is not the
-## same as having no friends. The copy has to say so, or the picker reads as
-## broken to somebody with a full friends list in the Game Center app.
-##
-## A refusal comes back as an error rather than an empty array, which is what
-## lets all of those be told apart and said differently.
-func load_friends(force := false) -> void:
-	if not available() or local_player == null:
-		friends = []
-		friends_state = Friends.DENIED
-		friends_note = "sign in to Game Center first"
-		friends_changed.emit()
-		return
-	if friends_state == Friends.LOADING:
-		return
-	# Already answered, and asking again re-prompts. Only a deliberate retry —
-	# after a refusal, or after adding someone — goes back to Apple.
-	if friends_state != Friends.UNASKED and not force:
-		return
-	friends_state = Friends.LOADING
-	friends_note = "asking Game Center"
-	friends_changed.emit()
-	print("[GC] asking for friends (forced: %s)" % force)
-	# Asked for the log's sake and nothing else. An empty friend list has two
-	# completely different causes — the player never granted access, or they did
-	# and simply share no mutual authoriser — and from the empty array alone
-	# those are indistinguishable. The status is the only thing that separates
-	# them, and separating them is the difference between "tap Ask again" and
-	# "get your friend to open the app".
-	local_player.load_friends_authorization_status(_on_friends_authorization)
-	local_player.load_friends(_on_friends_loaded)
-
-
-## Apple's raw `GKFriendsAuthorizationStatus`: 0 not determined, 1 denied,
-## 2 restricted, 3 authorised. Logged rather than acted on — `load_friends` is
-## the call that actually decides, and second-guessing it here would mean two
-## sources of truth for one question.
-func _on_friends_authorization(status: int, error = null) -> void:
-	if error != null:
-		print("[GC] friend authorization unavailable — %s" % _error_text(error))
-		return
-	var names := ["not determined", "denied", "restricted", "authorized"]
-	print("[GC] friend authorization: %s (%d)" % [
-		names[status] if status >= 0 and status < names.size() else "unknown",
-		status])
-
-
-func _on_friends_loaded(list, error = null) -> void:
-	if error != null:
-		friends = []
-		friends_state = Friends.DENIED
-		friends_note = _friends_refused(error)
-		push_warning("Game Center: load_friends failed — %s" % _error_text(error))
-		print("[GC] friends failed — %s" % _error_text(error))
-		friends_changed.emit()
-		return
-
-	friends = []
-	var raw: int = 0
-	if list != null:
-		raw = list.size()
-		for p in list:
-			if p is GKPlayer:
-				friends.append(p)
-	# `raw` against the kept count separates "Apple sent nobody" from "Apple sent
-	# people and the filter dropped them", which is the difference between a
-	# Game Center problem and one of ours.
-	print("[GC] friends — Apple returned %d, kept %d" % [raw, friends.size()])
-	for p: GKPlayer in friends:
-		print("[GC]   %s (invitable: %s)" % [
-			String(p.display_name), p.is_invitable])
-	# Whoever is taking invitations comes first, then alphabetically. `is_invitable`
-	# is only ever a sort key here and never a gate: if the plugin leaves it false
-	# for everyone the order is simply alphabetical, whereas gating on it would
-	# turn one unpopulated property into a picker with nothing pickable in it.
-	friends.sort_custom(_friend_before)
-	friends_state = Friends.READY if not friends.is_empty() else Friends.EMPTY
-	# Not "you have no friends" — Apple only hands back the ones who have also
-	# let this game see them, so an empty list is the common case for a brand new
-	# install and says nothing about the Game Center friends list itself.
-	friends_note = "" if not friends.is_empty() \
-		else "none of your friends have shared themselves with Word Wars"
-	friends_changed.emit()
-
-
-func _friend_before(a: GKPlayer, b: GKPlayer) -> bool:
-	if a.is_invitable != b.is_invitable:
-		return a.is_invitable
-	return String(a.display_name).nocasecmp_to(String(b.display_name)) < 0
-
-
-## Why Apple said no, in words meant for whoever has to do something about it.
-##
-## This started as one catch-all — "Game Center would not share your friends" —
-## and that message cost a build-and-install to diagnose: the refusal was
-## `FRIEND_LIST_DESCRIPTION_MISSING`, which is not the player declining anything
-## but the app shipping without `NSGKFriendListUsageDescription` in its
-## Info.plist. Three of these are three different jobs for three different
-## people, and a message that cannot tell them apart sends the wrong one.
-func _friends_refused(error) -> String:
-	if not (error is GKError):
-		return "Game Center would not share your friends"
-	match (error as GKError).code:
-		GKError.Code.FRIEND_LIST_DESCRIPTION_MISSING:
-			# Nothing the player can do; the build is wrong.
-			return "this build is missing its friend-list permission"
-		GKError.Code.FRIEND_LIST_DENIED:
-			return "friends are switched off for Word Wars in Settings"
-		GKError.Code.FRIEND_LIST_RESTRICTED:
-			return "Screen Time is holding the friend list back"
-		GKError.Code.NOT_AUTHENTICATED:
-			return "sign in to Game Center first"
-		GKError.Code.CANCELLED:
-			return "cancelled — ask again when you are ready"
-	return "Game Center would not share your friends"
-
-
-## The whole of what Apple said, for the log. `str()` on a `GKError` prints the
-## object rather than the failure, which is how the code above went unseen.
-func _error_text(error) -> String:
-	if not (error is GKError):
-		return str(error)
-	var e := error as GKError
-	return "code %d (%s) — %s" % [e.code, e.domain, e.message]
-
-
+## Somebody accepted an invitation — from a notification, or by tapping a link
+## Apple's screen texted them. This is the whole of the receiving end and it has
+## no sheet in it: the invitee never sees Apple's matchmaker, only the match.
 func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
 	if not available() or invite == null:
 		return
@@ -623,6 +460,16 @@ func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
 		leave_match()
 	_set_state(State.MATCHMAKING, "joining the invite")
 	_mm().match_for_invite(invite, _on_found_match)
+
+
+## The whole of what Apple said, for the log. `str()` on a `GKError` prints the
+## object rather than the failure, which is how a real error code once went
+## unseen for a fortnight.
+func _error_text(error) -> String:
+	if not (error is GKError):
+		return str(error)
+	var e := error as GKError
+	return "code %d (%s) — %s" % [e.code, e.domain, e.message]
 
 
 # ------------------------------------------------------- the match itself
