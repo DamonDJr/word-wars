@@ -86,10 +86,6 @@ func _the_day_is_stable() -> void:
 	var b: int = game.daily_seed()
 	_expect("the seed does not move between calls", a == b)
 	_expect("the key is a date", game.daily_key().length() == 10)
-	var kinds_a: Array = game.daily_kinds()
-	var kinds_b: Array = game.daily_kinds()
-	_expect("the block kinds are the same all day", kinds_a == kinds_b)
-	_expect("two kinds are in play", kinds_a.size() == 2)
 
 
 func _one_run_a_day() -> void:
@@ -310,16 +306,6 @@ func _the_day_is_the_players_own() -> void:
 			shared += 1
 	_expect("consecutive days deal unrelated boards", shared < a.size() / 3)
 
-	# And the settings travel with the date too, not just the letters.
-	_expect("a date always picks the same block kinds",
-		game.daily_kinds("2026-07-07") == game.daily_kinds("2026-07-07"))
-
-	# The kinds are looked up by name in `KIND_NAMES` when a block is minted, so
-	# a pool that spells them any other way is not a different flavour of
-	# English, it is a dictionary miss on every block of that day.
-	for kind: String in game.DAILY_KIND_POOL:
-		_expect("the pool's \"%s\" is a kind the game knows" % kind,
-			game.KIND_NAMES.has(kind))
 
 
 ## Nobody else is in the room. This is the one that regressed silently: the

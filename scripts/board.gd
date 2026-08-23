@@ -9,15 +9,6 @@ class_name WWBoard
 ## `block_landed` signal for whole-screen effects.
 
 signal block_landed(tier: int, at: Vector2, impact: float)
-## A volatile block ran out of fuse. The board cannot make garbage on its own —
-## it has no dictionary — so it says so and `game.gd` does the dropping.
-signal volatile_blew(at: Vector2)
-
-## Handed in by `game.gd`: returns a fresh stamp. Curses re-brand themselves and
-## split children need branding, and both have to happen inside the board where
-## the blocks are, so the board is given the one thing it lacks rather than a
-## round trip through a signal for every letter.
-var mint: Callable = Callable()
 
 const COLS := 6
 const ROWS := 12
@@ -39,24 +30,6 @@ const TIER_COLORS := [
 
 enum { SHARD, SPARK, DUST, RING, GHOST }
 
-## Garbage that does more than sit there. Every one of these is off by default
-## and switched on in the lobby, so the base game stays the base game.
-##
-## They are all readable from the block itself rather than from a legend: a bomb
-## has a fuse, armour has plating that visibly cracks, a volatile block has a
-## timer ring running down, frozen is iced over, cursed is scribbled out. If you
-## have to remember which is which, the rule is not carrying its weight.
-enum Kind { PLAIN, BOMB, ARMORED, VOLATILE, SPLIT, FROZEN, CURSE }
-
-## How many words an armoured block eats before it goes.
-const ARMOR_HITS := 2
-## Seconds before a volatile block goes off, and before a curse re-brands itself.
-const VOLATILE_FUSE := 14.0
-const CURSE_PERIOD := 4.5
-## A bomb takes its neighbours with it, and their bombs take theirs. Capped so a
-## lucky arrangement cannot clear an entire board in one word.
-const BOMB_CHAIN := 3
-
 
 class Blk extends RefCounted:
 	var w := 1
@@ -68,14 +41,6 @@ class Blk extends RefCounted:
 	var vis := Vector2.ZERO
 	var vel := 0.0
 	var squash := 0.0
-	## Which of the special kinds this is, and the state that kind needs.
-	var kind := Kind.PLAIN
-	var hits := 0          ## armour taken so far
-	var fuse := 0.0        ## volatile countdown, and the curse's re-brand clock
-	var flash := 0.0       ## lights up when the kind does something
-
-	func armored_left() -> int:
-		return maxi(0, ARMOR_HITS - hits) if kind == Kind.ARMORED else 0
 
 	func rect_cells(at_x: int, at_y: int) -> Array:
 		var cells: Array = []
@@ -267,18 +232,12 @@ func cell_count() -> int:
 # ------------------------------------------------------------------ mutations
 
 ## Drop a block in. Returns false when it cannot fully fit — that is a top-out.
-func add_garbage(prefix: String, tier: int, w: int, h: int,
-		kind: int = Kind.PLAIN) -> bool:
+func add_garbage(prefix: String, tier: int, w: int, h: int) -> bool:
 	var b := Blk.new()
 	b.w = clampi(w, 1, COLS)
 	b.h = maxi(h, 1)
 	b.tier = clampi(tier, 0, TIER_COLORS.size() - 1)
 	b.prefix = prefix
-	b.kind = kind
-	if kind == Kind.VOLATILE:
-		b.fuse = VOLATILE_FUSE
-	elif kind == Kind.CURSE:
-		b.fuse = CURSE_PERIOD
 
 	var grid := _occupancy()
 	var choices: Array = []
@@ -327,11 +286,6 @@ func matching_blocks(word: String) -> Array:
 	var lw := word.to_lower()
 	var out: Array = []
 	for b: Blk in blocks:
-		# Ice is not a stamp problem, so a frozen block is not a match — and it
-		# has to be excluded here rather than at the point of destruction, or the
-		# highlight lights it up and promises a clear that cannot happen.
-		if b.kind == Kind.FROZEN:
-			continue
 		if b.prefix != "" and lw.begins_with(b.prefix):
 			out.append(b)
 	out.sort_custom(func(a: Blk, c: Blk) -> bool:
@@ -341,19 +295,9 @@ func matching_blocks(word: String) -> Array:
 	return out
 
 
-## Remove up to `limit` blocks whose stamp opens `word`. Returns how many fell.
-## What the last `clear_matching` actually did, beyond the number it returned.
-## Armour cracking and bombs going off are worth saying out loud, and the caller
-## is the only thing that can say it.
-var last_report := {"cracked": 0, "bombed": 0, "split": 0, "thawed": 0}
-
-
-## Remove up to `limit` blocks whose stamp opens `word`. Returns how many were
-## destroyed — which is not the same as how many were hit, because armour eats a
-## word without dying, and not the same as how many were aimed at, because a
-## bomb takes its neighbours with it.
+## Remove up to `limit` blocks whose stamp opens `word`. Returns how many fell,
+## which is the whole of what happened to them: a block is answered or it is not.
 func clear_matching(word: String, limit: int) -> int:
-	last_report = {"cracked": 0, "bombed": 0, "split": 0, "thawed": 0}
 	var doomed := matching_blocks(word)
 	if doomed.size() > maxi(limit, 0):
 		doomed.resize(maxi(limit, 0))
@@ -362,90 +306,19 @@ func clear_matching(word: String, limit: int) -> int:
 
 	var dying := {}
 	for b: Blk in doomed:
-		# Armour spends the word rather than the block. It still costs the
-		# attacker reach, which is the whole point: two words, not one.
-		if b.kind == Kind.ARMORED and b.hits + 1 < ARMOR_HITS:
-			b.hits += 1
-			b.flash = 1.0
-			last_report["cracked"] += 1
-			continue
 		dying[b] = true
 
-	# Bombs, and the bombs those set off, up to a depth. Uncapped, one lucky
-	# arrangement clears an entire board off a three-letter word.
-	var frontier: Array = dying.keys()
-	for depth in BOMB_CHAIN:
-		var next: Array = []
-		for b: Blk in frontier:
-			if b.kind != Kind.BOMB:
-				continue
-			for n: Blk in _neighbours(b):
-				if not dying.has(n):
-					dying[n] = true
-					next.append(n)
-					last_report["bombed"] += 1
-		if next.is_empty():
-			break
-		frontier = next
-
 	var kept: Array = []
-	var spawn: Array = []
 	for b: Blk in blocks:
 		if dying.has(b):
-			# A split does not simply die: it leaves two smaller problems where
-			# one bigger one was. Worth it if you can answer both, a trap if not.
-			if b.kind == Kind.SPLIT:
-				spawn.append(b)
-				last_report["split"] += 1
 			_shatter(b)
 		else:
 			kept.append(b)
 	blocks = kept
 
-	# Anything at all breaking is enough to crack the ice.
-	if not dying.is_empty():
-		for b: Blk in blocks:
-			if b.kind == Kind.FROZEN:
-				b.kind = Kind.PLAIN
-				b.flash = 1.0
-				last_report["thawed"] += 1
-
 	settle()
-	for b: Blk in spawn:
-		for i in 2:
-			add_garbage(_fresh_stamp(b.prefix), maxi(0, b.tier - 2), 1, 1)
-
 	shake = maxf(shake, minf(0.35 + dying.size() * 0.15, 1.0))
 	return dying.size()
-
-
-## Blocks sharing an edge with this one.
-func _neighbours(b: Blk) -> Array:
-	var grid := _occupancy()
-	var seen := {}
-	var out: Array = []
-	for c: Vector2i in b.rect_cells(b.gx, b.gy):
-		for step: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0),
-				Vector2i(0, 1), Vector2i(0, -1)]:
-			var at := c + step
-			if at.x < 0 or at.x >= COLS or at.y < 0 or at.y >= ROWS:
-				continue
-			var other = grid[at.y][at.x]
-			if other != null and other != b and not seen.has(other):
-				seen[other] = true
-				out.append(other)
-	return out
-
-
-## A stamp from `game.gd` if it gave us one, and the old stamp if it did not —
-## a split child branded the same as its parent is still answerable, which is
-## better than one branded nothing at all.
-func _fresh_stamp(fallback: String) -> String:
-	if mint.is_valid():
-		var got := String(mint.call())
-		if got != "":
-			return got
-	return fallback
 
 
 ## How many blocks `word` would take out right now, without touching anything.
@@ -509,12 +382,10 @@ func mirror_blocks(specs: Array) -> void:
 			found.gx = int(spec[0])
 			found.gy = int(spec[1])
 		found.tier = int(spec[4])
-		# Kind and its state travel too. A mirrored board that drew everything
-		# plain would tell you a rival was in far less trouble than they are.
-		if spec.size() > 7:
-			found.kind = int(spec[6])
-			found.hits = int(spec[7])
-			found.fuse = float(spec[8]) if spec.size() > 8 else 0.0
+		# Older builds sent a kind and its state in slots 6 and up. Every block is
+		# plain now, so anything past the tier is read off the wire and dropped —
+		# a peer on the previous version still mirrors correctly, minus a
+		# distinction neither side has any more.
 		rebuilt.append(found)
 
 	for gone: Blk in pool:
@@ -680,53 +551,7 @@ func _step_bits(delta: float) -> void:
 
 # -------------------------------------------------------------------- runtime
 
-## Volatile fuses and curse clocks. Both live here rather than in `game.gd`
-## because they belong to a block, and a block can be destroyed between one frame
-## and the next — a timer kept elsewhere would have to be told.
-func _tick_kinds(delta: float) -> void:
-	for b: Blk in blocks:
-		b.flash = maxf(0.0, b.flash - delta * 2.0)
-		match b.kind:
-			Kind.VOLATILE:
-				b.fuse -= delta
-				if b.fuse <= 0.0:
-					# It does not clear itself — it goes off, and the board it
-					# was sitting on pays for having left it there.
-					b.kind = Kind.PLAIN
-					b.flash = 1.0
-					_burst(b)
-					volatile_blew.emit(b.vis + Vector2(b.w * CELL, b.h * CELL) * 0.5)
-			Kind.CURSE:
-				b.fuse -= delta
-				if b.fuse <= 0.0:
-					b.fuse = CURSE_PERIOD
-					var was := b.prefix
-					b.prefix = _fresh_stamp(b.prefix)
-					if b.prefix != was:
-						b.flash = 1.0
-			_:
-				pass
-
-
-## A short flare where a kind did something, without the full shatter.
-func _burst(b: Blk) -> void:
-	var mid := b.vis + Vector2(b.w * CELL, b.h * CELL) * 0.5
-	for i in 16:
-		var p := _spawn(SPARK, mid, randf_range(0.2, 0.5))
-		var dir := Vector2.RIGHT.rotated(randf_range(0.0, TAU))
-		p.vel = dir * randf_range(180.0, 520.0)
-		p.size = Vector2(randf_range(1.6, 3.4), 0)
-		p.color = Color.WHITE.lerp(Color("#f94144"), randf_range(0.2, 0.9))
-		_add_bit(p)
-	var ring := _spawn(RING, mid, 0.36)
-	ring.size = Vector2(40.0, 0)
-	ring.color = Color("#f94144")
-	_add_bit(ring)
-	shake = maxf(shake, 0.5)
-
-
 func _process(delta: float) -> void:
-	_tick_kinds(delta)
 	for b: Blk in blocks:
 		var tx: float = b.gx * CELL
 		var ty: float = b.gy * CELL
@@ -853,7 +678,6 @@ func _draw_block(b: Blk, hot: bool) -> void:
 			draw_rect(Rect2(rect.position + Vector2(5, 5), rect.size - Vector2(10, 10)),
 				Color(1, 1, 1, 0.10), false, 1.0)
 
-	_draw_kind(b, rect)
 
 	# Stamps run up to five letters, so the type has to give way on small tiles.
 	var font_size := 17 + 5 * mini(b.h, 3)
@@ -864,84 +688,6 @@ func _draw_block(b: Blk, hot: bool) -> void:
 		var sub := "%d" % (b.w * b.h)
 		_draw_centered(_font, rect.get_center() + Vector2(0, font_size * 0.85), sub,
 			12, Color(0, 0, 0, 0.45))
-
-
-## What kind of trouble this block is, drawn on the block. No legend, no key —
-## if you have to remember which colour means which rule, the rule is not
-## carrying its weight. Everything here goes *under* the stamp, because the
-## stamp is still the thing you have to read first.
-func _draw_kind(b: Blk, rect: Rect2) -> void:
-	if b.kind == Kind.PLAIN and b.flash <= 0.0:
-		return
-	var mid := rect.get_center()
-
-	match b.kind:
-		Kind.BOMB:
-			# A lit fuse in the corner, sparking on its own clock.
-			var from := Vector2(rect.end.x - 9.0, rect.position.y + 8.0)
-			var tip := from + Vector2(6.0, -9.0)
-			draw_line(from, tip, Color(0.05, 0.05, 0.07, 0.8), 2.5)
-			var spark: float = 0.6 + 0.4 * sin(Time.get_ticks_msec() / 90.0)
-			draw_circle(tip, 3.4 * spark, Color("#ffd166"))
-			draw_circle(tip, 6.0 * spark, Color("#f8961e", 0.35))
-		Kind.ARMORED:
-			# Plating with a rivet per hit left, so "one more word" is countable
-			# rather than something you have to have been keeping track of.
-			draw_rect(rect.grow(-3.0), Color(0.05, 0.06, 0.09, 0.30), true)
-			draw_rect(rect.grow(-3.0), Color(0.85, 0.88, 1.0, 0.55), false, 2.0)
-			var left := b.armored_left()
-			for i in left:
-				draw_circle(Vector2(rect.position.x + 10.0 + i * 11.0,
-					rect.position.y + 9.0), 3.0, Color(0.9, 0.93, 1.0, 0.85))
-			if b.hits > 0:
-				# A crack across it once it has taken one.
-				draw_line(rect.position + Vector2(4.0, rect.size.y * 0.7),
-					rect.position + Vector2(rect.size.x - 4.0, rect.size.y * 0.25),
-					Color(0.05, 0.05, 0.07, 0.7), 2.0)
-		Kind.VOLATILE:
-			# A ring that empties. The last two seconds flash, because by then
-			# the decision is no longer "should I" but "can I".
-			var frac: float = clampf(b.fuse / VOLATILE_FUSE, 0.0, 1.0)
-			var urgent: bool = b.fuse < 2.5
-			var col := Color("#f94144") if urgent else Color("#ffd166")
-			if urgent:
-				col.a = 0.45 + 0.55 * absf(sin(Time.get_ticks_msec() / 70.0))
-			var r: float = minf(rect.size.x, rect.size.y) * 0.42
-			draw_arc(mid, r, -PI * 0.5, -PI * 0.5 + TAU * frac, 28, col, 3.0, true)
-		Kind.SPLIT:
-			# A seam down the middle, and arrows pushing away from it.
-			draw_line(Vector2(mid.x, rect.position.y + 5.0),
-				Vector2(mid.x, rect.end.y - 5.0), Color(0.05, 0.05, 0.07, 0.45), 2.0)
-			for dir in [-1.0, 1.0]:
-				var at := Vector2(mid.x + dir * rect.size.x * 0.3, rect.position.y + 9.0)
-				draw_colored_polygon(PackedVector2Array([
-					at + Vector2(dir * 5.0, 0.0), at + Vector2(-dir * 2.0, -4.0),
-					at + Vector2(-dir * 2.0, 4.0)]), Color(0.05, 0.05, 0.07, 0.55))
-		Kind.FROZEN:
-			# Iced over, and deliberately hard to read through: it is not a
-			# stamp you can use yet, and it should not look like one.
-			draw_rect(rect, Color(0.72, 0.90, 1.0, 0.55), true)
-			draw_rect(rect, Color(1.0, 1.0, 1.0, 0.8), false, 2.0)
-			for i in 3:
-				var y := rect.position.y + rect.size.y * (0.25 + 0.25 * i)
-				draw_line(Vector2(rect.position.x + 4.0, y),
-					Vector2(rect.end.x - 4.0, y), Color(1.0, 1.0, 1.0, 0.35), 1.5)
-		Kind.CURSE:
-			# Scribbled through, with the scribble moving. Whatever it says now
-			# is temporary and it should not look settled.
-			var t := Time.get_ticks_msec() / 240.0
-			for i in 4:
-				var y := rect.position.y + rect.size.y * (0.2 + 0.2 * i)
-				var wob := sin(t + float(i) * 1.7) * 4.0
-				draw_line(Vector2(rect.position.x + 3.0, y + wob),
-					Vector2(rect.end.x - 3.0, y - wob), Color("#c77dff", 0.45), 2.0)
-			var pulse: float = 0.35 + 0.3 * sin(t * 2.0)
-			draw_rect(rect, Color("#c77dff", pulse), false, 2.0)
-		_:
-			pass
-
-	if b.flash > 0.0:
-		draw_rect(rect, Color(1.0, 1.0, 1.0, b.flash * 0.55), false, 3.0)
 
 
 func _draw_bits() -> void:

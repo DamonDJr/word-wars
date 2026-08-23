@@ -61,7 +61,7 @@ const STEPS := [
 	{
 		"id": "done",
 		"title": "THAT IS THE WHOLE GAME",
-		"body": "Everything else — power words, salvos, special blocks —\n"
+		"body": "Everything else — power words, salvos, the chain ladder —\n"
 			+ "is built on those four rules.",
 		"hint": "press SPACE to finish",
 	},

@@ -119,35 +119,6 @@ const RESPITE := 2.5
 ## celebration that fires on every third word stops reading as a celebration.
 const BIG_SCORE := 600
 
-## Special garbage. All off by default — the base game is the base game, and
-## these are switched on in the lobby by people who already know the rules they
-## are complicating. Each is roughly as likely as the others when enabled, and
-## the chance is low enough that a special block is an event rather than the
-## texture of every board.
-const KIND_CHANCE := 0.30
-const KIND_NAMES := {
-	"bomb": WWBoard.Kind.BOMB,
-	"armored": WWBoard.Kind.ARMORED,
-	"volatile": WWBoard.Kind.VOLATILE,
-	"split": WWBoard.Kind.SPLIT,
-	"frozen": WWBoard.Kind.FROZEN,
-	"curse": WWBoard.Kind.CURSE,
-}
-## Order they appear in the lobby, and the words that explain them there.
-const KIND_ORDER := ["bomb", "armored", "volatile", "split", "frozen", "curse"]
-## Kept short enough to sit on a switch card without being shrunk to nothing.
-## The full explanation lives on the rules screen.
-const KIND_BLURB := {
-	"bomb": ["Bomb", "clears its neighbours"],
-	"armored": ["Armoured", "needs two words"],
-	"volatile": ["Volatile", "goes off if ignored"],
-	"split": ["Split", "breaks into two"],
-	"frozen": ["Frozen", "locked until something breaks"],
-	"curse": ["Cursed", "changes its own stamp"],
-}
-## A bomb is worth more than the block it sits on, so it asks a harder question.
-const BOMB_STAMP_WANT := 5
-
 ## Power words. None of these ask anything new of you — they are all things the
 ## rules already let you do, that the game never bothered to notice. That is the
 ## point: they teach the deep play by rewarding it the first time it happens by
@@ -274,15 +245,6 @@ const DAILY_SECONDS := 60.0
 ## When the clock turns red. Lands on the last size step, so the alarm and the
 ## thing it is warning about are the same moment.
 const DAILY_ALARM := 12.0
-## The block kinds are part of the day. Rolled from the seed, so the setting is
-## as fixed as the letters are.
-##
-## Spelled the way `KIND_NAMES` spells them. They were not — "armoured" and
-## "cursed" here against "armored" and "curse" there — so on roughly half of all
-## days `_roll_kind` looked up a key that did not exist and every block on the
-## board came out of a failed dictionary read.
-const DAILY_KIND_POOL := ["bomb", "armored", "volatile", "split", "frozen", "curse"]
-
 ## How hard the minute leans on you.
 ##
 ## Built around a phone typist at 36-38 wpm, which is the speed that actually
@@ -354,7 +316,6 @@ class Pending extends RefCounted:
 	var prefix := ""
 	var cells := 1
 	var timer := 0.0
-	var kind := 0
 	## Who sent it, as an entity id — 0 for the local player, a peer id for
 	## anyone else, and -1 for ambient pressure, which has nobody to credit.
 	## Carried so a board that overfills can pay whoever filled it.
@@ -624,10 +585,6 @@ const TRAINING_PACE := [
 	{"name": "Relentless", "note": "faster than anyone plays", "every": 2.8},
 ]
 
-## Which special block kinds are switched on. Empty is the default and the base
-## game; the lobby fills it.
-var block_kinds: Array = []
-
 ## Single-player setup: the three rival seats, and which one the roster fills.
 var solo_seats: Array = ["Duelist", "", ""]
 var solo_pick := 0
@@ -696,11 +653,6 @@ func _ready() -> void:
 		s.accent = SLOT_ACCENTS[i]
 		s.board = WWBoard.new()
 		s.board.block_landed.connect(_on_block_landed)
-		# Curses re-brand themselves and split children need branding, both from
-		# inside the board. It has the blocks; we have the dictionary.
-		s.board.mint = func() -> String:
-			return _mint_stamp(WordBank.random_common(), STAMP_WANT, s)
-		s.board.volatile_blew.connect(_on_volatile_blew.bind(s))
 		add_child(s.board)
 		s.board.set_accent(s.accent)
 		sides.append(s)
@@ -727,7 +679,6 @@ func _ready() -> void:
 	var saved: Array = Profile.pref("solo")
 	if saved.size() == solo_seats.size():
 		solo_seats = saved.duplicate()
-	block_kinds = (Profile.pref("kinds") as Array).duplicate()
 
 	_net_setup()
 
@@ -1204,7 +1155,6 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	# Fix the deal before a single block is minted, or the seed is meaningless.
 	if mode == Mode.DAILY:
 		WordBank.seed_run(daily_seed())
-		block_kinds = daily_kinds()
 	else:
 		WordBank.free_run()
 	# The daily is one board and says so. Every other mode keeps a second seat in
@@ -1441,20 +1391,6 @@ func seed_for(key: String) -> int:
 	return hash("wordwars-daily-" + key)
 
 
-## Which special blocks are in play today. Two of them, picked by the seed, so
-## the setting varies day to day and is still the same setting for everyone.
-func daily_kinds(key: String = "") -> Array:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = seed_for(key if key != "" else daily_key())
-	var pool := DAILY_KIND_POOL.duplicate()
-	for i in range(pool.size() - 1, 0, -1):
-		var j := rng.randi_range(0, i)
-		var t = pool[i]
-		pool[i] = pool[j]
-		pool[j] = t
-	return pool.slice(0, 2)
-
-
 ## How long is left of the daily run.
 func daily_left() -> float:
 	return maxf(0.0, DAILY_SECONDS - match_time)
@@ -1481,9 +1417,9 @@ func solo_run() -> bool:
 
 ## Deal the pile the day starts on.
 ##
-## Every draw here comes off `WordBank.rng` — the sizes, the stamps, the special
-## kinds and, inside `add_garbage`, the column each block falls down. That is
-## the whole promise of a daily: two machines that agree on the date sit down in
+## Every draw here comes off `WordBank.rng` — the sizes, the stamps and, inside
+## `add_garbage`, the column each block falls down. That is the whole promise of
+## a daily: two machines that agree on the date sit down in
 ## front of the identical mess.
 func _deal_daily_opening() -> void:
 	var room := WWBoard.COLS * WWBoard.ROWS
@@ -1498,10 +1434,8 @@ func _deal_daily_opening() -> void:
 		var tier: int = int(DAILY_OPEN_TIERS[
 			WordBank.rng.randi_range(0, DAILY_OPEN_TIERS.size() - 1)])
 		var spec: Dictionary = TIERS[tier]
-		var kind := _roll_kind()
-		var want: int = BOMB_STAMP_WANT if kind == WWBoard.Kind.BOMB else STAMP_WANT
-		var stamp := _mint_stamp(WordBank.random_common(), want, player)
-		if not player.board.add_garbage(stamp, tier, spec["w"], spec["h"], kind):
+		var stamp := _mint_stamp(WordBank.random_common(), STAMP_WANT, player)
+		if not player.board.add_garbage(stamp, tier, spec["w"], spec["h"]):
 			break
 	player.board.snap_to_grid()
 	_log("today's board is already %d%% full" %
@@ -1922,11 +1856,8 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var budget := _reach(word)
 
 	var cleared := attacker.board.clear_matching(word, budget)
-	var extras: Dictionary = attacker.board.last_report
 	attacker.blocks_cleared += cleared
-	# Armour swallowed the word without dying. It still cost reach — that is what
-	# makes it two words rather than one — so it comes off the budget too.
-	budget -= cleared + int(extras["cracked"])
+	budget -= cleared
 
 	var intercepted := 0
 	if budget > 0:
@@ -1993,37 +1924,6 @@ func _play_word(attacker: SideState, word: String) -> void:
 	_note_best(attacker, word, earned)
 	_voice_attack(attacker, cleared, intercepted, out_tier)
 	_report(attacker, word, cleared, intercepted, out_tier, spent)
-	_report_kinds(attacker, extras)
-
-
-## The specials a word set off, said out loud. Without this a bomb reads as the
-## clear inexplicably counting four, and armour reads as the word simply not
-## working.
-func _report_kinds(attacker: SideState, extras: Dictionary) -> void:
-	var bits: Array = []
-	if int(extras["cracked"]) > 0:
-		bits.append("cracked %d armour" % int(extras["cracked"]))
-	if int(extras["bombed"]) > 0:
-		bits.append("bomb took %d more" % int(extras["bombed"]))
-	if int(extras["split"]) > 0:
-		bits.append("%d split" % int(extras["split"]))
-	if int(extras["thawed"]) > 0:
-		bits.append("thawed %d" % int(extras["thawed"]))
-	if bits.is_empty():
-		return
-	_log("%s: %s" % [attacker.label, ", ".join(bits)], Color("#7bdff2"))
-	if attacker == player:
-		if int(extras["bombed"]) > 0:
-			shake = maxf(shake, 0.28)
-			_bloom(Color("#f8961e"), 0.16)
-		if int(extras["cracked"]) > 0 and cleared_nothing(extras):
-			_say("armour holds — one more word", Color("#8d99bd"))
-
-
-## True when a word only cracked armour and destroyed nothing, which is the one
-## case a player is likely to read as the game ignoring them.
-func cleared_nothing(extras: Dictionary) -> bool:
-	return int(extras["bombed"]) == 0 and int(extras["split"]) == 0
 
 
 ## The best word of the match is what that word was worth all in — its own score
@@ -2083,11 +1983,7 @@ func _send_block(
 	var p := Pending.new()
 	p.from = _entity_of(from)
 	p.tier = tier
-	p.kind = _roll_kind()
-	# A bomb clears its neighbours, so it has to be worth the trouble of setting
-	# off — it asks for a longer stamp than anything else on the board.
-	p.prefix = _mint_stamp(word,
-		BOMB_STAMP_WANT if p.kind == WWBoard.Kind.BOMB else STAMP_WANT, defender)
+	p.prefix = _mint_stamp(word, STAMP_WANT, defender)
 	p.cells = _cells(tier)
 	p.timer = delay
 	defender.pending.append(p)
@@ -2332,15 +2228,6 @@ func _on_ad_finished(shown: bool) -> void:
 	_music_key = ""
 	_music_hold = 0.0
 	_tick_music(0.0)
-
-
-## Which special this block is, if any. Rolled per block on the machine that
-## owns the board, which is safe over a network because each board is simulated
-## by exactly one machine and the enabled set is agreed before the match starts.
-func _roll_kind() -> int:
-	if block_kinds.is_empty() or WordBank.rng.randf() >= KIND_CHANCE:
-		return WWBoard.Kind.PLAIN
-	return int(KIND_NAMES[block_kinds[WordBank.rng.randi_range(0, block_kinds.size() - 1)]])
 
 
 ## Throw a visible attack from one board to another. Cosmetic only — the rules
@@ -2961,8 +2848,7 @@ func _tick_pending(side: SideState, delta: float) -> void:
 		if p.timer <= 0.0:
 			side.pending.remove_at(i)
 			var spec: Dictionary = TIERS[p.tier]
-			var fit: bool = side.board.add_garbage(p.prefix, p.tier, spec["w"], spec["h"],
-				p.kind)
+			var fit: bool = side.board.add_garbage(p.prefix, p.tier, spec["w"], spec["h"])
 			side.board.shake = maxf(side.board.shake, 0.5)
 			# Bigger blocks land lower and louder.
 			Sfx.play("land", 1.15 - 0.09 * p.tier,
@@ -3031,19 +2917,14 @@ func _seed_pressure(source: String) -> void:
 		if side.slowdown > 0.0:
 			continue
 		var p := Pending.new()
-		# In a match the ambient block is always the smallest one there is, and
-		# always plain — it is a metronome under a fight somebody else is
-		# supplying. In the daily it is the entire fight, so it is the one thing
-		# that has to escalate, and it is where the day's block kinds live:
-		# nothing is sent in a solo run, so ambient pressure is the only way a
-		# frozen or a cursed block ever reaches the board after the opening pile.
+		# In a match the ambient block is always the smallest one there is — it is
+		# a metronome under a fight somebody else is supplying. In the daily it is
+		# the entire fight, so it is the one thing that has to escalate.
 		if mode == Mode.DAILY:
 			p.tier = _daily_tier()
-			p.kind = _roll_kind()
 		else:
 			p.tier = 0
-		p.prefix = _mint_stamp(source,
-			BOMB_STAMP_WANT if p.kind == WWBoard.Kind.BOMB else STAMP_WANT, side)
+		p.prefix = _mint_stamp(source, STAMP_WANT, side)
 		p.cells = _cells(p.tier)
 		p.timer = DROP_DELAY
 		side.pending.append(p)
@@ -3078,24 +2959,6 @@ func _tick_bots(delta: float) -> void:
 			s.chain_timer = 0.0
 		if word != "":
 			_play_word(s, word)
-
-
-## A volatile block reached the end of its fuse. It does not clear itself — it
-## drops a fresh block on the board that left it there, which is the whole
-## bargain: answer it, or answer it and one more.
-func _on_volatile_blew(_at: Vector2, side: SideState) -> void:
-	var p := Pending.new()
-	p.tier = 0
-	p.prefix = _mint_stamp(WordBank.random_common(), STAMP_WANT, side)
-	p.cells = 1
-	p.timer = 0.9
-	side.pending.append(p)
-	side.flash = 1.0
-	if side == player:
-		shake = maxf(shake, 0.3)
-		_bloom(Color("#f94144"), 0.14)
-		_say("a volatile block went off", Color("#f94144"))
-	_log("%s: a volatile block went off" % side.label, Color("#f94144"))
 
 
 # ------------------------------------------------------------------- the lesson
@@ -5518,9 +5381,6 @@ func _draw_solo(size: Vector2) -> void:
 				"%d wpm" % int(AiOpponent.spec(id)["wpm"]), 14, r.size.x - 20.0,
 				accent, 10)
 
-	if not portrait:
-		_draw_kind_cards(_solo_kinds_top(), true)
-
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
 
@@ -5528,67 +5388,6 @@ func _draw_solo(size: Vector2) -> void:
 		# Clear of the Back button, which ends at foot + 110.
 		_otext(_font, Vector2(cx, _solo_foot() + 132.0),
 			"1 / 2 / 3 select a seat · ENTER starts · ESC back", 12, Color("#5d6a92"))
-
-
-## The special-block switches. The same row of cards serves single-player setup
-## and the versus room, so the two can never drift apart or explain themselves
-## differently.
-func _kind_cards(top: float) -> Array:
-	var out: Array = []
-	# Off the single-player screen entirely on a phone. Six switches nobody had
-	# asked for stood between a thumb and the Start button; the versus room still
-	# has them, because there the host is setting rules for other people.
-	if portrait and phase == Phase.SOLO:
-		return out
-	var kf: float = _solo_fill() if phase == Phase.SOLO else 1.0
-	var rects := _grid_rects(KIND_ORDER.size(), top, 3, 254.0, 56.0 * kf, 10.0,
-		240.0, 8.0 * kf)
-	for i in KIND_ORDER.size():
-		var id: String = KIND_ORDER[i]
-		out.append({
-			"rect": rects[i],
-			"id": id,
-			"name": String(KIND_BLURB[id][0]),
-			"note": String(KIND_BLURB[id][1]),
-			"action": "kind:" + id,
-		})
-	return out
-
-
-## Draws them, and reports how tall the block was so the caller can lay out
-## underneath it without guessing.
-func _draw_kind_cards(top: float, editable: bool) -> float:
-	var cx := get_viewport_rect().size.x * 0.5
-	_otext(_font_bold, Vector2(cx, top - 16.0), "SPECIAL BLOCKS", 13, Color("#7c88ad"))
-	var bottom := top
-	for c: Dictionary in _kind_cards(top):
-		var r: Rect2 = c["rect"]
-		var on: bool = block_kinds.has(String(c["id"]))
-		var hot: bool = editable and _hover_action == String(c["action"])
-		_panel(r, Color("#1b2444") if hot else Color("#141b33"),
-			Color("#ffd166") if on else Color(PLAYER_ACCENT, 0.5 if hot else 0.14),
-			10.0, 2.0 if on else 1.0)
-		# Centred in what is left after the switch has taken the right-hand end,
-		# rather than at a fixed offset — on a phone these cards are half again
-		# as wide and the text was hugging the left edge of them.
-		var tx: float = r.position.x + (r.size.x - 70.0) * 0.5
-		var tw: float = r.size.x - 90.0
-		# Fitted rather than fixed, because the name shares the row with a switch
-		# and a note — raising it blind would have run BLOCK KINDS into the toggle.
-		_text_fit_overlay(_font_bold, Vector2(tx, r.get_center().y - 9.0),
-			String(c["name"]).to_upper(), 17, tw,
-			Color("#e6ecff") if on else Color("#5d6a92"), 12)
-		_text_fit_overlay(_font, Vector2(tx, r.get_center().y + 12.0),
-			String(c["note"]), 13, tw, Color("#7c88ad") if on else Color("#3d4666"), 9)
-		# A switch rather than a tick: these are settings, and a tick reads as
-		# "done" where a switch reads as "on".
-		var sw := Rect2(r.end.x - 62.0, r.get_center().y - 11.0, 46.0, 22.0)
-		_panel(sw, Color("#1f8a70") if on else Color("#2a3355"),
-			Color(PLAYER_ACCENT if on else Color("#4d5878"), 0.7), 11.0, 1.0)
-		_overlay.draw_circle(Vector2(sw.position.x + (33.0 if on else 13.0),
-			sw.get_center().y), 8.0, Color("#e6ecff"))
-		bottom = maxf(bottom, r.end.y)
-	return bottom
 
 
 const SOLO_NATURAL := 76.0 + 40.0 + 3.0 * 76.0 + 42.0 + 3.0 * 64.0 + 90.0
@@ -5605,12 +5404,10 @@ func _solo_spread() -> float:
 ## How tall the screen is once it is laid out, measured from the header down to
 ## the bottom of the Start button.
 ##
-## The portrait figure is counted rather than estimated, because with the seat
-## table and the switches gone the screen finally fits a phone without scrolling
-## — and a guess that came out high would put a scrollbar on a screen that has
-## nowhere to go. The 176 is `_solo_roster_top`'s header block, the `42 * sp` is
-## the gap `_solo_kinds_top` leaves, and the 26 plus the door height is the Start
-## button and its lead-in from `_menu_buttons`.
+## Counted rather than estimated, because a guess that came out high would put a
+## scrollbar on a screen that has nowhere to go. The 176 is `_solo_roster_top`'s
+## header block, and the 26 plus the door height is the Start button and its
+## lead-in from `_menu_buttons`.
 func _solo_laid() -> float:
 	var f := _solo_fill()
 	var sp := _solo_spread()
@@ -5693,23 +5490,11 @@ func _solo_roster_top() -> float:
 	return _grid_bottom(_solo_seat_rects(), 194.0) + 40.0 * _solo_spread()
 
 
-## Under the roster. The special-block switches are the last thing on the screen
-## before the start button, and how far down they start depends on how many rows
-## the roster took — which is three on a desktop and six on a phone.
-func _solo_kinds_top() -> float:
+## The bottom of the last thing on the single-player screen, which the Start and
+## Back buttons sit under — the opponent roster, in both orientations.
+func _solo_foot() -> float:
 	var out := _solo_roster_top()
 	for c: Dictionary in _solo_cards():
-		out = maxf(out, (c["rect"] as Rect2).end.y)
-	return out + 42.0 * _solo_spread()
-
-
-## The bottom of the last thing on the single-player screen, which the Start and
-## Back buttons sit under. In portrait that last thing is the roster itself,
-## since `_kind_cards` hands back nothing there.
-func _solo_foot() -> float:
-	var top := _solo_kinds_top()
-	var out := top
-	for c: Dictionary in _kind_cards(top):
 		out = maxf(out, (c["rect"] as Rect2).end.y)
 	return out
 
@@ -6179,14 +5964,6 @@ func _draw_pause(size: Vector2) -> void:
 		12, Color("#4d5878"))
 
 
-## The house rules live in a drawer.
-##
-## Six switches is the longest thing on the versus screen and the least often
-## touched — most rooms play the base game — so it was pushing the buttons that
-## matter, Ready and Leave, off the bottom of a phone. Shut by default, and it
-## says how many are on so nobody has to open it to find out.
-var kinds_open := false
-
 ## Quick match: whoever else is looking, right now.
 ##
 ## This used to be a toggle — one tap of the title's VERSUS plate started a
@@ -6214,8 +5991,7 @@ func _lobby_laid() -> float:
 	var f := _lobby_fill()
 	if Link.connected:
 		var seats: float = 2.0 if portrait else 1.0
-		var drawer: float = 44.0 + (3.0 * 64.0 * f if kinds_open else 0.0)
-		return 232.0 + seats * 128.0 * f + 60.0 + 200.0 * f + drawer + 80.0
+		return 232.0 + seats * 128.0 * f + 60.0 + 200.0 * f + 80.0
 	# Name, code, the backend pair and the two buttons, all stacked on a phone.
 	return 234.0 + 2.0 * 52.0 * f + 34.0 + 82.0 + 2.0 * 56.0 * f + 14.0 \
 		+ 24.0 + 2.0 * 66.0 * f + 90.0
@@ -6236,20 +6012,6 @@ func _room_foot() -> float:
 	var count := 1 + ids.size() + Link.bot_count
 	var w := 250.0 if count > 2 else 320.0
 	return _grid_bottom(_room_seat_rects(count, w), 360.0 + safe_top)
-
-
-## Where the house-rule switches start, under the buttons.
-func _lobby_kinds_top() -> float:
-	return _room_foot() + 196.0 if not portrait else _lobby_portrait_kinds_top()
-
-
-## In portrait the buttons stack instead of flanking, so the switches start below
-## whatever that came to rather than a fixed distance down.
-func _lobby_portrait_kinds_top() -> float:
-	var low := _room_foot() + 196.0
-	for b: Dictionary in _menu_buttons():
-		low = maxf(low, (b["rect"] as Rect2).end.y + 60.0)
-	return low
 
 
 
@@ -6352,26 +6114,6 @@ func _draw_rules_panel(size: Vector2) -> void:
 			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14, -1, Color("#aab4d4"))
 		y += mh + 10.0
 
-	# Special blocks only appear in the list when they are switched on. A rules
-	# screen listing rules that are not in play is worse than one that is short.
-	if not block_kinds.is_empty():
-		y += 6.0
-		var on: Array = []
-		for id: String in KIND_ORDER:
-			if block_kinds.has(id):
-				on.append("%s — %s" % [String(KIND_BLURB[id][0]).to_upper(),
-					String(KIND_BLURB[id][1])])
-		# Six of these joined together is far too long for one line at any width,
-		# and shrinking the type until it fits produces something nobody reads.
-		# Wrapped, like the paragraphs above it.
-		var kinds_line := "SPECIAL BLOCKS IN PLAY: " + "  ·  ".join(on)
-		var kh: float = _font.get_multiline_string_size(
-			kinds_line, HORIZONTAL_ALIGNMENT_CENTER, inner, 12).y
-		_overlay.draw_multiline_string(_font,
-			Vector2(cx - inner * 0.5, y - 8.0 + _font.get_ascent(12)),
-			kinds_line, HORIZONTAL_ALIGNMENT_CENTER, inner, 12, -1, Color("#ffd166"))
-		y += kh + 6.0
-
 	# Power words are worth spelling out here, but they are meant to be met in
 	# play first: the game announces one the first time you manage it by
 	# accident, and this is where you come to find out what happened.
@@ -6428,15 +6170,11 @@ func _power_parts(text: String, stacked: bool) -> Array:
 	return out if out.size() > 1 else [text]
 
 
-## Everything under the paragraphs: the special-block line when there is one,
-## the rule, the heading, and a row per power word.
+## Everything under the paragraphs: the rule, the heading, and a row per power
+## word.
 func _rules_extra() -> float:
 	var rows: float = float(POWER_ORDER.size()) * (43.0 if portrait else 24.0)
-	# The block list wraps, so on a narrow screen it is worth two or three lines.
-	var kinds: float = 0.0
-	if not block_kinds.is_empty():
-		kinds = 25.0 if not portrait else 70.0
-	return 12.0 + 16.0 + 24.0 + rows + kinds
+	return 12.0 + 16.0 + 24.0 + rows
 
 
 func _draw_gameover(size: Vector2) -> void:
@@ -7008,12 +6746,6 @@ func _on_net_match_begin() -> void:
 		if int(seat["id"]) != me:
 			others.append(seat)
 
-	# Everyone plays the host's rules. The seating carries them, so this is the
-	# last chance for the two machines to disagree — and they do not.
-	for seat: Dictionary in plan:
-		if seat.has("kinds"):
-			block_kinds = (seat["kinds"] as Array).duplicate()
-			break
 	start_match("Versus", others.size())
 	for i in others.size():
 		if i + 1 >= SLOTS:
@@ -7186,8 +6918,7 @@ func _push_state(delta: float) -> void:
 func _state_of(who: SideState, own: int) -> Dictionary:
 	var block_specs: Array = []
 	for b in who.board.blocks:
-		block_specs.append([b.gx, b.gy, b.w, b.h, b.tier, b.prefix, b.kind, b.hits,
-			b.fuse])
+		block_specs.append([b.gx, b.gy, b.w, b.h, b.tier, b.prefix])
 	var pend_specs: Array = []
 	for p: Pending in who.pending:
 		pend_specs.append([p.tier, p.prefix, p.timer])
@@ -8074,20 +7805,8 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _solo_cards():
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
-		for c: Dictionary in _kind_cards(_solo_kinds_top()):
-			if (c["rect"] as Rect2).has_point(p):
-				return String(c["action"])
 	if phase == Phase.VERSUS:
 		for c: Dictionary in _versus_friend_cards():
-			if (c["rect"] as Rect2).has_point(p):
-				return String(c["action"])
-	if phase == Phase.LOBBY and Link.connected:
-		var dw2: float = minf(560.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
-		if Rect2(get_viewport_rect().size.x * 0.5 - dw2 * 0.5,
-				_lobby_kinds_top() - 44.0, dw2, 36.0).has_point(p):
-			return "kinds_drawer"
-	if phase == Phase.LOBBY and Link.connected and Link.is_host and kinds_open:
-		for c: Dictionary in _kind_cards(_lobby_kinds_top()):
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
 	if phase == Phase.SETTINGS:
@@ -8245,9 +7964,6 @@ func _activate(action: String) -> void:
 		phase = Phase.COSMETICS
 		_hover_action = ""
 		Sfx.play("count", 1.1)
-	elif action == "kinds_drawer":
-		kinds_open = not kinds_open
-		Sfx.play("key", 1.2)
 	elif action == "rules":
 		show_rules = not show_rules
 		_hover_action = ""
@@ -8275,17 +7991,6 @@ func _activate(action: String) -> void:
 					break
 		Profile.set_pref("solo", solo_seats.duplicate())
 		Sfx.play("count", 1.25)
-	elif action.begins_with("kind:"):
-		var id := action.substr(5)
-		if block_kinds.has(id):
-			block_kinds.erase(id)
-			Sfx.play("back")
-		else:
-			block_kinds.append(id)
-			Sfx.play("count", 1.3)
-		Profile.set_pref("kinds", block_kinds.duplicate())
-		if Link.is_host and Link.connected:
-			Link.set_kinds(block_kinds)
 	elif action.begins_with("set:"):
 		_change_setting(action.substr(4))
 	elif action == "mastery":

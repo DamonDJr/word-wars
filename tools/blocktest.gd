@@ -1,11 +1,30 @@
 extends SceneTree
-## Each block kind has one rule, and each rule has one way of being wrong. These
-## build the exact board a rule needs and check it does that and only that.
+## What a block does, now that a block only does one thing.
+##
+## This suite used to check six special kinds — armour that ate a word, bombs
+## that took their neighbours, splits, ice, curses and fuses. They are gone, and
+## `clear_matching` was rewritten down to the one rule that is left: a word
+## whose opening letters match a stamp destroys that block, up to the reach the
+## word buys. Which is exactly why the file is still here rather than deleted —
+## the rewrite is new code, it is the code every mode depends on, and the rules
+## below are the ones that used to be tangled up with the kinds.
+##
+## `WWBoard` is loaded by path rather than named. Under `--script` the autoloads
+## are not registered when a tool script's dependencies compile, and `board.gd`
+## names `WordBank` — so mentioning `WWBoard` at parse time fails to compile the
+## whole chain. That is not hypothetical: it is what this suite was doing. It
+## defined twenty-three assertions, reported two, and still printed "blocks
+## behave" and exited 0, because a section that dies on its first line prints its
+## heading and nothing else. `SECTIONS` is the guard against that.
 ##
 ##   godot --headless --script tools/blocktest.gd
 
 var game: Node
 var fails := 0
+var done := 0
+const SECTIONS := 4
+## Set in `_init`, once there is a frame and the autoloads exist.
+var WWB: GDScript
 
 
 func _init() -> void:
@@ -14,147 +33,128 @@ func _init() -> void:
 	get_root().add_child(game)
 	await process_frame
 	await process_frame
+	WWB = load("res://scripts/board.gd")
 	game.start_match("Rookie", 1)
 	game.phase = game.Phase.PLAY
 	await process_frame
 
-	_armored()
-	_bomb()
-	_frozen()
-	_split()
-	_curse()
-	_volatile()
-	_off_by_default()
+	_a_word_takes_what_it_matches()
+	_reach_is_the_limit()
+	_nothing_is_special()
+	_a_full_board_tops_out()
 
+	if done != SECTIONS:
+		fails += 1
+		print("  %-52s %s" % ["all %d sections ran" % SECTIONS,
+			"FAILED (%d did)" % done])
 	print("--- %s ---" % ("blocks behave" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
 
 
-## Two words, not one — and the first must visibly do something, or it reads as
-## the game ignoring you.
-func _armored() -> void:
-	print("--- armoured ---")
+## The whole rule: the stamp is a prefix, and a word that opens with it wins.
+func _a_word_takes_what_it_matches() -> void:
+	print("--- a word takes the blocks it opens ---")
 	var b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.ARMORED)
-	var gone: int = b.clear_matching("alarm", 4)
-	_expect("the first word destroys nothing", gone == 0)
-	_expect("but it cracks the armour", int(b.last_report["cracked"]) == 1)
-	_expect("and the block is still there", b.blocks.size() == 1)
-	gone = b.clear_matching("alarming", 4)
-	_expect("the second word takes it", gone == 1 and b.blocks.is_empty())
-
-
-## A bomb clears its neighbours, and chains into other bombs — but not forever.
-func _bomb() -> void:
-	print("--- bomb ---")
-	var b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.BOMB)
-	for i in 4:
-		b.add_garbage("zz", 0, 1, 1)
-	var before: int = b.blocks.size()
-	var gone: int = b.clear_matching("alarm", 1)
-	_expect("one word, but more than one block", gone > 1)
-	_expect("the neighbours are counted", int(b.last_report["bombed"]) > 0)
-	_expect("and are actually gone", b.blocks.size() == before - gone)
-
-	# A full board of bombs must not clear itself off one word.
-	b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.BOMB)
-	for i in 30:
-		b.add_garbage("zz", 0, 1, 1, WWBoard.Kind.BOMB)
-	var total: int = b.blocks.size()
-	b.clear_matching("alarm", 1)
-	_expect("a board of bombs does not all go at once (%d of %d left)" % [
-		b.blocks.size(), total], b.blocks.size() > 0)
-
-
-## Ice is not a stamp problem. It must not even be offered as a match, or the
-## highlight promises a clear that cannot happen.
-func _frozen() -> void:
-	print("--- frozen ---")
-	var b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.FROZEN)
-	_expect("a frozen block is not a match", b.matching_blocks("alarm").is_empty())
-	_expect("and the preview agrees", b.would_clear("alarm", 4) == 0)
-	var gone: int = b.clear_matching("alarm", 4)
-	_expect("so the word does nothing", gone == 0 and b.blocks.size() == 1)
-
+	b.add_garbage("al", 0, 1, 1)
 	b.add_garbage("zz", 0, 1, 1)
-	b.clear_matching("zzz", 4)
-	_expect("breaking something else thaws it", int(b.last_report["thawed"]) == 1)
-	_expect("and now it can be answered", b.clear_matching("alarm", 4) == 1)
+	_expect("a matching word takes its block", b.clear_matching("alarm", 4) == 1)
+	_expect("and leaves the one it does not match", b.blocks.size() == 1)
+	_expect("a word matching nothing takes nothing",
+		b.clear_matching("quiet", 4) == 0)
+	_expect("and the board is untouched", b.blocks.size() == 1)
+
+	# The stamp has to be the *start* of the word, not merely inside it.
+	b = _fresh()
+	b.add_garbage("arm", 0, 1, 1)
+	_expect("a stamp in the middle is not a match",
+		b.clear_matching("alarm", 4) == 0)
+	_expect("and the block is still standing", b.blocks.size() == 1)
+	done += 1
 
 
-## Destroying it leaves two smaller problems where one bigger one was.
-func _split() -> void:
-	print("--- split ---")
+## One word only reaches so far, which is the rule that makes a long word worth
+## looking for. Every two letters buys one block.
+func _reach_is_the_limit() -> void:
+	print("--- reach is what a word can carry ---")
+	_expect("two letters a block", WWB.reach("align") == 2)
+	_expect("and a longer word reaches further",
+		WWB.reach("alignment") > WWB.reach("align"))
+
 	var b = _fresh()
-	b.add_garbage("al", 3, 2, 2, WWBoard.Kind.SPLIT)
-	b.clear_matching("alarm", 4)
-	_expect("it reports the split", int(b.last_report["split"]) == 1)
-	_expect("and leaves two behind", b.blocks.size() == 2)
-	var small := true
-	for c in b.blocks:
-		if c.w != 1 or c.h != 1 or c.kind == WWBoard.Kind.SPLIT:
-			small = false
-	_expect("both are small, and neither splits again", small)
+	for i in 4:
+		b.add_garbage("al", 0, 1, 1)
+	_expect("a short word cannot take them all",
+		b.clear_matching("all", WWB.reach("all")) == 1)
+	_expect("three are left", b.blocks.size() == 3)
+	_expect("a long one takes the rest",
+		b.clear_matching("alignment", WWB.reach("alignment")) == 3)
+	_expect("and the board is clear", b.blocks.is_empty())
+
+	# `would_clear` is what the HUD highlights with, so it has to agree with what
+	# actually happens — a highlight promising a clear that does not come is
+	# worse than no highlight.
+	b = _fresh()
+	for i in 3:
+		b.add_garbage("al", 0, 1, 1)
+	var promised: int = b.would_clear("alarm", WWB.reach("alarm"))
+	_expect("the preview promises what the word delivers",
+		promised == b.clear_matching("alarm", WWB.reach("alarm")))
+	done += 1
 
 
-## The stamp moves. The point is the decision it forces, so it has to actually
-## change and it has to stay answerable.
-func _curse() -> void:
-	print("--- cursed ---")
+## There is no second category of block any more. Nothing survives a word that
+## matched it, nothing takes anything else with it, and nothing changes under
+## the player between one frame and the next.
+func _nothing_is_special() -> void:
+	print("--- and nothing is special about any of them ---")
 	var b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.CURSE)
-	var first: String = b.blocks[0].prefix
-	var changed := false
-	for i in 400:
-		b._tick_kinds(0.1)
-		if b.blocks[0].prefix != first:
-			changed = true
+	b.add_garbage("al", 0, 1, 1)
+	b.add_garbage("zz", 0, 1, 1)
+	b.add_garbage("en", 0, 1, 1)
+	var before: int = b.blocks.size()
+	var gone: int = b.clear_matching("alarm", 4)
+	_expect("a word takes exactly what it matched", gone == 1)
+	_expect("and nothing goes with it", b.blocks.size() == before - gone)
+
+	# Stamps used to re-write themselves on a timer. Nothing does now, so a board
+	# left alone is the same board however long you look at it.
+	var stamps: Array = []
+	for blk in b.blocks:
+		stamps.append(blk.prefix)
+	for i in 30:
+		b._process(0.1)
+	var after: Array = []
+	for blk in b.blocks:
+		after.append(blk.prefix)
+	_expect("a board left alone does not change under you", stamps == after)
+	_expect("and nothing goes off on its own", b.blocks.size() == before - gone)
+	done += 1
+
+
+## Overfilling is the only way to lose, so `add_garbage` refusing has to mean it.
+func _a_full_board_tops_out() -> void:
+	print("--- a board that cannot take another block says so ---")
+	var b = _fresh()
+	var fitted := 0
+	var topped := false
+	# A few past what the grid holds: exactly COLS * ROWS ones fit, so a loop
+	# bounded at the cell count never asks the question this is here to ask.
+	for i in int(WWB.COLS) * int(WWB.ROWS) + 4:
+		if b.add_garbage("zz", 0, 1, 1):
+			fitted += 1
+		else:
+			topped = true
 			break
-	_expect("the stamp changes on its own", changed)
-	_expect("and it is still a real stamp", b.blocks[0].prefix.length() > 0)
-
-
-## Leave it and it costs you. It does not clear itself — that would reward
-## ignoring it.
-func _volatile() -> void:
-	print("--- volatile ---")
-	var b = _fresh()
-	b.add_garbage("al", 0, 1, 1, WWBoard.Kind.VOLATILE)
-	var blew := [false]
-	b.volatile_blew.connect(func(_at): blew[0] = true)
-	for i in int(WWBoard.VOLATILE_FUSE * 10.0) + 20:
-		b._tick_kinds(0.1)
-	_expect("the fuse runs out", blew[0])
-	_expect("and the block is still on the board", b.blocks.size() == 1)
-
-
-## The base game has to stay the base game for anybody who never opens the
-## lobby switches.
-func _off_by_default() -> void:
-	print("--- off unless asked for ---")
-	game.block_kinds = []
-	var plain := true
-	for i in 400:
-		if game._roll_kind() != WWBoard.Kind.PLAIN:
-			plain = false
-	_expect("no specials with nothing switched on", plain)
-
-	game.block_kinds = ["bomb"]
-	var seen := {}
-	for i in 3000:
-		seen[game._roll_kind()] = true
-	_expect("only what was switched on turns up",
-		seen.size() <= 2 and seen.has(WWBoard.Kind.BOMB))
-	game.block_kinds = []
+	_expect("it fills up", fitted > 0)
+	_expect("and then refuses", topped)
+	_expect("having taken no more than it holds",
+		fitted <= int(WWB.COLS) * int(WWB.ROWS))
+	done += 1
 
 
 func _fresh():
 	var b = game.player.board
 	b.reset()
-	b.mint = func() -> String: return ["al", "sh", "en", "ing"].pick_random()
 	return b
 
 
