@@ -1618,12 +1618,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_1:
 				if not _versus_busy():
 					_activate("quick_match")
+			# In door order, which changed when Apple's screen took second place.
 			KEY_2:
 				if not _versus_busy():
-					_activate("invite")
+					_activate("native_invite")
 			KEY_3:
 				if not _versus_busy():
-					_activate("native_invite")
+					_activate("invite")
 			# Escape backs out of the drawer before it backs out of the screen, so
 			# the key agrees with the chevron.
 			KEY_ESCAPE:
@@ -4957,20 +4958,25 @@ func _versus_doors() -> Array:
 			Color("#ff6b6b")]]
 	if not MultiplayerManager.available():
 		return []
-	var invite_sub := "Pick a Game Center friend"
+	var invite_sub := "Only the ones already on your list"
 	if versus_inviting:
 		invite_sub = "Tap a name below · tap again to close"
 	return [
 		["QUI", "QUICK MATCH", "Anyone else looking, right now", "quick_match",
 			Color("#c77dff")],
-		["INV", "INVITE A FRIEND", invite_sub, "invite", Color("#7bdff2")],
-		# Apple's own screen, under test. It is the only route in the API that
-		# reaches somebody who is not already a Game Center friend — it texts them
-		# a link — which is why it is worth finding out whether the sheet it
-		# leaves behind is survivable. Third rather than first: the two above are
-		# known to work and this one is not, yet.
-		["TEXT", "TEXT A LINK", "Apple's own invite screen · testing",
+		# The one that reaches everybody, so the one that goes first.
+		#
+		# Apple's own screen texts a link to any contact, and the person who taps
+		# it needs no Game Center friendship, no permission prompt and nothing
+		# installed beforehand. Tested end to end: an invitation to a plain
+		# contact put them in the match. That is the whole of what the friend
+		# picker below could never do, which is why the two have swapped places.
+		["INV", "INVITE ANYONE", "Text a link — they need not be a friend",
 			"native_invite", Color("#90be6d")],
+		# Kept, for now, and honest about what it is: a shortcut for people who
+		# are already Game Center friends *and* have opened this game. Apple
+		# returns nobody else, which is why it read as broken on a fresh account.
+		["FRI", "FRIENDS LIST", invite_sub, "invite", Color("#7bdff2")],
 	]
 
 
@@ -5135,7 +5141,7 @@ func _draw_versus(size: Vector2) -> void:
 			size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 12)
 	elif not portrait:
 		_otext(_font, Vector2(cx, foot),
-			"1 quick match · 2 invite · 3 text a link · ESC back", 14,
+			"1 quick match · 2 invite anyone · 3 friends list · ESC back", 14,
 			Color("#5d6a92"))
 
 

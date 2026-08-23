@@ -244,6 +244,64 @@ func _summary_grows_for_a_phone() -> void:
 	game.phase = game.Phase.TITLE
 
 
+## Press a number on the versus screen, the way a keyboard would.
+func _press(code: int) -> void:
+	var ev := InputEventKey.new()
+	ev.keycode = code
+	ev.pressed = true
+	game._unhandled_key_input(ev)
+
+
+## The number badge on each door and the key that fires it are written in two
+## places — the door list and a `match` in `_unhandled_key_input` — and nothing
+## joins them. Reordering the doors once already left 2 and 3 pointing at each
+## other's plates, which is invisible until somebody presses one.
+func _keys_agree_with_the_doors() -> void:
+	print("--- the number keys match the doors ---")
+	game.phase = game.Phase.VERSUS
+	game.versus_inviting = false
+
+	var doors: Array = game._versus_doors()
+	var order: PackedStringArray = []
+	for d: Array in doors:
+		order.append(String(d[3]))
+	# With Game Center off there are no doors to check against, so the order is
+	# asserted from the source list rather than skipped: it is the thing the key
+	# handler is written to match.
+	if doors.is_empty():
+		print("  (Game Center off — no doors on this platform)")
+	else:
+		_expect("doors read: %s" % ", ".join(order),
+			order.size() == 3 and order[0] == "quick_match"
+				and order[1] == "native_invite" and order[2] == "invite")
+
+	# The badges are what the player reads, so they must be 1..N in door order.
+	var badges: PackedStringArray = []
+	for b: Dictionary in game._menu_buttons():
+		if String(b["action"]) in order:
+			badges.append(String(b["key"]))
+	if not badges.is_empty():
+		var want: PackedStringArray = []
+		for i in badges.size():
+			want.append(str(i + 1))
+		_expect("badges read %s" % ", ".join(badges),
+			", ".join(badges) == ", ".join(want))
+
+	# And the keys themselves. Only the friends door has an observable effect
+	# off-device — it toggles the drawer — which is exactly what makes it a
+	# usable probe: if 2 and 3 are swapped, the wrong one moves.
+	game.versus_inviting = false
+	_press(KEY_3)
+	var three_opened: bool = game.versus_inviting
+	game.versus_inviting = false
+	_press(KEY_2)
+	var two_opened: bool = game.versus_inviting
+	game.versus_inviting = false
+	_expect("3 opens the friends drawer", three_opened)
+	_expect("2 does not", not two_opened)
+	game.phase = game.Phase.TITLE
+
+
 func _init() -> void:
 	await process_frame
 	mm = root.get_node("MultiplayerManager")
@@ -280,6 +338,7 @@ func _init() -> void:
 	_prediction_matches_the_grid()
 	_doors_do_what_they_say()
 	_rematch_button_follows_the_opponent()
+	_keys_agree_with_the_doors()
 	_summary_grows_for_a_phone()
 
 	print("--- what the screen says with Game Center off ---")
