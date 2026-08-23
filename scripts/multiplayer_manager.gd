@@ -65,6 +65,10 @@ enum Friends { UNASKED, LOADING, READY, EMPTY, DENIED }
 ## rather than sent once and hoped for.
 const HELLO_EVERY := 0.5
 const HANDSHAKE_TIMEOUT := 15.0
+## How long to wait for somebody to close Apple's sheet. Generous, because the
+## only thing on the far side of it is a person deciding to tap — but not
+## unlimited, or a forgotten phone strands the other player forever.
+const SHEET_TIMEOUT := 120.0
 ## A match whose players never finish attaching. Without this the game sits in
 ## "waiting for the other player" with no way out but force-quitting.
 const CONNECT_TIMEOUT := 30.0
@@ -89,6 +93,20 @@ var _peer_said_hello := false
 ## answered" after one hello and after thirty are different faults.
 var _hellos_sent := 0
 var _send_failures := 0
+
+## True while Apple's matchmaking sheet is still covering this device.
+##
+## The sheet is the plugin's to close and it does not, so a match found through
+## Apple's screen starts underneath it — invisible on this device and already
+## running on the other. Measured: the handshake completed 47ms after the match
+## was found and the sheet was closed by hand eight seconds later, which is eight
+## seconds of somebody else playing a match you cannot see.
+##
+## So this end holds. The handshake is what both devices already use to agree on
+## when to start, and this is simply one more reason not to be ready yet: no
+## hello goes out until the sheet is down, and the peer is told to keep waiting
+## rather than being left to time out.
+var _native_sheet_up := false
 ## Which GameKit callback delivered this match's packets. See `_note_delivery`.
 var _delivery := ""
 
@@ -142,11 +160,23 @@ func _process(delta: float) -> void:
 
 	if state != State.HANDSHAKING:
 		return
+	_wait_age += delta
+	_hello_timer -= delta
+
+	# Apple's sheet is still over this device, so this end is not ready to play
+	# even though the match is perfectly connected underneath. Saying so keeps
+	# the peer waiting instead of starting without us — see `_native_sheet_up`.
+	if _native_sheet_up:
+		if _hello_timer <= 0.0:
+			_hello_timer = HELLO_EVERY
+			_send_raw({"type": "holding"})
+		if _wait_age >= SHEET_TIMEOUT:
+			_fail("the Game Center screen was never closed")
+		return
+
 	# Repeat the hello until the other end answers. A single one sent the
 	# instant the match arrives can be dropped while the peer is still
 	# attaching, and a dropped hello is a game that never starts.
-	_wait_age += delta
-	_hello_timer -= delta
 	if _hello_timer <= 0.0:
 		_hello_timer = HELLO_EVERY
 		_hellos_sent += 1
@@ -303,6 +333,7 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 	_native_vc.failed_with_error.connect(_on_native_failed)
 
 	invited = ""
+	_native_sheet_up = true
 	_set_state(State.MATCHMAKING, "Game Center is asking")
 	print("[GC] native: presenting (mode %d)" % mode)
 	_native_vc.present()
@@ -324,8 +355,18 @@ func _on_native_match(found) -> void:
 ## workaround rather than an accident. A match already in hand is therefore kept,
 ## not cancelled: the cancel handler was checked and it does not touch the match.
 func _on_native_cancelled(detail: String = "") -> void:
+	_native_sheet_up = false
 	if current_match != null:
-		print("[GC] native: cancelled with a match already in hand — sheet dismissed, keeping the match (%s)" % detail)
+		# The sheet is down and this end is finally ready to play. The hello goes
+		# out now rather than on the next tick, so the pair converges as fast as
+		# it did in testing — 47ms, measured — and both matches start together.
+		print("[GC] native: sheet dismissed with a match in hand — releasing the handshake (%s)" % detail)
+		_hello_timer = 0.0
+		_wait_age = 0.0
+		if state == State.HANDSHAKING:
+			_set_state(State.HANDSHAKING, "saying hello")
+			_send_raw({"type": "hello", "id": _local_id})
+			_begin_if_ready()
 		return
 	print("[GC] native: cancelled with no match — giving up (%s)" % detail)
 	_native_vc = null
@@ -335,6 +376,7 @@ func _on_native_cancelled(detail: String = "") -> void:
 
 func _on_native_failed(message: String) -> void:
 	print("[GC] native: failed — %s" % message)
+	_native_sheet_up = false
 	_native_vc = null
 	_set_state(State.READY, "Game Center could not set that up")
 	match_ended.emit("matchmaking failed")
@@ -622,7 +664,8 @@ func _check_connected() -> void:
 			who.append(String((p as GKPlayer).display_name))
 	print("[GC] match ready — %d attached: %s" % [
 		who.size(), ", ".join(who) if not who.is_empty() else "NOBODY"])
-	_set_state(State.HANDSHAKING, "saying hello")
+	_set_state(State.HANDSHAKING,
+		"waiting for Game Center to close" if _native_sheet_up else "saying hello")
 	# The peer's hello can arrive while this device is still CONNECTING, in which
 	# case `_begin_if_ready` was called too early to do anything and the answer is
 	# already sitting here. Without this the match waits out another round trip
@@ -672,6 +715,17 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 		return
 	var kind := String(packet.get("type", ""))
 
+	# They are connected and willing but Apple's sheet is still over their screen.
+	# Nothing to do but wait, and say so — the point of the packet is that it
+	# resets the clock, so a peer who takes a while to find the X does not get
+	# thrown out for never answering.
+	if kind == "holding":
+		_wait_age = 0.0
+		if status != "waiting for them to close Game Center":
+			print("[GC] peer is holding — their Game Center sheet is still up")
+			_set_state(State.HANDSHAKING, "waiting for them to close Game Center")
+		return
+
 	if kind == "hello" or kind == "hello_back":
 		# Logged once. A handshake that times out is either "we sent thirty and
 		# heard nothing" or "we heard them and still did not start", and those are
@@ -683,8 +737,13 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 		# Answer immediately as well as on the timer, so the pair converges in
 		# one round trip rather than waiting out another tick. Only `hello` is
 		# answered — replying to a reply is how two devices talk forever.
+		#
+		# Except while holding: answering a hello is what starts their match, and
+		# this end is not ready to play yet. They are told to keep waiting
+		# instead, and get their answer the moment the sheet comes down.
 		if kind == "hello":
-			_send_raw({"type": "hello_back", "id": _local_id})
+			_send_raw({"type": "holding"} if _native_sheet_up
+				else {"type": "hello_back", "id": _local_id})
 		_peer_said_hello = true
 		_begin_if_ready()
 		return
@@ -697,6 +756,10 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 
 func _begin_if_ready() -> void:
 	if state != State.HANDSHAKING or not _peer_said_hello:
+		return
+	# Connected, agreed, and still behind Apple's sheet. Starting here is what
+	# put one player eight seconds into a match the other could not see.
+	if _native_sheet_up:
 		return
 	_set_state(State.PLAYING, "playing")
 	match_started.emit()
@@ -712,6 +775,9 @@ func is_first() -> bool:
 
 
 func leave_match() -> void:
+	# Cleared before the early return as well. Left standing, the next match made
+	# any other way would hold for a sheet that is not there and never start.
+	_native_sheet_up = false
 	if state == State.MATCHMAKING:
 		cancel_find()
 		return
@@ -734,6 +800,7 @@ func _fail(reason: String) -> void:
 		current_match = null
 	_peer_said_hello = false
 	invited = ""
+	_native_sheet_up = false
 	_set_state(State.READY if available() else State.OFF, reason)
 	match_ended.emit(reason)
 
