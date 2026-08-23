@@ -342,7 +342,21 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 
 ## Apple found somebody. Same arrival as every other route, minus the error
 ## argument this signal does not carry.
+## Apple's start button routes here too.
+##
+## With `min_players` and `max_players` both at two the match is full the instant
+## the second player attaches, so GameKit fires this by itself and the sheet's
+## start button has nothing left to decide — which is why, in testing, the match
+## began without anybody pressing it. Pressing it anyway would deliver the same
+## match a second time, and `_on_found_match` would take that at face value:
+## reconnect every signal, reset the handshake, and throw away a match that was
+## already playing. It is refused, and reported, because what that button does is
+## still unknown and this is where we will find out.
 func _on_native_match(found) -> void:
+	if current_match != null:
+		print("[GC] native: did_find_match again with a match already in hand — ignoring (same match: %s)"
+			% (found == current_match))
+		return
 	print("[GC] native: did_find_match — the sheet is Apple's to close from here")
 	_on_found_match(found, null)
 
