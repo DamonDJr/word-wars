@@ -1170,7 +1170,12 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		elif s.in_match and MultiplayerManager.current_match != null:
 			s.bot = null
 			s.is_local = false
-			s.label = "OPPONENT"
+			# Their Game Center name, which every other board in the game already
+			# has: a CPU is called Duelist and you are called YOU, and the one
+			# board belonging to an actual person was the anonymous one. Falls
+			# back only if Apple gave us nothing to call them.
+			var who := _show_name(MultiplayerManager.peer_name)
+			s.label = who if who.strip_edges() != "" else "OPPONENT"
 			s.peer_id = 1
 		elif s.in_match:
 			var who: String = lineup[s.slot -1]
@@ -1721,15 +1726,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			# Deliberately not a resume key: you arrive at this menu with your
 			# hands on SPACE, and unpausing by reflex is the same trap ENTER was.
-			if paused:
-				pass
-			elif mode == Mode.TUTORIAL and typed.is_empty() and (lesson_done
-					or String(Tutorial.step(lesson).get("id", "")) == "done"):
-				# The same key that fires a word. A lesson that needed its own
-				# button would be teaching the button as well as the game.
-				_lesson_next()
-			else:
-				_submit_player()
+			if not paused:
+				_fire_pressed()
 		KEY_TAB:
 			if not paused and player.alive:
 				_cycle_target(-1 if k.shift_pressed else 1)
@@ -2651,7 +2649,22 @@ func _process(delta: float) -> void:
 	if phase == Phase.SPLASH:
 		splash_time += delta
 		if splash_time >= SPLASH_HOLD + SPLASH_FADE:
-			phase = Phase.TITLE
+			# A brand new player goes straight into the lesson rather than being
+			# left to find it. The rule this game turns on — your endings become
+			# their beginnings — reads as nonsense written down and as obvious the
+			# first time it happens to you, so the tutorial is not optional
+			# content, it is the game explaining itself.
+			#
+			# Offered once and only once. It can be left at any point by the back
+			# chevron, and backing out is an answer: re-offering on every launch
+			# would be a screen the player cannot get out of. After that the title
+			# plate's own pulse is the reminder, which is a door they choose.
+			if not bool(Profile.pref("taught")) \
+					and not bool(Profile.pref("tutorial_offered")):
+				Profile.set_pref("tutorial_offered", true)
+				start_match("Rookie", 0, [], Mode.TUTORIAL)
+			else:
+				phase = Phase.TITLE
 
 	if phase == Phase.OVER:
 		over_age += delta
@@ -3025,6 +3038,28 @@ func _lesson_tick(delta: float) -> void:
 
 ## Move on. Called from the same key that fires a word, so the lesson never
 ## needs a control of its own.
+## What firing means, wherever it was pressed from.
+##
+## The keyboard checked whether a lesson was waiting to be advanced and the
+## on-screen FIRE key did not — it went straight to `_submit_player`. So on a
+## phone, every lesson that ends with "press SPACE to continue" could not be
+## continued at all: the only fire control the device has submitted an empty word
+## and did nothing. The tutorial was unfinishable on the platform the game ships
+## to, and had been for as long as there has been a touch keyboard.
+##
+## One decision in one place now, so the two ways of firing cannot drift again.
+func _fire_pressed() -> void:
+	if paused:
+		return
+	if mode == Mode.TUTORIAL and typed.is_empty() and (lesson_done
+			or String(Tutorial.step(lesson).get("id", "")) == "done"):
+		# The same control that fires a word. A lesson that needed its own button
+		# would be teaching the button as well as the game.
+		_lesson_next()
+		return
+	_submit_player()
+
+
 func _lesson_next() -> void:
 	if lesson >= Tutorial.count() - 1:
 		_finish_lesson()
@@ -3717,7 +3752,7 @@ func _press_key(id: String) -> void:
 	if id == "":
 		return
 	if id == "fire":
-		_submit_player()
+		_fire_pressed()
 		return
 	if id == "back":
 		if player.alive and not paused:
@@ -4918,10 +4953,12 @@ func _draw_coaching(size: Vector2) -> void:
 			_otext_pair(_font, _font_bold, Vector2(cx, y), r[0], r[1], 11, 16,
 				Color("#5d6a92"), Color("#e6ecff"), 30.0)
 			y += 28.0
-		_otext(_font, Vector2(cx, y + 14.0), "ESC to stop", 11, Color("#4d5878"))
+		_otext(_font, Vector2(cx, y + 14.0),
+			"tap the corner to stop" if portrait else "ESC to stop", 11,
+			Color("#4d5878"))
 		return
 
-	var step: Dictionary = Tutorial.step(lesson)
+	var step: Dictionary = Tutorial.step(lesson, portrait)
 	if step.is_empty():
 		return
 
@@ -4942,7 +4979,8 @@ func _draw_coaching(size: Vector2) -> void:
 
 	if lesson_done or String(step["id"]) == "done":
 		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 200.0)
-		_otext(_font_bold, Vector2(cx, r.end.y - 26.0), "SPACE TO CONTINUE", 15,
+		_otext(_font_bold, Vector2(cx, r.end.y - 26.0),
+			"TAP FIRE TO CONTINUE" if portrait else "SPACE TO CONTINUE", 15,
 			Color("#90be6d") * Color(1, 1, 1, pulse))
 	else:
 		_otext(_font, Vector2(cx, r.end.y - 26.0), String(step["hint"]), 12,
@@ -5640,8 +5678,9 @@ func _draw_pause(size: Vector2) -> void:
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
-	_otext(_font, Vector2(cx, 492.0), "F1 — sound      CTRL+BACKSPACE clears your line",
-		12, Color("#4d5878"))
+	if not portrait:
+		_otext(_font, Vector2(cx, 492.0),
+			"F1 — sound      CTRL+BACKSPACE clears your line", 12, Color("#4d5878"))
 
 
 func _lobby_fill() -> float:

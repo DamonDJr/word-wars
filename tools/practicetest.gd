@@ -19,10 +19,53 @@ func _init() -> void:
 	_cannot_be_lost()
 	_banks_nothing()
 	_lesson_runs_through()
+	_lesson_advances_on_touch()
 	_normal_still_works()
 
 	print("--- %s ---" % ("practice behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
+
+
+## The tutorial is played on a phone, where the only fire control is the
+## on-screen FIRE key. That key went straight to `_submit_player` while the
+## keyboard checked for a lesson waiting to advance — so every step ending in
+## "tap FIRE to continue" was unadvanceable, and the lesson could not be finished
+## on the platform the game ships to.
+func _lesson_advances_on_touch() -> void:
+	print("--- the lesson advances by touch ---")
+	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+	game.phase = game.Phase.PLAY
+	game.typed = ""
+	game.lesson_done = true
+	var before: int = game.lesson
+
+	# Exactly what a thumb on the FIRE key does.
+	game._press_key("fire")
+	_expect("FIRE moves the lesson on (%d -> %d)" % [before, game.lesson],
+		game.lesson == before + 1)
+
+	# And the keyboard still agrees, since both go through one place now.
+	game.lesson_done = true
+	var mid: int = game.lesson
+	game._fire_pressed()
+	_expect("and so does the keyboard (%d -> %d)" % [mid, game.lesson],
+		game.lesson == mid + 1)
+
+	# Firing a real word must still fire it rather than skipping a step.
+	game.lesson_done = false
+	var held: int = game.lesson
+	game.typed = "strike"
+	game._press_key("fire")
+	_expect("a typed word is still fired, not swallowed",
+		game.lesson == held)
+
+	# The phone wording must not name a key the phone has not got.
+	var touch: Dictionary = Tutorial.step(0, true)
+	var desk: Dictionary = Tutorial.step(0, false)
+	_expect("touch copy avoids SPACE: '%s'" % String(touch.get("body", "")),
+		not String(touch.get("body", "")).contains("SPACE"))
+	_expect("desktop copy keeps it: '%s'" % String(desk.get("body", "")),
+		String(desk.get("body", "")).contains("SPACE"))
 
 
 func _cannot_be_lost() -> void:

@@ -15,12 +15,20 @@ class_name Tutorial
 ## Steps are data rather than closures so the whole lesson can be read in one
 ## screenful and reordered without touching the machinery. `game.gd` matches on
 ## `id` to set each one up and to decide when it is done.
+##
+## Two of them named SPACE, which is not a key a phone has — and the phone is
+## what the game ships to. Where the control matters to the instruction, the step
+## carries a `_touch` variant and `step()` picks. Substituting "SPACE" for "FIRE"
+## in the string would have been shorter and would have read as a translation
+## rather than as a sentence; "tap FIRE to send it" is not the same sentence as
+## "press SPACE to fire it" and should not pretend to be.
 
 const STEPS := [
 	{
 		"id": "fire",
 		"title": "TYPE A WORD",
 		"body": "Anything you like. Press SPACE to fire it.",
+		"body_touch": "Anything you like. Tap FIRE to send it.",
 		"hint": "three letters or more",
 	},
 	{
@@ -64,14 +72,25 @@ const STEPS := [
 		"body": "Everything else — power words, salvos, the chain ladder —\n"
 			+ "is built on those four rules.",
 		"hint": "press SPACE to finish",
+		"hint_touch": "tap FIRE to finish",
 	},
 ]
 
 
-static func step(i: int) -> Dictionary:
+## `touch` swaps in the phone wording for any step that has it. The returned
+## dictionary always has plain `body` and `hint` keys, so nothing downstream has
+## to know which device it is drawing for.
+static func step(i: int, touch: bool = false) -> Dictionary:
 	if i < 0 or i >= STEPS.size():
 		return {}
-	return STEPS[i]
+	var s: Dictionary = STEPS[i]
+	if not touch:
+		return s
+	var out := s.duplicate()
+	for key in ["body", "hint", "title"]:
+		if out.has(key + "_touch"):
+			out[key] = out[key + "_touch"]
+	return out
 
 
 static func count() -> int:

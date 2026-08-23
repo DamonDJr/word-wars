@@ -159,6 +159,12 @@ const PREF_DEFAULTS := {
 	"solo": ["Duelist", "", ""],
 	## Set once the tutorial has been finished, so the game only nags once.
 	"taught": false,
+	## Set the first time the game opens the tutorial by itself. Separate from
+	## `taught` on purpose: a first-time player who backs out of the lesson has
+	## answered the offer, and re-offering it on every launch would be a loop
+	## they cannot leave. Offered once, then the title screen's own nag takes
+	## over — which is a plate they can choose rather than a screen they land in.
+	"tutorial_offered": false,
 }
 
 

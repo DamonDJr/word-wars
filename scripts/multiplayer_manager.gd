@@ -121,6 +121,16 @@ var _delivery := ""
 ## saying "waiting" at nobody in particular.
 var invited := ""
 
+## The opponent's Game Center name, for the board to be labelled with.
+##
+## `GKMatch.players` is everybody in the match *except* this device, which in a
+## two-player game is exactly one person — so there is no ambiguity about whose
+## name this is. Read once when the roster settles rather than per frame: the
+## match holds it, but a board labelled from a live lookup would go blank the
+## instant somebody disconnected, which is the moment you most want their name
+## still on it.
+var peer_name := ""
+
 
 ## Whether this build can talk to Game Center at all.
 ##
@@ -508,6 +518,7 @@ func _on_found_match(found, error = null) -> void:
 	current_match.did_fail_with_error.connect(_on_match_error)
 
 	_peer_id = ""
+	peer_name = ""
 	_peer_said_hello = false
 	_wait_age = 0.0
 	_hellos_sent = 0
@@ -545,6 +556,11 @@ func _check_connected() -> void:
 			who.append(String((p as GKPlayer).display_name))
 	print("[GC] match ready — %d attached: %s" % [
 		who.size(), ", ".join(who) if not who.is_empty() else "NOBODY"])
+	# One opponent, so the first name is theirs. Kept even if the roster later
+	# empties, because a board that loses its label the moment somebody drops is
+	# a board you cannot make sense of afterwards.
+	if not who.is_empty():
+		peer_name = who[0]
 	_set_state(State.HANDSHAKING,
 		"waiting for Game Center to close" if _native_sheet_up else "saying hello")
 	# The peer's hello can arrive while this device is still CONNECTING, in which
