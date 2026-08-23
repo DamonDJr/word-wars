@@ -49,6 +49,7 @@ func _init() -> void:
 	_bonuses_are_scaled()
 	_topout_pays()
 	_winning_pays()
+	_length_sets_a_floor()
 	_focus_needs_a_crowd()
 	_focus_stacks_with_attackers()
 
@@ -175,6 +176,29 @@ func _winning_pays() -> void:
 	game._end_match(me)
 	_expect("losing is not paid", me.score == 0)
 	done += 1
+
+
+## A long word is worth something on its own.
+##
+## It used to reach the board only through the chain ladder, so ONOMATOPOEIA
+## thrown from a standing start sent the same 1x1 as ONE — the game did not care
+## what you found, only how fast you kept finding. The floor is the *larger* of
+## the two ladders rather than their sum, so a long word inside a long run does
+## not stack into an instant 4x3.
+func _length_sets_a_floor() -> void:
+	print("--- length is worth something by itself ---")
+	_expect("a short word earns no length tier", game._length_tier("one") == 0)
+	_expect("seven letters earns one", game._length_tier("shipment") == 1)
+	_expect("ten or more earns two", game._length_tier("onomatopoeia") == 2)
+	_expect("and it never runs past the table",
+		game._length_tier("a".repeat(40)) < game.TIERS.size())
+
+	# The floor is a maximum, not a sum: at a chain worth tier 2, a word worth
+	# tier 1 on length must not push it to 3.
+	var chain_t: int = game._chain_tier(3)
+	var both: int = max(chain_t, game._length_tier("shipment"))
+	_expect("a long word inside a run takes the better, not both (%d)" % both,
+		both == max(chain_t, 1) and both <= chain_t + 1)
 
 
 func _focus_needs_a_crowd() -> void:

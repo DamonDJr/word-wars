@@ -128,8 +128,13 @@ func _lesson_runs_through() -> void:
 			reached += 1
 		game._lesson_next()
 	_expect("every step was visited", reached == Tutorial.count())
-	_expect("and the last one finishes the lesson",
-		game.phase == game.Phase.PRACTICE and game.mode == game.Mode.NORMAL)
+	# The title, not practice. The lesson used to be reachable only from the
+	# practice screen, so finishing there was going back where you came from —
+	# but a first launch opens it straight from the splash, and a brand new
+	# player finishing their first lesson in a submenu they have never seen is
+	# the worst possible first view of the game.
+	_expect("and the last one finishes to the title",
+		game.phase == game.Phase.TITLE and game.mode == game.Mode.NORMAL)
 	var p = Engine.get_main_loop().root.get_node("Profile")
 	_expect("and it is remembered as taught", bool(p.pref("taught")))
 

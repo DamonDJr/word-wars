@@ -62,8 +62,8 @@ const KEY_BAND_PAD := 10.0
 ## from one row into another on its own.
 const TOUCH_LIFT := 6.0
 const DEBUG_TOUCH_HITBOXES := false
-## Block shapes by tier. Which one you send is decided by your chain, never by
-## how long the word was.
+## Block shapes by tier. Which one you send is decided by your chain and by how
+## long the word was — see `_length_tier`.
 const TIERS := [
 	{"w": 1, "h": 1},
 	{"w": 2, "h": 1},
@@ -82,6 +82,22 @@ const STAMP_WANT := 4
 ## run still feels rewarding, then it stretches: the 4x3 wants nine clean words
 ## in a row. Combos stack on top, so a big clear mid-run is the shortcut.
 const CHAIN_TIER_AT := [1, 2, 3, 5, 7, 9]
+
+## What length alone is worth, before the chain says anything.
+##
+## Length used to reach the board only through the ladder: a long word filled
+## more of the chain, and the chain picked the block. Which meant ONOMATOPOEIA
+## thrown from a standing start hit exactly as hard as ONE — the same 1x1 — and
+## the game read as though it did not care what you found. It should. Finding a
+## twelve-letter answer is the hardest thing the game asks for, and it now has a
+## floor of its own that no amount of not-finding one can reach.
+##
+## Two steps, at the same seven letters `Scoring.LONG_WORD_AT` already pays a
+## bonus at, so the game has one idea of what makes a word long rather than two.
+## Deliberately smaller than the chain can give: rhythm is still the bigger
+## lever, and this is a floor under a good word, not a replacement for playing
+## well.
+const LENGTH_TIER_AT := [7, 10]
 
 ## What one word is worth to that ladder.
 ##
@@ -1891,7 +1907,12 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var spent := attacker.tier_bonus
 	attacker.tier_bonus = 0
 	var focus := _focus_bonus(attacker, defender)
-	var out_tier := clampi(_chain_tier(attacker.chain) + combo + spent + focus,
+	# The bigger of what the rhythm earned and what the word is worth on its own,
+	# rather than the sum: a long word inside a long run should not stack two
+	# ladders into an instant 4x3. Whichever of the two you did better is the
+	# floor, and combos and bonuses build from there.
+	var base_tier := maxi(_chain_tier(attacker.chain), _length_tier(word))
+	var out_tier := clampi(base_tier + combo + spent + focus,
 		0, TIERS.size() - 1)
 
 	earned += _strike(attacker, defender, word, out_tier, DROP_DELAY,
@@ -2511,6 +2532,16 @@ func _chain_gain(word: String) -> float:
 
 
 ## Highest tier a chain of this length has earned on its own.
+## The tier a word earns on its own length, ignoring everything else.
+func _length_tier(word: String) -> int:
+	var n := word.length()
+	var t := 0
+	for at in LENGTH_TIER_AT:
+		if n >= int(at):
+			t += 1
+	return t
+
+
 func _chain_tier(chain: int) -> int:
 	var t := 0
 	for i in CHAIN_TIER_AT.size():
@@ -3009,9 +3040,12 @@ func _lesson_check() -> bool:
 		"fire":
 			return player.words_played >= 1
 		"tail":
-			# Purely something to look at, so a beat of reading time and one
-			# more word moves it on.
-			return lesson_age > 1.2 and player.words_played >= 2
+			# Purely something to look at, and it used to demand a second word
+			# anyway — which the card never asked for. So it sat on "watch the
+			# stamp" with nothing happening and fire doing nothing, which reads
+			# exactly like a game that has hung. A beat to read it, then the fire
+			# control moves it on the way every other reading step does.
+			return lesson_age > 1.2
 		"answer":
 			return player.board.blocks.is_empty()
 		"reach":
@@ -3102,7 +3136,12 @@ func _finish_daily() -> void:
 func _finish_lesson() -> void:
 	Sfx.play("win")
 	_say("lesson complete", Color("#ffd166"))
-	phase = Phase.PRACTICE
+	# The title, not practice. Practice was where the lesson used to be started
+	# from, so going back there was going back where you came from — but a first
+	# launch opens the lesson straight from the splash, and dropping a brand new
+	# player into a submenu they have never seen is the worst possible first view
+	# of the game. Everybody lands on the front door.
+	phase = Phase.TITLE
 	mode = Mode.NORMAL
 	_hover_action = ""
 	Profile.set_pref("taught", true)
@@ -4093,9 +4132,12 @@ func _draw_player_input(size: Vector2) -> void:
 			"CHAIN x%d · NEXT HIT IS A SALVO" % player.chain, 14,
 			Color("#ffd166") * Color(1, 1, 1, pulse))
 	elif player.chain >= 2:
+		# What the rhythm alone guarantees. A long enough word beats it on its
+		# own, so this is a floor rather than a forecast — said as "at least".
 		var next_tier := _chain_tier(player.chain + 1)
 		_text_centered(_font_bold, Vector2(cx, status_y),
-			"CHAIN x%d · next hit %s" % [player.chain, _tier_name(next_tier)], 13,
+			"CHAIN x%d · next hit at least %s" % [
+				player.chain, _tier_name(next_tier)], 13,
 			WWBoard.TIER_COLORS[next_tier])
 	elif message_life > 0.0:
 		_text_centered(_font, Vector2(cx, status_y), message, 13,

@@ -55,8 +55,8 @@ const STEPS := [
 	{
 		"id": "chain",
 		"title": "KEEP FIRING",
-		"body": "Blocks you send get bigger the longer you go without pausing.\n"
-			+ "Nothing to do with how long your words are — only the rhythm.",
+		"body": "Blocks you send get bigger two ways: a long word hits hard on\n"
+			+ "its own, and a run without pausing lifts everything you throw.",
 		"hint": "reach a x4 chain",
 	},
 	{
