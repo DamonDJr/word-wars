@@ -104,10 +104,11 @@ func _ready() -> void:
 ## and this is in version control next to the rating it has to match.
 func _request_config() -> RequestConfiguration:
 	var cfg := RequestConfiguration.new()
-	# The App Store rating is 13+, so Teen is the ceiling. Left unspecified, a
-	# 13+ game can be served ads written for adults — which is a bad look on its
-	# own and something Apple has pulled apps over.
-	cfg.max_ad_content_rating = RequestConfiguration.MAX_AD_CONTENT_RATING_T
+	# The App Store rating is 9+, so PG is the ceiling — Google's next step up,
+	# Teen, is aimed above this game's own rating and would be a mismatch. Left
+	# unspecified entirely, the SDK will serve ads written for adults, which is a
+	# bad look on its own and something Apple has pulled apps over.
+	cfg.max_ad_content_rating = RequestConfiguration.MAX_AD_CONTENT_RATING_PG
 	# Not a children's app and not in the Kids Category. Said explicitly rather
 	# than left unspecified: "we did not say" and "we said no" are different
 	# answers to COPPA, and only one of them is a decision.
