@@ -37,7 +37,16 @@ signal changed
 ## The App Store Connect leaderboard id. Empty disables submission entirely —
 ## which is the right behaviour before the board exists, because submitting to
 ## an id that is not configured is an error per submission, forever.
-const DAILY_ID := ""
+##
+## Reverse-DNS on the bundle id, matching the in-app purchase. Apple does not
+## require the convention and will accept anything, but two ids in one project
+## that follow two different rules is a thing somebody has to remember rather
+## than work out.
+##
+## This must match App Store Connect exactly. It does not, yet: nothing breaks
+## if the board is missing — `_on_boards_loaded` says so and everything stays
+## local — but nothing ranks either.
+const DAILY_ID := "com.damonj.wordwars.daily"
 
 ## OFF      — no Apple device, no plugin, or no id configured. The resting state
 ##            on every desktop build, and not a fault.
