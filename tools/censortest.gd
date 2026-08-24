@@ -53,6 +53,39 @@ func _init() -> void:
 			print("    MINTED: %s" % st)
 	_expect("%d stamps, none of them rude" % minted, rude == 0)
 
+	print("--- slurs are not words this game knows ---")
+	# Masking a slur on screen while still paying points for it is a ranked game
+	# rewarding hate speech quietly. These are removed from the dictionary, so
+	# they cannot be typed for score, minted onto a block, or reach a leaderboard.
+	var leaked := 0
+	for w in Censor.SLURS:
+		if wb.is_valid(w):
+			leaked += 1
+			print("    PLAYABLE: %s" % w)
+	_expect("all %d refused by the dictionary" % Censor.SLURS.size(), leaked == 0)
+
+	# The other half, and the one that is easy to get wrong. Running the profanity
+	# suffixes over these deletes `spicy` and `spices`, so the slur list is written
+	# out in full instead — this is what proves it still is.
+	var innocent := ["spicy", "spices", "spice", "coonhound", "flag", "flags",
+		"scunthorpe", "assess", "assign", "classic", "shuttlecock"]
+	var lost := 0
+	for w in innocent:
+		# Only the ones the dictionary actually carries; the point is that nothing
+		# was taken away, not that every example is in the word list.
+		if Censor.is_slur(w):
+			lost += 1
+			print("    WRONGLY REFUSED: %s" % w)
+	_expect("no ordinary word caught by the slur list", lost == 0)
+
+	# And profanity is still playable, which is the whole distinction.
+	var rude_gone := 0
+	for w in ["damn", "hell", "shit", "arse", "bugger", "dyke", "cracker", "queer"]:
+		if not wb.is_valid(w):
+			rude_gone += 1
+			print("    LOST: %s" % w)
+	_expect("rude words are masked, not removed", rude_gone == 0)
+
 	print("--- %s ---" % ("censor behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
 

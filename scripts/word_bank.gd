@@ -47,10 +47,36 @@ var ready_to_play := false
 func _ready() -> void:
 	var t0 := Time.get_ticks_msec()
 	_load_valid()
+	var dropped := _drop_slurs()
+	# `_load_common` builds the prefix index as it goes, so slurs have to be out
+	# of the way before it runs or they would still be mintable onto a block.
 	_load_common()
 	ready_to_play = true
-	print("WordBank: %d valid / %d common words in %d ms" % [
-		_valid.size(), _common.size(), Time.get_ticks_msec() - t0])
+	print("WordBank: %d valid / %d common words in %d ms (%d refused)" % [
+		_valid.size(), _common.size(), Time.get_ticks_msec() - t0, dropped])
+
+
+## Words this game will not know.
+##
+## Profanity stays: a rude word is a real word, it clears blocks and it scores,
+## and only the display is masked. Slurs are a different trade — masking one on
+## screen while still paying points for it is a scored, ranked game rewarding
+## hate speech quietly, which is worse than either showing it or refusing it.
+##
+## Removed here, at load, rather than checked at every call site. One pass over
+## the dictionary means `is_valid`, the prefix counts, the stamp minter and the
+## scorer are all consistent for free — none of them can be the one that forgot.
+func _drop_slurs() -> int:
+	var keep_valid := PackedStringArray()
+	var gone := 0
+	for w in _valid:
+		if Censor.is_slur(w):
+			gone += 1
+			continue
+		keep_valid.append(w)
+	_valid = keep_valid
+
+	return gone
 
 
 func _load_valid() -> void:
@@ -79,7 +105,14 @@ func _load_common() -> void:
 		return
 	var text := f.get_as_text()
 	f.close()
-	_common = text.split("\n", false)
+	var raw := text.split("\n", false)
+	# Filtered here rather than after, because the prefix index is built in the
+	# same pass below — a slur left in would be mintable onto a block even with
+	# the dictionary refusing to accept it as an answer.
+	_common = PackedStringArray()
+	for w in raw:
+		if not Censor.is_slur(w):
+			_common.append(w)
 	for i in _common.size():
 		var w: String = _common[i]
 		var upto: int = mini(MAX_INDEXED_PREFIX, w.length())

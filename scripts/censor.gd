@@ -23,17 +23,21 @@ class_name Censor
 
 ## Stems. Inflections are generated from these, so `SUFFIXES` below does the work
 ## that would otherwise mean listing every form by hand.
+##
+## Masked on screen, and *playable* — a rude word is still a real word, so it
+## still clears blocks and still scores. Slurs are handled separately below and
+## are not playable at all.
 const STEMS := [
 	"anus", "arse", "arsehole", "ass", "asshat", "asshole", "ballsack", "bastard",
 	"bellend", "bitch", "bollock", "boner", "bugger", "bullshit", "cock",
-	"cocksucker", "coon", "cracker", "cum", "cunt", "damn", "dick", "dickhead",
-	"dildo", "douche", "douchebag", "dyke", "fag", "faggot", "fanny", "fuck",
+	"cocksucker", "cracker", "cum", "cunt", "damn", "dick", "dickhead",
+	"dildo", "douche", "douchebag", "dyke", "fanny", "fuck",
 	"fucker", "fuckwit", "gash", "goddamn", "hell", "hoe", "jackass", "jerkoff",
-	"jism", "jizz", "knob", "knobhead", "kike", "minge", "motherfucker", "muff",
-	"nigger", "nonce", "paki", "pillock", "piss", "prick", "pussy", "queer",
+	"jism", "jizz", "knob", "knobhead", "minge", "motherfucker", "muff",
+	"nonce", "pillock", "piss", "prick", "pussy", "queer",
 	"retard", "rimjob", "scrote", "shag", "shit", "shite", "shithead", "skank",
-	"slag", "slut", "spastic", "spic", "spunk", "tit", "titty", "tosser", "turd",
-	"twat", "wank", "wanker", "whore", "wog", "wop",
+	"slag", "slut", "spastic", "spunk", "tit", "titty", "tosser", "turd",
+	"twat", "wank", "wanker", "whore",
 ]
 
 ## Endings that make an inflection rather than a different word. Anchored to the
@@ -45,6 +49,54 @@ const SUFFIXES := ["", "s", "es", "ed", "ing", "er", "ers", "y", "ies", "in", "a
 ## a word game, and "it was a seven-letter word" is information the player is
 ## entitled to without being shown which one.
 const MASK := "*"
+
+
+## Slurs, which are a different thing from profanity and are treated differently.
+##
+## These are stripped from the dictionary at load, so they cannot be typed for
+## points, cannot be minted onto a block, and are not words this game knows. The
+## `STEMS` list above is masked on screen and still playable, because a rude word
+## is a real word and refusing to score one would be a bug report about the
+## dictionary. Paying somebody points for a slur is not the same trade.
+##
+## Written out in full, every form, with no suffix expansion — unlike `STEMS`.
+## Running `SUFFIXES` over these is how `spic` deletes `spicy` and `spices`, and
+## a word game that has quietly lost two ordinary words is worse than one that
+## never refused anything. Eighteen entries typed out is cheap; a rule that can
+## surprise you is not.
+##
+## Only terms with no ordinary meaning left to lose are here. `cracker`, `queer`,
+## `retard`, `spastic` and `dyke` all have everyday senses — a biscuit, strange,
+## to slow down, a muscle spasm, an embankment — so they stay in `STEMS`:
+## maskable, playable, and no worse than the rest of that list.
+const SLURS := [
+	"coon", "coons",
+	"fag", "fags",
+	"faggot", "faggots",
+	"kike", "kikes",
+	"nigger", "niggers",
+	"paki", "pakis",
+	"spic", "spics",
+	"wog", "wogs",
+	"wop", "wops",
+]
+
+static var _slurs: Dictionary = {}
+
+
+static func _build_slurs() -> void:
+	if not _slurs.is_empty():
+		return
+	for word: String in SLURS:
+		_slurs[word] = true
+
+
+## Is this word one the game refuses to know? Asked by `WordBank` once per
+## dictionary entry at load, so it is a hash lookup and not a scan.
+static func is_slur(word: String) -> bool:
+	_build_slurs()
+	return _slurs.has(word.to_lower())
+
 
 static var _blocked: Dictionary = {}
 
