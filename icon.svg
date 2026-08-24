@@ -5,5 +5,5 @@
   <rect x="16" y="70" width="96" height="40" rx="9" fill="#f94144"/>
   <text x="38" y="52" font-family="monospace" font-size="30" font-weight="bold" fill="#0b1020" text-anchor="middle">W</text>
   <text x="90" y="52" font-family="monospace" font-size="30" font-weight="bold" fill="#0b1020" text-anchor="middle">W</text>
-  <text x="64" y="100" font-family="monospace" font-size="26" font-weight="bold" fill="#0b1020" text-anchor="middle">STR</text>
+  <text x="64" y="100" font-family="monospace" font-size="24" font-weight="bold" fill="#0b1020" text-anchor="middle">TYPE</text>
 </svg>
