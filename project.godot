@@ -8,6 +8,10 @@
 
 config_version=5
 
+[admob]
+
+general/ios/app_id="ca-app-pub-1141785985592666~9550314236"
+
 [application]
 
 config/name="Word Wars"

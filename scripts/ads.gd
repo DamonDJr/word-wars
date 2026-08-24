@@ -32,7 +32,7 @@ const TEST_UNIT_ANDROID := "ca-app-pub-3940256099942544/1033173712"
 ## Set these to the real ad units to go live. Left empty, the test unit above is
 ## used — so a build can never accidentally serve real ads because somebody
 ## forgot to switch something back.
-const LIVE_UNIT_IOS := ""
+const LIVE_UNIT_IOS := "ca-app-pub-1141785985592666/8580847493"
 const LIVE_UNIT_ANDROID := ""
 
 ## A load that never answers must not leave the loader stuck. With no plugin
