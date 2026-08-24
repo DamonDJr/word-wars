@@ -1204,7 +1204,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 			s.bot = AiOpponent.new()
 			# Without this the bot keeps its defaults — no words per minute, no
 			# vocabulary, no reaction — and sits there for the whole match.
-			s.bot.configure(who)
+			s.bot.configure(who, portrait)
 			s.peer_id = 0
 		if s.bot != null and not s.in_match:
 			s.bot = null
@@ -5147,7 +5147,7 @@ func _draw_solo(size: Vector2) -> void:
 
 		if not mine and who != "" and who != "?":
 			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
-				"%d wpm" % int(AiOpponent.spec(who)["wpm"]), 11, accent)
+				"%d wpm" % AiOpponent.paced_wpm(who, portrait), 11, accent)
 		elif not mine and who == "?":
 			_otext(_font, Vector2(r.get_center().x, r.position.y + 64.0),
 				"rolled each match", 11, Color("#7c88ad"))
@@ -5192,7 +5192,7 @@ func _draw_solo(size: Vector2) -> void:
 		if portrait and id != "?":
 			_text_fit_overlay(_font, Vector2(r.get_center().x,
 				r.position.y + r.size.y * 0.82),
-				"%d wpm" % int(AiOpponent.spec(id)["wpm"]), 14, r.size.x - 20.0,
+				"%d wpm" % AiOpponent.paced_wpm(id, portrait), 14, r.size.x - 20.0,
 				accent, 10)
 
 	for b: Dictionary in _menu_buttons():
@@ -6569,7 +6569,7 @@ func _on_net_match_begin() -> void:
 		# seating, so both ends already agree on who this is.
 		if s.peer_id < 0 and Link.is_host:
 			s.bot = AiOpponent.new()
-			s.bot.configure(s.label)
+			s.bot.configure(s.label, portrait)
 		else:
 			s.bot = null
 	player.device = Link.my_device()

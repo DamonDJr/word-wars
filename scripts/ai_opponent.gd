@@ -5,12 +5,26 @@ class_name AiOpponent
 ## and race to answer it.
 ##
 ## Speed is only one axis. Two opponents can type at the same rate and still play
-## nothing alike, because this game has a real strategic tension in it: block size
-## comes from RHYTHM, while how many blocks a word clears comes from LENGTH. You
-## cannot have both. A bot that fires short words keeps its chain climbing and
-## sends bigger and bigger slabs; a bot that reaches for long words clears its own
-## board in great sweeps but keeps letting the run lapse. Every personality below
-## is a different answer to that trade.
+## nothing alike, because this game has a real strategic tension in it: a run
+## without pausing lifts everything you throw, while a long word clears more of
+## your own board and now hits harder on its own. A bot that fires short words
+## keeps its chain climbing; one that reaches for long words sweeps its board and
+## keeps letting the run lapse. Every personality below is a different answer to
+## that trade.
+##
+## That paragraph used to end "you cannot have both", which was true until word
+## length started setting a floor on block size. It does not any more: the
+## long-word bots got a quiet buff out of that rule and the ceilings below came
+## down to pay for it. Worth remembering the next time the scoring moves — these
+## numbers are balanced against it, not independent of it.
+##
+## ## Pace is not the same on a phone
+##
+## Every rate here was tuned against a keyboard. The game ships to thumbs, where
+## finding a word and entering it is far slower — so a Duelist that was a fair
+## fight on a desktop is a losing one on a phone, and Wordsmith is not a fight at
+## all. The rates are scaled at `configure` rather than rewritten, so the ladder
+## keeps its shape and a desktop build stays honest about what it is.
 
 ## The dials, and what each one actually changes:
 ##
@@ -30,6 +44,14 @@ class_name AiOpponent
 ##          picks a word it can finish before the chain window closes, and
 ##          almost never swings for a haymaker.
 ##   grudge how long it stays pointed at one rival in a four-way.
+## What a bot keeps of its desktop pace when the player is using a touch
+## keyboard, and how much longer it stops to think. Measured against thumbs
+## rather than guessed at a round number: a good phone typist runs about seven
+## tenths of their own keyboard speed, and the word-finding on top of that is
+## slower again.
+const TOUCH_PACE := 0.7
+const TOUCH_THINK := 1.25
+
 const DIFFICULTIES := {
 	"Rookie": {
 		"wpm": 26.0, "reaction": 1.5, "typo": 0.22, "ramp": 0.35,
@@ -42,7 +64,7 @@ const DIFFICULTIES := {
 	# is slow to land anything — but each one sweeps its own board clean.
 	"Magpie": {
 		"wpm": 26.0, "reaction": 1.3, "typo": 0.20, "ramp": 0.35,
-		"len": Vector2i(7, 13), "vocab": 9000, "focus": 0.70, "combo": 0.45,
+		"len": Vector2i(7, 11), "vocab": 9000, "focus": 0.70, "combo": 0.45,
 		"rhythm": 0.05, "grudge": 0.5,
 		"tint": "#90be6d", "rating": 1,
 		"blurb": "slow hands, long words", "style": "hoards letters, clears in sweeps",
@@ -83,7 +105,7 @@ const DIFFICULTIES := {
 	},
 	"Wordsmith": {
 		"wpm": 58.0, "reaction": 0.5, "typo": 0.07, "ramp": 0.9,
-		"len": Vector2i(5, 12), "vocab": 25000, "focus": 0.9, "combo": 0.8,
+		"len": Vector2i(5, 10), "vocab": 25000, "focus": 0.9, "combo": 0.8,
 		"rhythm": 0.65, "grudge": 0.6,
 		"tint": "#c77dff", "rating": 3,
 		"blurb": "brutal", "style": "does everything, and quickly",
@@ -130,11 +152,22 @@ static func spec(name: String) -> Dictionary:
 	return DIFFICULTIES[resolve(name)]
 
 
-func configure(name: String) -> void:
+## The rate a bot will actually type at, for a screen that wants to advertise it.
+##
+## The roster shows a wpm next to every name and it has to be the truth: a phone
+## quoting a bot's desktop pace is promising a fight it is not going to have.
+static func paced_wpm(name: String, touch: bool) -> int:
+	return int(round(float(spec(name)["wpm"]) * (TOUCH_PACE if touch else 1.0)))
+
+
+## `touch` is the player's input, not the bot's — a CPU has no hands. It scales
+## the pace to what the person opposite can actually manage, which is the only
+## thing "difficulty" has ever meant here.
+func configure(name: String, touch: bool = false) -> void:
 	difficulty = resolve(name)
 	var d: Dictionary = spec(name)
-	wpm = d["wpm"]
-	reaction = d["reaction"]
+	wpm = float(d["wpm"]) * (TOUCH_PACE if touch else 1.0)
+	reaction = float(d["reaction"]) * (TOUCH_THINK if touch else 1.0)
 	typo_chance = d["typo"]
 	ramp = d["ramp"]
 	len_range = d["len"]
