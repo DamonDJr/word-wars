@@ -467,7 +467,13 @@ func _screen_laid() -> float:
 	match phase:
 		Phase.TITLE:
 			var m := _plate_metrics()
-			return float(m["top"]) + 8.0 * (float(m["h"]) + float(m["gap"])) \
+			# Counted, not assumed. This was a hardcoded eight — seven modes and
+			# the rules line under them — and the premium plate comes and goes
+			# with whether it has been bought, so a fixed number would be a
+			# scroll limit that is wrong for whichever half of the players is not
+			# the half it was written for.
+			var rows := float(_title_modes().size() + 1)
+			return float(m["top"]) + rows * (float(m["h"]) + float(m["gap"])) \
 				+ 3.0 * float(m["band_gap"]) + 80.0
 		Phase.PRACTICE:
 			return 214.0 + _practice_laid()
@@ -7066,7 +7072,7 @@ func _title_modes() -> Array:
 	# and "SUS" and "TINGS" are not what those buttons are called. This is the
 	# game's actual loop instead. A block carries a fragment, and the word that
 	# clears it starts with those letters.
-	return [
+	var rows: Array = [
 		["PRAC", "PRACTICE", "Learn it, or drill it", "practice",
 			Color("#90be6d"), 0],
 		["DAI", "DAILY", dsub, "daily",
@@ -7077,9 +7083,23 @@ func _title_modes() -> Array:
 			Color("#f8961e"), 2],
 		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
 			Color("#64dfdf"), 2],
-		["SET", "SETTINGS", "Sound, effects, name", "settings",
-			Color("#8d99bd"), 2],
 	]
+	# The one thing on this screen with a price on it, and only while there is
+	# something to sell — bought, or no store, and it is not a door at all.
+	#
+	# Next to COSMETICS on purpose: that is the screen where the three things it
+	# unlocks are already visible and already locked, so this is the answer to a
+	# question the player has just been asked rather than an advert arriving out
+	# of nowhere. Gold because gold is what this palette uses for the thing worth
+	# having; DAILY borrows the same gold but sits two bands up and spends itself
+	# grey most days.
+	if Store.can_buy():
+		rows.append(["PRE", "PREMIUM",
+			"%s · no ad break, and three things you cannot earn" % Store.price,
+			"buy", Color("#ffd166"), 2])
+	rows.append(["SET", "SETTINGS", "Sound, effects, name", "settings",
+		Color("#8d99bd"), 2])
+	return rows
 
 
 ## Where the stack starts, and how tall each plate is. Portrait gets the taller
@@ -7647,6 +7667,11 @@ func _activate(action: String) -> void:
 			# The plate's own subtitle says why, so this only has to not pretend
 			# something happened.
 			Sfx.play("reject", 1.2)
+	elif action == "buy":
+		# The title plate and the settings row are the same purchase, so they run
+		# the same call rather than each keeping its own idea of when it is
+		# allowed and what to play when it is not.
+		_change_setting("buy")
 	elif action == "rematch":
 		if net_active():
 			# Ask the person who is already here. This used to walk back to the
