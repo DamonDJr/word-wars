@@ -2164,21 +2164,24 @@ func _rematch_sub() -> String:
 
 ## Whether a match of this shape may be interrupted at all.
 ##
-## Never in versus. The rematch handshake is two packets between two people, and
-## a peer who has already said yes sits on a "waiting for them" card until the
-## second one lands — so a break here is dead air there, for a decision they have
-## made and cannot see the delay behind.
+## Versus counts now. It used to be excluded outright, and the reason was sound
+## but was about *when* rather than about versus: the rematch handshake is two
+## packets between two people, and a peer who has already said yes sits on a
+## "waiting for them" card until the second one lands, so a break between the
+## whistle and the summary is dead air on somebody else's phone. Versus is also
+## where most of this game is going to be played, which makes excluding it a
+## decision to forgo most of the impressions.
 ##
-## Never in a lesson, a training run or the daily either: none of them banks a
+## So the break moved rather than the rule: a versus match takes its break when
+## the summary is *left*, by which point the rematch has been answered one way or
+## the other and nobody is waiting on anybody. See `_end_match` and the title
+## action, which are the two halves of that.
+##
+## Still never in a lesson, a training run or the daily: none of them banks a
 ## match, so none of them has moved the counter, and a break at the end of one is
 ## being charged for something the game does not otherwise count.
-##
-## Takes the network state as an argument rather than reading it, because it is
-## the one clause here that cannot be exercised off a device — `net_active` needs
-## a live Game Center match — and a guard nothing can reach is a guard that stops
-## being true without anybody hearing about it.
-func _ad_allowed(is_net: bool) -> bool:
-	return mode == Mode.NORMAL and not is_net
+func _ad_allowed() -> bool:
+	return mode == Mode.NORMAL
 
 
 ## Whether the match that just ended should be followed by a break.
@@ -2190,7 +2193,7 @@ func _ad_allowed(is_net: bool) -> bool:
 ## second, or a run of empty nights silently resets the cadence and the player
 ## goes hours without a break.
 func _break_due() -> bool:
-	return _ad_allowed(net_active()) and Profile.ad_due() and Ads.has_ad()
+	return _ad_allowed() and Profile.ad_due() and Ads.has_ad()
 
 
 ## Try to put one up. Called as the match ends, with the summary already built
@@ -3268,7 +3271,12 @@ func _end_match(loser: SideState) -> void:
 	# Last, and after the record: `_record_mastery` is what moves the counter, so
 	# asking before it would always be a match behind. The summary is already
 	# built underneath — the break covers it and uncovers it.
-	_try_ad_break()
+	#
+	# Not in versus, where it waits for the summary to be left instead. An ad
+	# here would sit between two people mid-rematch, and the one who has already
+	# said yes cannot see what the delay is.
+	if not net_active():
+		_try_ad_break()
 
 
 ## Fold the finished match into the lifetime record, and keep what it earned so
@@ -7785,6 +7793,10 @@ func _activate(action: String) -> void:
 			else:
 				Sfx.play("reject", 1.3)
 	elif action == "title":
+		# Caught before the match is hung up, because leaving it is what makes
+		# `net_active` false — and this is the one break that has to know it was
+		# a versus match after the fact.
+		var versus_over: bool = phase == Phase.OVER and net_active()
 		Link.leave()
 		Link.status = ""
 		# Walking away from a finished match never actually hung up. The Game
@@ -7799,6 +7811,12 @@ func _activate(action: String) -> void:
 		phase = Phase.TITLE
 		_hover_action = ""
 		Sfx.play("back")
+		# The versus break, taken here rather than at the whistle. The rematch has
+		# been answered — this is somebody done with that opponent and on their
+		# way out — so there is nobody left to keep waiting. The title is already
+		# behind it, the way the summary is for a solo break.
+		if versus_over:
+			_try_ad_break()
 
 
 # ---------------------------------------------------------------- text helpers
