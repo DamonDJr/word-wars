@@ -1,0 +1,52 @@
+/* One stylesheet for both pages. Self-contained on purpose: GitHub Pages
+   serves these as static files with no build step, and a policy page that
+   depends on a CDN is a policy page that can go blank. */
+:root {
+  --bg: #0b1020;
+  --panel: #141b33;
+  --ink: #e6ecff;
+  --dim: #8d99bd;
+  --faint: #5d6a92;
+  --line: #232c4d;
+  --accent: #48bfe3;
+  --gold: #f9c74f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+}
+main { max-width: 44rem; margin: 0 auto; }
+header { border-bottom: 1px solid var(--line); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+.mark { display: flex; gap: 6px; align-items: center; margin-bottom: 1rem; }
+.blk {
+  width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+  font-weight: 800; font-size: 15px; color: var(--bg);
+}
+.blk.w1 { background: var(--accent); }
+.blk.w2 { background: var(--gold); }
+.blk.wide { width: 68px; background: #f94144; }
+h1 { font-size: 1.7rem; margin: 0 0 .35rem; letter-spacing: -.01em; }
+h2 { font-size: 1.15rem; margin: 2.25rem 0 .6rem; color: var(--accent); }
+p, li { color: var(--dim); }
+strong { color: var(--ink); font-weight: 600; }
+a { color: var(--accent); }
+a:hover { color: var(--ink); }
+.lede { color: var(--ink); font-size: 1.05rem; }
+.meta { color: var(--faint); font-size: .85rem; margin: 0; }
+ul { padding-left: 1.15rem; }
+li { margin: .35rem 0; }
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 1.1rem 1.25rem; margin: 1.25rem 0;
+}
+.card p:last-child, .card ul:last-child { margin-bottom: 0; }
+footer {
+  margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+  color: var(--faint); font-size: .85rem;
+}
+footer a { color: var(--dim); }
