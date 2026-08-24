@@ -23,10 +23,21 @@ func _expect(what: String, ok: bool) -> void:
 	print("  %-56s %s" % [what, "ok" if ok else "FAILED"])
 
 
+var stage: SubViewport
+
+
+func _orient(tall: bool) -> void:
+	stage.size = game.PORTRAIT_SIZE if tall else game.LANDSCAPE_SIZE
+	game.portrait = tall
+
+
 func _init() -> void:
 	await process_frame
 	game = load("res://scenes/main.tscn").instantiate()
-	get_root().add_child(game)
+	stage = SubViewport.new()
+	stage.size = Vector2i(1280, 720)
+	get_root().add_child(stage)
+	stage.add_child(game)
 	await process_frame
 	await process_frame
 	game.phase = game.Phase.TITLE
@@ -69,6 +80,38 @@ func _init() -> void:
 		acts.append(String(row[3]))
 	_expect("no premium plate without a store (%s)" % ", ".join(acts),
 		not acts.has("buy"))
+
+	print("--- the record screen fits what is on it ---")
+	# Same failure as the title stack, found on a phone: `_mastery_laid` said
+	# three rows of stats in portrait and `_mastery_stats_foot` measured twelve
+	# tiles against a list of thirteen. Both are asked of the grid now.
+	game.phase = game.Phase.MASTERY
+	for tall in [false, true]:
+		_orient(tall)
+		var where := "portrait" if tall else "landscape"
+		var n: int = game._mastery_stats().size()
+		var strip: Array = game._mastery_stat_rects(n)
+		var bottom := 0.0
+		for r: Rect2 in strip:
+			bottom = maxf(bottom, r.end.y)
+		_expect("%s: foot is below the last stat (%.0f >= %.0f)" % [
+			where, game._mastery_stats_foot(), bottom],
+			game._mastery_stats_foot() >= bottom)
+		# The rows the height is built from have to be the rows the grid gives.
+		var rows: int = game._grid_rows(n, 8, 8.0, 140.0)
+		var real := {}
+		for r2: Rect2 in strip:
+			real[r2.position.y] = true
+		_expect("%s: %d stats lay out in %d rows" % [where, n, rows],
+			real.size() == rows)
+		var clash := ""
+		for b: Dictionary in game._menu_buttons():
+			if (b["rect"] as Rect2).position.y < bottom:
+				clash = String(b["action"])
+		_expect("%s: no button sits on the grid%s" % [
+			where, "" if clash == "" else " — " + clash], clash == "")
+	_orient(false)
+	game.phase = game.Phase.TITLE
 
 	print("--- %s ---" % ("the title stack holds up" if fails == 0
 		else "%d FAILURES" % fails))

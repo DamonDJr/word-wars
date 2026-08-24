@@ -609,7 +609,6 @@ const TRAINING_PACE := [
 var solo_seats: Array = ["Duelist", "", ""]
 var solo_pick := 0
 ## True while the settings screen has the keyboard for the name field.
-var settings_editing := false
 ## Set when a finished match is folded into the profile, so the end screen can
 ## show what it earned. Cleared when a new match starts.
 var earned: Dictionary = {}
@@ -1634,23 +1633,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 
 	if phase == Phase.SETTINGS:
-		if settings_editing:
-			# The name field owns the keyboard while it is open, so nothing else
-			# in here can be triggered by a letter that belongs in a name.
-			match k.keycode:
-				KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
-					settings_editing = false
-					_hide_keyboard()
-					Sfx.play("back")
-				KEY_BACKSPACE:
-					Link.set_name_and_save(Link.my_name.substr(
-						0, maxi(0, Link.my_name.length() - 1)))
-				_:
-					if k.unicode > 0 and Link.my_name.length() < 14:
-						var ch := String.chr(k.unicode)
-						if ch.unicode_at(0) >= 32:
-							Link.set_name_and_save(Link.my_name + ch.to_upper())
-			return
 		match k.keycode:
 			KEY_ESCAPE: _activate("title")
 		return
@@ -3580,13 +3562,37 @@ func _menu_spread(_natural: float, _cap: float = 3.2) -> float:
 ##
 ## One helper for all of them, so a grid cannot be reflowed for portrait and
 ## another quietly left behind.
+## How many columns `_grid_rects` will settle on, without laying anything out.
+##
+## Split off because every screen that scrolls has to know its own height, that
+## height needs a row count, and the rects that would answer it are positioned
+## from `_menu_offset` — which is computed *from* the height. Asking the grid is
+## circular, so the screens used to guess, and the guesses went stale: the record
+## screen said three rows of stats on a phone when thirteen tiles at four columns
+## is four, and came up a whole row short.
+func _grid_cols(count: int, want_cols: int, gap: float, min_w: float) -> int:
+	var usable: float = maxf(120.0,
+		get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+	var cols: int = maxi(1, mini(want_cols, count))
+	while cols > 1 and (usable - gap * float(cols - 1)) / float(cols) < min_w:
+		cols -= 1
+	return cols
+
+
+## The row count that follows from it. This is the number a `_laid` function
+## wants, and it is never to be typed in by hand.
+func _grid_rows(count: int, want_cols: int, gap: float, min_w: float) -> int:
+	if count <= 0:
+		return 0
+	return int(ceil(float(count)
+		/ float(_grid_cols(count, want_cols, gap, min_w))))
+
+
 func _grid_rects(count: int, top: float, want_cols: int, want_w: float, ch: float,
 		gap: float = 10.0, min_w: float = 0.0, vgap: float = 10.0) -> Array:
 	var size := get_viewport_rect().size
 	var usable: float = maxf(120.0, size.x - GRID_MARGIN * 2.0)
-	var cols: int = maxi(1, mini(want_cols, count))
-	while cols > 1 and (usable - gap * float(cols - 1)) / float(cols) < min_w:
-		cols -= 1
+	var cols: int = _grid_cols(count, want_cols, gap, min_w)
 	var room: float = (usable - gap * float(cols - 1)) / float(cols)
 	# Only widen past the desktop width when columns had to be given up — a full
 	# row of the intended count keeps the intended size.
@@ -3650,13 +3656,6 @@ func _draw_back_button() -> void:
 func _press_back() -> void:
 	var act := _back_action()
 	if act == "":
-		return
-	if phase == Phase.SETTINGS and settings_editing:
-		# The name field has the keyboard; back closes that before it closes the
-		# screen, or a rename is thrown away by the gesture that confirms it.
-		settings_editing = false
-		_hide_keyboard()
-		Sfx.play("back")
 		return
 	if act == "pause":
 		Haptics.fire("tap")
@@ -4682,17 +4681,6 @@ func _draw_settings(size: Vector2) -> void:
 				_text_fit_overlay(_font_bold, btn.get_center(),
 					String(row.get("action_label", "")), 15, btn.size.x - 16.0,
 					Color("#e6ecff") if live else Color("#4d5878"))
-			"text":
-				var field := Rect2(r.end.x - 336.0, r.get_center().y - 18.0, 300.0, 36.0)
-				var editing: bool = settings_editing
-				_panel(field, Color("#111730"),
-					Color(PLAYER_ACCENT, 0.7 if editing else 0.25), 8.0,
-					2.0 if editing else 1.0)
-				var caret := "_" if editing and fmod(
-					Time.get_ticks_msec() / 1000.0, 1.0) < 0.55 else ""
-				_text_fit_overlay(_font_bold, field.get_center(),
-					String(row["value"]) + caret, 18, field.size.x - 20.0,
-					Color("#e6ecff"))
 
 	for b: Dictionary in _menu_buttons():
 		_draw_menu_button(b)
@@ -4740,8 +4728,16 @@ func _settings_defs() -> Array:
 	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))])
-	defs.append(["name", "text", "Your name", "shown to other players",
-		Link.my_name])
+	# There was a name field here, labelled "shown to other players". It was not
+	# shown to anybody. It belonged to the netfox lobby, where a typed name was
+	# sent in the handshake; the Game Center path never sends it and never did —
+	# an opponent's board carries their Apple display name, which they set once
+	# for every game they own and cannot be asked for again here.
+	#
+	# So it was a text field asking for something the game had no use for, and
+	# the only on-screen keyboard outside a match, for a value nobody would ever
+	# see. `Link.my_name` and its save are untouched, because `net_link.gd` is
+	# still compiled in.
 	# The store rows, which used to be one test button that handed the pack over
 	# for free. There is a receipt in front of them now.
 	#
@@ -4847,14 +4843,6 @@ func _change_setting(key: String) -> void:
 		return
 	if key == "restore":
 		Store.restore()
-		Sfx.play("key", 1.2)
-		return
-	if key == "name":
-		settings_editing = not settings_editing
-		if settings_editing:
-			_show_keyboard(Link.my_name)
-		else:
-			_hide_keyboard()
 		Sfx.play("key", 1.2)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
@@ -5358,6 +5346,33 @@ func _solo_lineup() -> Array:
 ## Locked entries are shown with what would unlock them and how close you are,
 ## because a lock that will not say what it wants is just a taunt. Nothing here
 ## affects play — that is what makes it safe to hand out for showing off.
+## Everything the record says, in one place.
+##
+## Lifted out of the draw so the layout can count it. The two used to disagree:
+## `_mastery_stats_foot` measured twelve tiles against a list of thirteen, so
+## the buttons hung off a bottom edge a whole row above the real one.
+func _mastery_stats() -> Array:
+	return [
+		["MATCHES", str(Profile.matches)],
+		["WINS", str(Profile.wins)],
+		["FLAWLESS", str(Profile.flawless)],
+		["WORDS", _commas(Profile.words)],
+		["BEST WPM", str(int(Profile.best_wpm))],
+		["BEST CHAIN", "x%d" % Profile.best_chain],
+		["BEST COMBO", "x%d" % Profile.best_combo],
+		["MULTI-CLEARS", str(Profile.multi_clears)],
+		["SALVOS", str(Profile.salvos)],
+		["BEST SCORE", _commas(Profile.best_score)],
+		["LONGEST", _show(Profile.longest_word.to_upper())
+			if Profile.longest_word != "" else "—"],
+		["DAILY BEST", _commas(Profile.daily_best)],
+		# The record rather than the live count. This screen is the record, and a
+		# number that goes down when you miss a day does not belong on it.
+		["BEST STREAK", "%d day%s" % [Profile.daily_best_streak,
+			"" if Profile.daily_best_streak == 1 else "s"]],
+	]
+
+
 func _draw_mastery(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
@@ -5383,27 +5398,7 @@ func _draw_mastery(size: Vector2) -> void:
 		_commas(int(prog["into"])), _commas(int(prog["need"])), int(prog["level"]) + 1],
 		12, Color("#7c88ad"))
 
-	# The record. With cosmetics moved out this screen is only about what you
-	# have done, so it can afford to say all of it rather than a strip of eight.
-	var stats := [
-		["MATCHES", str(Profile.matches)],
-		["WINS", str(Profile.wins)],
-		["FLAWLESS", str(Profile.flawless)],
-		["WORDS", _commas(Profile.words)],
-		["BEST WPM", str(int(Profile.best_wpm))],
-		["BEST CHAIN", "x%d" % Profile.best_chain],
-		["BEST COMBO", "x%d" % Profile.best_combo],
-		["MULTI-CLEARS", str(Profile.multi_clears)],
-		["SALVOS", str(Profile.salvos)],
-		["BEST SCORE", _commas(Profile.best_score)],
-		["LONGEST", _show(Profile.longest_word.to_upper())
-			if Profile.longest_word != "" else "—"],
-		["DAILY BEST", _commas(Profile.daily_best)],
-		# The record rather than the live count. This screen is the record, and a
-		# number that goes down when you miss a day does not belong on it.
-		["BEST STREAK", "%d day%s" % [Profile.daily_best_streak,
-			"" if Profile.daily_best_streak == 1 else "s"]],
-	]
+	var stats := _mastery_stats()
 	var strip := _mastery_stat_rects(stats.size())
 	for i in stats.size():
 		var r: Rect2 = strip[i]
@@ -5677,9 +5672,13 @@ func _mastery_spread() -> float:
 func _mastery_laid() -> float:
 	var f := _mastery_fill()
 	var sp := _mastery_spread()
-	var rows: float = 3.0 if portrait else 2.0
-	var prows: float = 2.0 if portrait else 1.0
-	return rows * 56.0 * f + (rows - 1.0) * 8.0 * sp + 62.0 + 22.0 \
+	# Asked, not assumed. These were 3 and 2 on a phone, written when the record
+	# was shorter, and thirteen tiles at four columns is four rows — so the
+	# screen reported a height a row short of itself and the last of the record
+	# sat below where anything could scroll to.
+	var rows := float(_grid_rows(_mastery_stats().size(), 8, 8.0, 140.0))
+	var prows := float(_grid_rows(POWER_ORDER.size(), 4, 10.0, 120.0))
+	return rows * 56.0 * f + maxf(0.0, rows - 1.0) * 8.0 * sp + 62.0 + 22.0 \
 		+ prows * 52.0 * f + 120.0
 
 
@@ -5691,7 +5690,7 @@ func _mastery_stat_rects(count: int) -> Array:
 ## The bottom of the record screen — the stat grid, then the power tallies. The
 ## buttons hang off it, so both have to be measured rather than guessed.
 func _mastery_stats_foot() -> float:
-	var strip := _mastery_stat_rects(12)
+	var strip := _mastery_stat_rects(_mastery_stats().size())
 	var pfoot := _grid_bottom(strip, 222.0 + safe_top) + 40.0
 	var pw := _grid_rects(POWER_ORDER.size(), pfoot + 22.0, 4, 150.0,
 		52.0 * _mastery_fill(), 10.0, 120.0, 10.0 * _mastery_fill())
@@ -7724,7 +7723,6 @@ func _activate(action: String) -> void:
 		Sfx.play("key", 1.2)
 	elif action == "settings":
 		phase = Phase.SETTINGS
-		settings_editing = false
 		_hover_action = ""
 		Sfx.play("count", 1.1)
 	elif action == "daily":
