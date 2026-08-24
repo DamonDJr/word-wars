@@ -24,6 +24,10 @@ const GAME := "res://scripts/game.gd"
 ## nothing in it can be exercised anywhere but a signed-in Apple device, so the
 ## registration is not merely the cheapest check available, it is the only one.
 const BOARDS := "res://scripts/leaderboards.gd"
+## The store, for the same reason again: a purchase callback with the wrong
+## arity throws inside Apple's handler on a device, and the only symptom is money
+## taken and a pack not granted.
+const STORE := "res://scripts/store.gd"
 
 ## The manager's own signals, and what `game.gd` connects to each. Same failure
 ## mode as the plugin's, and it bit just as hard: `_on_multiplayer_data` took a
@@ -61,6 +65,13 @@ const CONNECTIONS := {
 		"cancelled": "_on_native_cancelled",
 		"failed_with_error": "_on_native_failed",
 	},
+	"StoreKitManager": {
+		"products_request_completed": "_on_products",
+		"purchase_completed": "_on_purchased",
+		"restore_completed": "_on_restored",
+		"transaction_updated": "_on_transaction",
+		"unverified_transaction_updated": "_on_unverified",
+	},
 	"GKMatch": {
 		"data_received": "_on_data",
 		# Both, always. GameKit calls the recipient form *instead of* the plain
@@ -87,6 +98,13 @@ const CALLS := {
 	# `create_controller` is static and takes the request; `present` is called on
 	# what it hands back.
 	"GKMatchmakerViewController": {"create_controller": 1, "present": 0},
+	"StoreKitManager": {
+		"start": 0,
+		"request_products": 1,
+		"purchase": 1,
+		"restore_purchases": 0,
+		"fetch_current_entitlements": 0,
+	},
 	# `load_leaderboards` is static and takes (ids, callback); the other two are
 	# called on the board object Apple hands back.
 	"GKLeaderboard": {
@@ -108,6 +126,11 @@ const PROPERTIES := {
 	# The mode picks which of Apple's three options the sheet offers. Default is
 	# the full screen, which is the one with Invite Friends on it.
 	"GKMatchmakerViewController": ["matchmaking_mode"],
+	# What the store reads off a product and a transaction. `revocation_date` is
+	# the one that matters most: it is how a refund takes the pack back, and a
+	# silently missing field would leave refunded purchases owned forever.
+	"StoreProduct": ["product_id", "display_price"],
+	"StoreTransaction": ["product_id", "revocation_date"],
 	# The only thing the summary reads off an entry. A rank that silently stops
 	# arriving leaves the two Game Center rows off the board and looks exactly
 	# like a device that is not signed in.
@@ -165,6 +188,12 @@ func _init() -> void:
 		if handlers.has(m.name):
 			_expect("%s is not a handler in both files" % m.name, false)
 		handlers[m.name] = m
+	# The store's handlers are connected to signals rather than passed as
+	# Callables, so they are checked by `_signals_match_handlers` and only need
+	# to be findable by name.
+	for m in (load(STORE) as GDScript).get_script_method_list():
+		if m.name.begins_with("_on_") and not handlers.has(m.name):
+			handlers[m.name] = m
 
 	_classes_exist()
 	_signals_match_handlers()
@@ -183,7 +212,8 @@ func _classes_exist() -> void:
 	print("--- the plugin is installed ---")
 	var names := ["GameCenterManager", "GKLocalPlayer", "GKPlayer", "GKMatch",
 		"GKMatchmaker", "GKMatchRequest", "GKInvite", "GKLeaderboard",
-		"GKLeaderboardEntry"]
+		"GKLeaderboardEntry",
+		"StoreKitManager", "StoreProduct", "StoreTransaction"]
 	for n in names:
 		_expect("%s is registered" % n, ClassDB.class_exists(n))
 
@@ -240,6 +270,13 @@ func _constants_exist() -> void:
 	for name in ["RELIABLE", "UNRELIABLE"]:
 		_expect("GKMatch.SendDataMode.%s exists" % name,
 			ClassDB.class_has_integer_constant("GKMatch", name))
+
+	print("--- and the purchase outcomes the store tells apart ---")
+	# `store.gd` matches on each of these. A rename turns a cancelled purchase
+	# into an error message, or worse, an error into a granted pack.
+	for name in ["OK", "USER_CANCELLED", "CANCELLED", "PURCHASE_PENDING"]:
+		_expect("StoreKitManager.StoreKitStatus.%s exists" % name,
+			ClassDB.class_has_integer_constant("StoreKitManager", name))
 
 	print("--- and the error fields the log reads ---")
 	for name in ["code", "domain", "message"]:

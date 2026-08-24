@@ -45,6 +45,7 @@ Link="*res://scripts/net_link.gd"
 Music="*res://scripts/music.gd"
 Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
+Store="*res://scripts/store.gd"
 Ads="*res://scripts/ads.gd"
 Boards="*res://scripts/leaderboards.gd"
 

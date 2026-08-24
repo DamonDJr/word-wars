@@ -4663,6 +4663,19 @@ func _draw_settings(size: Vector2) -> void:
 				_otext(_font_bold, Vector2(sw.position.x + (26.0 if on else 66.0),
 					sw.get_center().y), "ON" if on else "OFF", 11,
 					Color("#e6ecff") if on else Color("#7c88ad"))
+			"action":
+				# A button rather than a switch, because these do something once
+				# rather than hold a state. Greyed when there is nothing to press —
+				# the store still loading, or the pack already owned — so the row
+				# stays where it is instead of appearing and disappearing.
+				var live: bool = bool(row["value"])
+				var btn := Rect2(r.end.x - 176.0, r.get_center().y - 18.0, 140.0, 36.0)
+				_panel(btn, Color("#1b2444") if live else Color("#121930"),
+					Color(PLAYER_ACCENT if live else Color("#4d5878"),
+						0.8 if live else 0.3), 8.0, 2.0 if live else 1.0)
+				_text_fit_overlay(_font_bold, btn.get_center(),
+					String(row.get("action_label", "")), 15, btn.size.x - 16.0,
+					Color("#e6ecff") if live else Color("#4d5878"))
 			"text":
 				var field := Rect2(r.end.x - 336.0, r.get_center().y - 18.0, 300.0, 36.0)
 				var editing: bool = settings_editing
@@ -4723,8 +4736,23 @@ func _settings_defs() -> Array:
 			bool(Profile.pref("fullscreen"))])
 	defs.append(["name", "text", "Your name", "shown to other players",
 		Link.my_name])
-	# There was a store row here: two taps and `Profile.grant` handed over the
-	# premium pack, so the purchase flow could be exercised without a receipt.
+	# The store rows, which used to be one test button that handed the pack over
+	# for free. There is a receipt in front of them now.
+	#
+	# Both are shown on any device with a store, including when the pack is
+	# already owned — Apple requires a restore control to be reachable, and a row
+	# that vanishes once bought is a row somebody on a new phone cannot find.
+	if Store.available():
+		var owned: bool = Profile.owns(Profile.PACK_PREMIUM)
+		defs.append(["buy", "action",
+			"Premium pack" if not owned else "Premium pack — owned",
+			"no ad break, and three things you cannot earn" if not owned
+				else "thank you", Store.can_buy(),
+			Store.price if Store.can_buy() else _store_note(owned)])
+		defs.append(["restore", "action", "Restore purchases",
+			"if you have bought it before, or on a new phone", true, "RESTORE"])
+
+	# The old test button is gone and stays gone:
 	#
 	# It cost more than it was worth the moment ads became real. One of the three
 	# things the pack buys is no ad break, and the button is two taps away from
@@ -4740,6 +4768,22 @@ func _settings_defs() -> Array:
 
 ## One table for drawing and hit-testing both, so a control that is on screen is
 ## always a control that responds.
+## The word on the premium button when there is nothing to press: owned already,
+## or the store still deciding. Never blank — a dead button with no label reads
+## as a rendering fault rather than as a state.
+func _store_note(owned: bool) -> String:
+	if owned:
+		return "OWNED"
+	match Store.state:
+		Store.State.LOADING:
+			return "…"
+		Store.State.BUYING:
+			return "…"
+		Store.State.FAILED:
+			return "N/A"
+	return "N/A"
+
+
 func _settings_rows() -> Array:
 	var cx := get_viewport_rect().size.x * 0.5
 	var defs := _settings_defs()
@@ -4757,6 +4801,8 @@ func _settings_rows() -> Array:
 			"action": "set:" + String(d[0]),
 			"kind": String(d[1]), "label": String(d[2]), "note": String(d[3]),
 			"value": d[4],
+			# Only the `action` rows carry a sixth: the word on the button.
+			"action_label": String(d[5]) if d.size() > 5 else "",
 		})
 	return out
 
@@ -4783,6 +4829,20 @@ func _settings_track(r: Rect2) -> Rect2:
 ## real handle would need — and for six rows of preferences, a handle is more
 ## machinery than the job is worth.
 func _change_setting(key: String) -> void:
+	# Everything past this point belongs to Apple until its sheet comes down.
+	# Both are no-ops off a device, so a desktop build can walk over the rows
+	# without pretending anything happened.
+	if key == "buy":
+		if Store.can_buy():
+			Store.buy()
+			Sfx.play("count", 1.3)
+		else:
+			Sfx.play("reject", 1.2)
+		return
+	if key == "restore":
+		Store.restore()
+		Sfx.play("key", 1.2)
+		return
 	if key == "name":
 		settings_editing = not settings_editing
 		if settings_editing:
