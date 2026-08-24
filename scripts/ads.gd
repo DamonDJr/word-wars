@@ -35,6 +35,18 @@ const TEST_UNIT_ANDROID := "ca-app-pub-3940256099942544/1033173712"
 const LIVE_UNIT_IOS := "ca-app-pub-1141785985592666/8580847493"
 const LIVE_UNIT_ANDROID := ""
 
+## Devices that always get a test ad, whatever unit is configured.
+##
+## Worth filling in before the live unit ships. Tapping your own live ads is how
+## an AdMob account gets suspended for invalid traffic — Google does not
+## distinguish a developer testing a build from click fraud, and the appeal is
+## not quick. A registered device is exempt from that entirely.
+##
+## The id is printed by the SDK on first request, as a line containing
+## `setTestDeviceIds` with a hash in it. Grab it from the device log and paste
+## it here.
+const TEST_DEVICES: Array[String] = []
+
 ## A load that never answers must not leave the loader stuck. With no plugin
 ## behind the API — a desktop export, or an iOS build where the addon was not
 ## included — every call is a silent no-op and no callback ever arrives, which
@@ -64,7 +76,7 @@ func _ready() -> void:
 	if not available():
 		print("[Ads] no ad plugin on this platform — the game runs without breaks")
 		return
-	MobileAds.set_request_configuration(RequestConfiguration.new())
+	MobileAds.set_request_configuration(_request_config())
 	MobileAds.initialize(OnInitializationCompleteListener.new())
 	print("[Ads] initialising, unit %s" % unit_id())
 	# The first fetch is kicked off from a timer rather than from the SDK's own
@@ -79,6 +91,32 @@ func _ready() -> void:
 	# is the most ignorable form a real memory bug can take. A SceneTreeTimer
 	# dies with the tree, so nothing here outlives anything else.
 	get_tree().create_timer(INIT_GRACE).timeout.connect(fetch)
+
+
+## What the SDK is allowed to serve, and to whom.
+##
+## Sent before `initialize` rather than after, because a configuration applied
+## late applies to the *next* request — and the first interstitial is fetched a
+## few seconds in.
+##
+## The same three answers are settable in the AdMob console, and setting them in
+## both places is deliberate: the console is a login somebody else can change
+## and this is in version control next to the rating it has to match.
+func _request_config() -> RequestConfiguration:
+	var cfg := RequestConfiguration.new()
+	# The App Store rating is 13+, so Teen is the ceiling. Left unspecified, a
+	# 13+ game can be served ads written for adults — which is a bad look on its
+	# own and something Apple has pulled apps over.
+	cfg.max_ad_content_rating = RequestConfiguration.MAX_AD_CONTENT_RATING_T
+	# Not a children's app and not in the Kids Category. Said explicitly rather
+	# than left unspecified: "we did not say" and "we said no" are different
+	# answers to COPPA, and only one of them is a decision.
+	cfg.tag_for_child_directed_treatment = \
+		RequestConfiguration.TagForChildDirectedTreatment.FALSE
+	cfg.tag_for_under_age_of_consent = \
+		RequestConfiguration.TagForUnderAgeOfConsent.FALSE
+	cfg.test_device_ids = TEST_DEVICES.duplicate()
+	return cfg
 
 
 ## Whether there is anything behind the API at all.
