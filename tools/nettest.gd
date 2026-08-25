@@ -29,9 +29,60 @@ func _init() -> void:
 
 	_scoreboard_survives_the_wire()
 	_the_handicap_is_only_for_mixed_rooms()
+	_two_held_sheets_do_not_deadlock()
 
 	print("--- %s ---" % ("net state behaves" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
+
+
+## Both players automatch, both sheets stay up, and neither game ever starts.
+##
+## Each end sends `holding` every `HELLO_EVERY` while its sheet is up, and the
+## handler reset `_wait_age` so a peer taking a while to find the X would not be
+## timed out. But the escape from a stuck sheet was also measured on `_wait_age`
+## — so two devices reset each other's escape timer four times faster than the
+## two-second grace they were both waiting for, and neither ever reached it.
+##
+## Both screens then read "waiting for them to close Game Center", each about the
+## other, with no timeout behind it: `_process` returns before the handshake
+## deadline while the sheet is up. It hung until somebody force-quit.
+##
+## Driven here at a tenth of a second a tick, with a `holding` arriving at the
+## real rate, because the bug only exists in the interleaving.
+func _two_held_sheets_do_not_deadlock() -> void:
+	print("--- two held sheets escape each other ---")
+	var mm = Engine.get_main_loop().root.get_node("MultiplayerManager")
+
+	mm.state = mm.State.HANDSHAKING
+	mm._native_sheet_up = true
+	mm._sheet_age = 0.0
+	mm._wait_age = 0.0
+	mm._hello_timer = mm.HELLO_EVERY
+	mm._peer_said_hello = false
+
+	var holding := {"type": "holding"}
+	var t := 0.0
+	var since_holding := 0.0
+	# Twice the grace. If it cannot escape in that, it never will.
+	while t < mm.SHEET_GRACE * 2.0 and mm._native_sheet_up:
+		mm._process(0.1)
+		t += 0.1
+		since_holding += 0.1
+		if since_holding >= mm.HELLO_EVERY:
+			since_holding = 0.0
+			mm._on_data(JSON.stringify(holding).to_utf8_buffer(), null)
+
+	_expect("the sheet gives up inside twice the grace (%.1fs)" % t,
+		not mm._native_sheet_up)
+	_expect("and it took about the grace, not longer",
+		t <= mm.SHEET_GRACE + 0.3)
+	# The peer's keepalive must still do its job — it is what stops a slow
+	# dismissal being read as a dead opponent.
+	_expect("a holding packet still resets the handshake clock",
+		mm._wait_age < mm.HANDSHAKE_TIMEOUT)
+
+	mm.state = mm.State.OFF
+	mm._native_sheet_up = false
 
 
 func _scoreboard_survives_the_wire() -> void:

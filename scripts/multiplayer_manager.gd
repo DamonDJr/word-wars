@@ -114,6 +114,23 @@ var _send_failures := 0
 ## hello goes out until the sheet is down, and the peer is told to keep waiting
 ## rather than being left to time out.
 var _native_sheet_up := false
+
+## How long *this* device's sheet has been up, on a clock the other end cannot
+## touch.
+##
+## `_wait_age` cannot do this job, and using it deadlocked every automatch where
+## both sheets stayed up. Each end sends `holding` every `HELLO_EVERY`; each
+## `holding` received resets `_wait_age` to zero; and the escape from a stuck
+## sheet was `_wait_age >= SHEET_GRACE`. So two devices politely told each other
+## to keep waiting, four times faster than the two-second grace they were both
+## waiting for, and neither ever escaped. Both screens read "waiting for them to
+## close Game Center" — about the other player — forever, with no timeout behind
+## it either, because `_process` returns before the handshake deadline while the
+## sheet is up.
+##
+## A keepalive that resets the timer meant to escape it is a livelock, and the
+## only fix is a clock the keepalive cannot reach.
+var _sheet_age := 0.0
 ## Which GameKit callback delivered this match's packets. See `_note_delivery`.
 var _delivery := ""
 
@@ -179,9 +196,14 @@ func _process(delta: float) -> void:
 	# even though the match is perfectly connected underneath. Saying so keeps
 	# the peer waiting instead of starting without us — see `_native_sheet_up`.
 	if _native_sheet_up:
+		_sheet_age += delta
 		# Grace spent. The sheet is staying, so stop making the other player pay
 		# for it: play the match and let the sheet be a tap in the way.
-		if _wait_age >= SHEET_GRACE:
+		#
+		# Measured on `_sheet_age`, never on `_wait_age` — the peer's `holding`
+		# packets reset that one, and this is the timer whose whole job is to
+		# escape a peer who is holding.
+		if _sheet_age >= SHEET_GRACE:
 			print("[GC] native: sheet still up after %.0fs — starting anyway" % SHEET_GRACE)
 			_native_sheet_up = false
 			_hello_timer = 0.0
@@ -345,6 +367,7 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 
 	invited = ""
 	_native_sheet_up = true
+	_sheet_age = 0.0
 	_set_state(State.MATCHMAKING, "Game Center is asking")
 	print("[GC] native: presenting (mode %d)" % mode)
 	_native_vc.present()
