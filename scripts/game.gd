@@ -953,10 +953,18 @@ func _draw_portrait_hud(size: Vector2) -> void:
 			_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
 				("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
 				Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
-			# Over the card of whoever sent it. With one rival there is only one
-			# card, but the check keeps it honest if a free-for-all ever arrives.
+			# Theirs over their card; yours beside it, on the side the card is not
+			# using. With one rival the card is centred and there is room either
+			# way — left, because that is the side your own lives already read
+			# from.
 			if s2.slot > 0 and net_active():
-				_draw_emote_bubble(r)
+				var lift: float = 78.0 * 0.52 + 6.0
+				_draw_emote_bubble(
+					Vector2(r.get_center().x, r.position.y - lift),
+					_emote_in, false)
+				_draw_emote_bubble(
+					Vector2(r.position.x - 58.0, r.get_center().y),
+					_emote_out, true)
 
 	# Everything below the board: what is falling on you, the run you are on,
 	# and the line you are typing, stacked into the gap above the keyboard.
@@ -3509,6 +3517,13 @@ var _emote_cool := 0.0
 ## What the opponent last sent: `{"i": int, "left": float}`. Empty when nothing
 ## is on screen.
 var _emote_in: Dictionary = {}
+## The same, for the one you just sent.
+##
+## Kept separate rather than sharing a slot, because the two can be on screen at
+## once and the interesting moment is exactly when they are — somebody answering
+## an emote with another one is the whole point, and a single slot would have the
+## reply delete the thing it was replying to.
+var _emote_out: Dictionary = {}
 
 
 ## The hold that opens the menu, the cooldown, and the life of an incoming
@@ -3524,6 +3539,12 @@ func _tick_emotes(delta: float) -> void:
 			_emote_in = {}
 		else:
 			_emote_in["left"] = left
+	if not _emote_out.is_empty():
+		var mine := float(_emote_out["left"]) - delta
+		if mine <= 0.0:
+			_emote_out = {}
+		else:
+			_emote_out["left"] = mine
 
 	if _emote_touch == -2:
 		return
@@ -3589,6 +3610,11 @@ func _send_emote(idx: int) -> void:
 		return
 	_emote_cool = EMOTE_COOLDOWN
 	MultiplayerManager.send_event("emote", {"i": idx})
+	# The local echo, which this went to build 2 without. The comment above
+	# claimed it and the body did not do it, so picking an emote spent the
+	# cooldown, made a noise and put nothing on the screen — indistinguishable
+	# from a control that is simply broken, and the first thing reported.
+	_emote_out = {"i": idx, "left": EMOTE_SHOW}
 	Haptics.fire("power", 0.7)
 	Sfx.play("zap", 1.12)
 
@@ -4009,34 +4035,38 @@ func _draw_emote_key() -> void:
 			EMOTE_MENU_ALPHA if on else 0.70, on)
 
 
-## What the opponent just said, over their card.
+## One emote, in a bubble, centred on `at`.
 ##
-## Anchored to the rival card in the portrait HUD rather than to the middle of
-## the screen: an emote is *from* somebody, and one that appears detached from
-## the person who sent it is a decoration. It also keeps the board clear, which
-## the sending menu deliberately does not.
-func _draw_emote_bubble(card: Rect2) -> void:
-	if _emote_in.is_empty():
+## Anchored to somebody rather than to the middle of the screen: an emote is
+## *from* a person, and one floating free is a decoration. Yours sits beside the
+## rival card and theirs sits over it, so the top bar reads as two people rather
+## than as one notification area that sometimes lies about who spoke.
+##
+## `mine` only changes the border colour. The position is what says whose it is,
+## and a second visual language for the same object would be one more thing to
+## learn during a match.
+func _draw_emote_bubble(at: Vector2, entry: Dictionary, mine: bool) -> void:
+	if entry.is_empty():
 		return
-	var left := float(_emote_in.get("left", 0.0))
+	var left := float(entry.get("left", 0.0))
 	# Fades out over the last half second, and pops in over the first tenth.
 	var age: float = EMOTE_SHOW - left
 	var alpha: float = clampf(left / 0.5, 0.0, 1.0)
 	var pop: float = clampf(age / 0.10, 0.0, 1.0)
 	var size: float = 78.0 * (0.72 + 0.28 * pop)
-	var mid := Vector2(card.get_center().x, card.position.y - size * 0.52 - 6.0)
-	var box := Rect2(mid - Vector2(size, size) * 0.5, Vector2(size, size))
+	var box := Rect2(at - Vector2(size, size) * 0.5, Vector2(size, size))
 
 	# The bubble behind it, with a tail pointing at whose it is.
 	var pad := 9.0
 	var bub := box.grow(pad)
-	_panel(bub, Color("#0b1020", 0.90 * alpha), Color("#c77dff", 0.45 * alpha),
+	var edge := PLAYER_ACCENT if mine else Color("#c77dff")
+	_panel(bub, Color("#0b1020", 0.90 * alpha), Color(edge, 0.45 * alpha),
 		12.0, 2.0)
-	var tip := Vector2(mid.x, bub.position.y + bub.size.y + 9.0)
+	var tip := Vector2(at.x, bub.position.y + bub.size.y + 9.0)
 	_overlay.draw_colored_polygon(PackedVector2Array([
 		tip, tip + Vector2(-9.0, -10.0), tip + Vector2(9.0, -10.0)]),
 		Color("#0b1020", 0.90 * alpha))
-	_draw_emote(box, int(_emote_in.get("i", 0)), alpha, true)
+	_draw_emote(box, int(entry.get("i", 0)), alpha, true)
 
 
 ## The keys as they are drawn, plus the line above which the keyboard stops

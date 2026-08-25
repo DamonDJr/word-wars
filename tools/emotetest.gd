@@ -151,6 +151,53 @@ func _gesture() -> void:
 	_expect("and the cooldown runs out", is_zero_approx(game._emote_cool))
 
 	_expect("the wire list matches the files", game.EMOTES == EMOTES)
+
+	# ------------------------------------------------------------ the wire
+	#
+	# The half that cannot be tested by playing: sending needs a live match and
+	# receiving needs somebody else's phone. So the packet is built exactly as
+	# `MultiplayerManager.send_event` builds it, put through the same JSON round
+	# trip the radio does, and handed to the same dispatcher — which is every
+	# step between the two devices except the radio itself.
+	print("--- the packet survives the round trip ---")
+	game._emote_in = {}
+	var packet := {"type": "emote", "payload": {"i": 3}}
+	var wire = JSON.parse_string(JSON.stringify(packet))
+	_expect("it parses back to a dictionary", typeof(wire) == TYPE_DICTIONARY)
+
+	# JSON has one number type, so an int leaves as an int and comes back a
+	# float. `_on_multiplayer_data` casts, and this is the assertion that says
+	# so — an index compared without casting would silently match nothing.
+	var got = (wire as Dictionary)["payload"]["i"]
+	_expect("and the index arrives as a float (%s), not an int"
+		% type_string(typeof(got)), typeof(got) == TYPE_FLOAT)
+
+	game._on_multiplayer_data(wire as Dictionary)
+	_expect("the dispatcher shows it anyway",
+		int(game._emote_in.get("i", -1)) == 3)
+
+	# The send path, which headless cannot take: `_send_emote` needs a live
+	# `GKMatch` and there is not one here. So what is asserted is the guard —
+	# and specifically that a refused send costs nothing. Spending the cooldown
+	# on a packet that never left would leave the key dark for two and a half
+	# seconds with nothing to show for it, which is the same bug as build 2
+	# wearing a different hat.
+	_expect("there is no match in a headless run", not game.net_active())
+	game._emote_out = {}
+	game._emote_cool = 0.0
+	game._send_emote(5)
+	_expect("a send with no match echoes nothing", game._emote_out.is_empty())
+	_expect("and costs no cooldown", is_zero_approx(game._emote_cool))
+
+	# The two slots are independent, so a reply cannot delete what it replies to.
+	game._emote_out = {"i": 5, "left": game.EMOTE_SHOW}
+	_expect("yours and theirs coexist",
+		int(game._emote_in.get("i", -1)) == 3
+		and int(game._emote_out.get("i", -1)) == 5)
+	game._tick_emotes(game.EMOTE_SHOW + 0.1)
+	_expect("and both expire", game._emote_in.is_empty()
+		and game._emote_out.is_empty())
+
 	game.queue_free()
 
 
