@@ -3482,6 +3482,19 @@ const EMOTE_SHOW := 2.4
 const EMOTE_TILE := 62.0
 const EMOTE_TILE_GAP := 8.0
 
+## How solid an emote is when it is decoration rather than a message.
+##
+## The art is the only illustration in a UI otherwise made of rectangles and
+## text, and at full opacity it sits in front of the panel instead of on it.
+## Letting a little of the panel through is what puts it back in the same plane
+## as everything around it.
+##
+## Deliberately not baked into the files. Alpha in the source would apply
+## everywhere at once and could not be taken back, and the one place an emote
+## must *not* be faded is the bubble — that one is a thing another player said,
+## and a message you can see through reads as a message that failed to arrive.
+const EMOTE_MENU_ALPHA := 0.88
+
 var _emote_tex: Dictionary = {}
 ## Which touch is working the emote key, or -1. The mouse uses -1 as everywhere
 ## else, so this is -2 when nothing is happening rather than -1.
@@ -3988,8 +4001,12 @@ func _draw_emote_key() -> void:
 			_panel(r.grow(6.0), Color("#c77dff", 0.20), Color("#c77dff", 0.85),
 				10.0, 2.0)
 		# The picked one lifts and the rest sit back, so the choice is legible
-		# from the corner of an eye that is mostly on the board.
-		_draw_emote(r.grow(4.0 if on else 0.0), i, 1.0 if on else 0.72, on)
+		# from the corner of an eye that is mostly on the board. Neither reaches
+		# full: this column is sitting on top of a board somebody is still
+		# reading, and letting a little of it through is the difference between
+		# covering the stack and hiding it.
+		_draw_emote(r.grow(4.0 if on else 0.0), i,
+			EMOTE_MENU_ALPHA if on else 0.70, on)
 
 
 ## What the opponent just said, over their card.
@@ -5848,8 +5865,9 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 						ew * (0.58 + 0.13 * float(k)), Color(glow, 0.14 * gf))
 				var tex := _emote_texture(EMOTES[[0, 4, 5][i]])
 				if tex != null:
+					var c := Cosmetics.emote_tint(id, t)
 					_overlay.draw_texture_rect(tex, er, false,
-						Cosmetics.emote_tint(id, t))
+						Color(c.r, c.g, c.b, EMOTE_MENU_ALPHA))
 		"victory":
 			match id:
 				"confetti":
