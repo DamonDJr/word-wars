@@ -12,16 +12,24 @@ extends SceneTree
 ## on the other's. Nothing about that fails loudly at build time, and it cannot
 ## be seen at all without two devices and a live match.
 ##
-## ## The white-body check is the load-bearing one
+## ## The colour checks are the load-bearing ones
 ##
-## These are drawn with `draw_texture_rect`'s modulate, which multiplies. That
-## only produces the tint colour where the source is white: a body at 70% grey
-## comes back at 70% of whatever colour was asked for, which reads as muddy
-## rather than as wrong, and muddy survives review.
+## These are drawn with `draw_texture_rect`'s modulate, which multiplies, so both
+## ends of the source art matter and neither is visible in a diff.
 ##
-## The source art arrived at #B2B2B2 and was levelled to white on the way in, so
-## this asserts the levelling happened — a re-export from the drawing tool that
-## skips it would otherwise land silently.
+## The white end is what takes the tint. The art arrived at #B2B2B2 and was
+## levelled to white on the way in; at 70% grey it would come back at 70% of
+## whatever colour was asked for, which reads as muddy rather than as wrong, and
+## muddy survives review.
+##
+## The dark end is what multiply cannot lift, so it is the same on every style —
+## which made it the one part of an emote that had to already belong. It arrived
+## at #000000, a colour the rest of this game uses precisely nowhere, and against
+## a UI that bottoms out at #0b1020 it read as a hole punched through the panel.
+## Raised to #2a3355, which the menus already use.
+##
+## Both were done to the files rather than in a shader. This project has no
+## shaders, and neither of these is a per-frame problem.
 
 var fails := 0
 
@@ -50,10 +58,10 @@ func _init() -> void:
 		_expect("%-6s is 512x512 (got %dx%d)" % [name, tex.get_width(), tex.get_height()],
 			tex.get_width() == 512 and tex.get_height() == 512)
 
-	print("--- the bodies are white, or the tint will be muddy ---")
+	print("--- white bodies, dark ink, no pure black ---")
 	for name: String in loaded:
 		var img: Image = (loaded[name] as Texture2D).get_image()
-		_expect("%-6s has a white body and keeps its ink" % name, _tintable(img))
+		_expect("%-6s is white, inked, and free of pure black" % name, _tintable(img))
 
 	print("--- and there is something to see ---")
 	for name: String in loaded:
@@ -146,13 +154,23 @@ func _gesture() -> void:
 	game.queue_free()
 
 
-## White somewhere and near-black somewhere, among the pixels that are actually
-## drawn. Both halves matter: white is what takes the tint, and the black is the
-## eyes and the linework, which must *not* take it — multiply leaves black alone,
-## so ink surviving is what stops a tinted emote becoming a flat silhouette.
+## White somewhere and dark ink somewhere, among the pixels actually drawn, and
+## nothing at pure black at all.
+##
+## The first two are what makes a tint work: white takes the colour, and the ink
+## stays dark because multiply cannot lift it, which is what stops a tinted emote
+## collapsing into a flat silhouette.
+##
+## The third is a palette rule, and it is the reason the art was re-levelled.
+## `game.gd` uses `#000000` exactly nowhere — the whole UI bottoms out at
+## `#0b1020` — so pure black anywhere on screen is only ever these files, and it
+## read as a hole punched through the panel. The ink now sits at `#2a3355`, which
+## is a colour the menus already use. Asserted rather than trusted because it is
+## invisible in a diff and a re-export from the drawing tool would undo it.
 func _tintable(img: Image) -> bool:
 	var white := 0
 	var ink := 0
+	var pure_black := 0
 	for y in range(0, img.get_height(), 4):
 		for x in range(0, img.get_width(), 4):
 			var c := img.get_pixel(x, y)
@@ -160,9 +178,11 @@ func _tintable(img: Image) -> bool:
 				continue
 			if c.r > 0.97 and c.g > 0.97 and c.b > 0.97:
 				white += 1
-			elif c.r < 0.15 and c.g < 0.15 and c.b < 0.15:
+			elif c.v < 0.45:
 				ink += 1
-	return white > 200 and ink > 20
+			if c.r < 0.02 and c.g < 0.02 and c.b < 0.02:
+				pure_black += 1
+	return white > 200 and ink > 20 and pure_black == 0
 
 
 ## A sticker, not a full-bleed image: the corners have to be empty or it will
