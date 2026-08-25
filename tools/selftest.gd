@@ -1,6 +1,25 @@
 extends SceneTree
 
-func _initialize() -> void:
+## Two things keep this file runnable, and both of them are about *when*
+## `board.gd` gets compiled.
+##
+## `board.gd` reaches for the `WordBank` autoload at class scope, so it cannot be
+## compiled until the autoloads are registered. Under `--script` that rules out
+## two things at once: `_initialize`, which runs before they exist, and naming
+## `WWBoard` anywhere in this file, which makes `board.gd` a *compile-time*
+## dependency and pulls it in before a line of this script has run. So it is
+## `_init` and a frame for the first, and `load` rather than the class name for
+## the second — the board is reached through `board_cls` below, statics and all.
+##
+## Getting either wrong fails the same way and it is a bad way: the dependency
+## fails to compile, `new()` hands back a bare Node2D with no script attached,
+## every call on it is a missing method, and the first one aborts `_init` before
+## it reaches `quit`. The SceneTree then idles forever. So the symptom is a test
+## that *hangs* rather than one that fails — no exit code, no summary line, and a
+## compile error somewhere in eighty lines of word statistics as the only clue.
+func _init() -> void:
+	await process_frame
+
 	var wb = load("res://scripts/word_bank.gd").new()
 	wb._ready()  # not in the tree, so drive it directly
 
@@ -25,20 +44,21 @@ func _initialize() -> void:
 			w, s, wb.valid_prefix_count(s), wb.prefix_count(s)])
 
 	print("--- reach: how many blocks one word takes out ---")
-	var board = load("res://scripts/board.gd").new()
+	var board_cls = load("res://scripts/board.gd")
+	var board = board_cls.new()
 	for i in 4:
 		board.add_garbage("al", 0, 1, 1)
 	for probe in ["all", "alarm", "alignment", "album", "alternatively"]:
 		print("  %-14s %2d letters  reach %d  clears %d of 4" % [
-			probe.to_upper(), probe.length(), WWBoard.reach(probe),
-			board.would_clear(probe, WWBoard.reach(probe))])
+			probe.to_upper(), probe.length(), board_cls.reach(probe),
+			board.would_clear(probe, board_cls.reach(probe))])
 	# And confirm a clear actually removes exactly that many.
 	var before: int = board.blocks.size()
-	var took: int = board.clear_matching("alarm", WWBoard.reach("alarm"))
+	var took: int = board.clear_matching("alarm", board_cls.reach("alarm"))
 	print("  ALARM removed %d, %d of %d left  %s" % [
 		took, board.blocks.size(), before,
 		"ok" if took == 2 and board.blocks.size() == 2 else "WRONG"])
-	var rest: int = board.clear_matching("alignment", WWBoard.reach("alignment"))
+	var rest: int = board.clear_matching("alignment", board_cls.reach("alignment"))
 	print("  ALIGNMENT then removed the remaining %d  %s" % [
 		rest, "ok" if board.blocks.is_empty() else "WRONG"])
 
