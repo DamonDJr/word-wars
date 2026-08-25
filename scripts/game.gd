@@ -4629,8 +4629,8 @@ func _draw_how_cards(cx: float) -> void:
 					12, Color("#8d99bd"))
 
 
-## Sound, effects, and the name you play under. Every row is either a slider or
-## a switch, and every one of them writes straight through to the profile — there
+## Sound, effects, and the receipt. Every row is a slider, a switch or a button,
+## and every one of them writes straight through to the profile — there
 ## is no apply button, because a settings screen that can be wrong until you
 ## confirm it is a settings screen that will be left wrong.
 func _draw_settings(size: Vector2) -> void:
@@ -4697,8 +4697,8 @@ func _draw_settings(size: Vector2) -> void:
 	var sfoot := _grid_bottom(
 		[(rows[rows.size() - 1] as Dictionary)["rect"]], 502.0) + 66.0
 	_text_fit_overlay(_font, Vector2(cx, sfoot),
-		"tap a slider or switch · tap your name to change it" if portrait
-		else "click a slider or switch · click your name to change it · ESC back",
+		"tap a slider or switch" if portrait
+		else "click a slider or switch · ESC back",
 		12, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 10)
 
 	# Where the record lives, so it can be backed up or moved between machines
@@ -7104,7 +7104,7 @@ func _title_modes() -> Array:
 		rows.append(["PRE", "PREMIUM",
 			"%s · no ad break, and three things you cannot earn" % Store.price,
 			"buy", Color("#ffd166"), 2])
-	rows.append(["SET", "SETTINGS", "Sound, effects, name", "settings",
+	rows.append(["SET", "SETTINGS", "Sound, effects, haptics", "settings",
 		Color("#8d99bd"), 2])
 	return rows
 
