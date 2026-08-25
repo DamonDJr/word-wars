@@ -953,6 +953,10 @@ func _draw_portrait_hud(size: Vector2) -> void:
 			_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
 				("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
 				Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
+			# Over the card of whoever sent it. With one rival there is only one
+			# card, but the check keeps it honest if a free-for-all ever arrives.
+			if s2.slot > 0 and net_active():
+				_draw_emote_bubble(r)
 
 	# Everything below the board: what is falling on you, the run you are on,
 	# and the line you are typing, stacked into the gap above the keyboard.
@@ -2009,6 +2013,8 @@ func _on_multiplayer_data(packet: Dictionary) -> void:
 				_end_match(ai_side)
 		"rematch":
 			_on_net_rematch()
+		"emote":
+			_on_net_emote(int(payload.get("i", -1)))
 
 
 # ------------------------------------------------------------------ rematch
@@ -2610,6 +2616,8 @@ func _process(delta: float) -> void:
 		Engine.time_scale = HITSTOP_SCALE
 	elif Engine.time_scale != 1.0:
 		Engine.time_scale = 1.0
+
+	_tick_emotes(delta)
 
 	for i in range(tracers.size() - 1, -1, -1):
 		var tr: Tracer = tracers[i]
@@ -3440,6 +3448,224 @@ var _keys_down: Dictionary = {}
 var _touch_input := false
 
 
+# -------------------------------------------------------------------- emotes
+#
+# Hold the key above P, the seven of them fan out upwards, drag to the one you
+# mean and let go. Hold rather than tap because the key sits in the reach of a
+# thumb that is mostly aiming at letters: a tap that misses P and lands here
+# would open a menu over the board mid-word, whereas a *hold* that misses P is
+# nothing at all — the finger is gone before the menu ever opens.
+#
+# Drag-and-release rather than tap-to-open-then-tap-to-pick for the same reason
+# in reverse: one gesture, one finger, no state left behind on the screen if you
+# change your mind. Sliding back to the key and letting go cancels.
+#
+# The menu opens upward and is allowed to cover the board. That is a deliberate
+# trade — for the third of a second it is up you cannot read your own stack, and
+# the alternative is a menu that opens over the keyboard and hides the letters
+# you are about to need.
+
+## In wire order. The index is what crosses the network, so this is an on-disk
+## format: append only, and never reorder. `emotetest` pins it against the files.
+const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
+
+## How long the key must be held before the menu appears. Short enough not to
+## feel like a wait, long enough that a brush past it on the way to P does not
+## trigger it.
+const EMOTE_HOLD := 0.16
+## Gap between two of your own emotes. Not a punishment — a rate limit, so a
+## held finger cannot flood the other player's screen.
+const EMOTE_COOLDOWN := 2.5
+## How long a received emote stays up.
+const EMOTE_SHOW := 2.4
+## One tile in the fan.
+const EMOTE_TILE := 62.0
+const EMOTE_TILE_GAP := 8.0
+
+var _emote_tex: Dictionary = {}
+## Which touch is working the emote key, or -1. The mouse uses -1 as everywhere
+## else, so this is -2 when nothing is happening rather than -1.
+var _emote_touch := -2
+var _emote_held := 0.0
+var _emote_open := false
+## Index into `EMOTES` under the finger, or -1 for none — which is what sliding
+## back down to the key gives you, and is how the gesture is cancelled.
+var _emote_pick := -1
+## Seconds until another can be sent.
+var _emote_cool := 0.0
+## What the opponent last sent: `{"i": int, "left": float}`. Empty when nothing
+## is on screen.
+var _emote_in: Dictionary = {}
+
+
+## The hold that opens the menu, the cooldown, and the life of an incoming
+## bubble. Run every frame from `_process` rather than on timers, because all
+## three have to stop dead when the match does — a `SceneTreeTimer` outliving a
+## match is how an emote arrives on the summary screen.
+func _tick_emotes(delta: float) -> void:
+	if _emote_cool > 0.0:
+		_emote_cool = maxf(0.0, _emote_cool - delta)
+	if not _emote_in.is_empty():
+		var left := float(_emote_in["left"]) - delta
+		if left <= 0.0:
+			_emote_in = {}
+		else:
+			_emote_in["left"] = left
+
+	if _emote_touch == -2:
+		return
+	# A gesture cannot outlive the thing it is aimed at. Losing the match, or
+	# pausing, with the column open would leave it on screen over a dead board.
+	if not _emotes_live():
+		_emote_touch = -2
+		_emote_open = false
+		_emote_pick = -1
+		return
+	if _emote_open:
+		return
+	_emote_held += delta
+	if _emote_held >= EMOTE_HOLD:
+		_emote_open = true
+		Haptics.fire("tap", 0.8)
+		Sfx.play("key", 0.78)
+
+
+## A finger has landed on the key. Nothing opens yet — `_process` decides that
+## once the hold has lasted, which is what makes a brush past it harmless.
+func _emote_begin(index: int) -> void:
+	_emote_touch = index
+	_emote_held = 0.0
+	_emote_open = false
+	_emote_pick = -1
+
+
+func _emote_drag(at: Vector2) -> void:
+	if not _emote_open:
+		return
+	var was := _emote_pick
+	_emote_pick = _emote_at(at)
+	# One tick per tile crossed, so the column can be worked without looking at
+	# it. Silent when sliding off the end, because leaving is not a choice.
+	if _emote_pick != was and _emote_pick >= 0:
+		Haptics.fire("tap", 0.5)
+		Sfx.play("key", 1.18)
+
+
+## Finger up. Sends whatever is under it, or nothing if the menu never opened or
+## the finger came back down to the key.
+func _emote_release() -> void:
+	var pick := _emote_pick if _emote_open else -1
+	_emote_touch = -2
+	_emote_held = 0.0
+	_emote_open = false
+	_emote_pick = -1
+	if pick >= 0:
+		_send_emote(pick)
+
+
+## Out, and shown on your own screen at the same moment.
+##
+## The sender sees their own emote in the same bubble the receiver will, which
+## is the only feedback that the thing left the device — there is no delivery
+## receipt on a GameKit broadcast, and a control that looks identical whether it
+## worked or not is a control people press twice.
+func _send_emote(idx: int) -> void:
+	if idx < 0 or idx >= EMOTES.size() or _emote_cool > 0.0:
+		return
+	if not net_active():
+		return
+	_emote_cool = EMOTE_COOLDOWN
+	MultiplayerManager.send_event("emote", {"i": idx})
+	Haptics.fire("power", 0.7)
+	Sfx.play("zap", 1.12)
+
+
+## In. Clamped rather than trusted: the index arrives from another device, and a
+## build that ships one more emote than this one would otherwise index off the
+## end of the array on the older phone.
+func _on_net_emote(idx: int) -> void:
+	if idx < 0 or idx >= EMOTES.size():
+		return
+	_emote_in = {"i": idx, "left": EMOTE_SHOW}
+	Haptics.fire("tap", 0.4)
+
+
+## Where the seven tiles sit when the menu is open: straight up from the key,
+## nearest the thumb first.
+##
+## Built from the key's own rect rather than from the screen, so the column
+## cannot drift away from the control that opened it.
+func _emote_rects() -> Array:
+	var size := get_viewport_rect().size
+	var key := Keyboard.emote_rect(size, _keyboard_bottom())
+	var out: Array = []
+	# Pulled back in from the edge. The key sits hard against the right margin
+	# because P does, but the column is wider than the key and its rail is wider
+	# again — left centred on the key, the rail runs about six pixels off the
+	# side of the screen, which is exactly the kind of clipping that only shows
+	# up on the device.
+	var rail_half: float = EMOTE_TILE * 0.5 + 12.0
+	var cx: float = clampf(key.get_center().x, rail_half + 6.0,
+		size.x - rail_half - 6.0)
+	for i in EMOTES.size():
+		var y: float = key.position.y - EMOTE_TILE_GAP \
+			- float(i + 1) * (EMOTE_TILE + EMOTE_TILE_GAP)
+		out.append(Rect2(cx - EMOTE_TILE * 0.5, y, EMOTE_TILE, EMOTE_TILE))
+	return out
+
+
+## The emote under a finger, or -1. Generous horizontally on purpose: the column
+## is one tile wide and a thumb dragging straight up does not travel straight.
+func _emote_at(p: Vector2) -> int:
+	var at := p - Vector2(0.0, TOUCH_LIFT)
+	var rects := _emote_rects()
+	for i in rects.size():
+		var r: Rect2 = rects[i]
+		if at.y >= r.position.y - EMOTE_TILE_GAP * 0.5 \
+				and at.y < r.position.y + r.size.y + EMOTE_TILE_GAP * 0.5 \
+				and absf(at.x - r.get_center().x) < EMOTE_TILE * 1.6:
+			return i
+	return -1
+
+
+func _emote_texture(name: String) -> Texture2D:
+	if _emote_tex.has(name):
+		return _emote_tex[name] as Texture2D
+	var tex := _load_or_null("res://emotes/%s.png" % name) as Texture2D
+	_emote_tex[name] = tex
+	return tex
+
+
+## Whether the key is worth drawing at all. Emotes are a thing you send to
+## somebody, so they exist only in a live match against a person — a solo run
+## would be a button that talks to nobody.
+func _emotes_live() -> bool:
+	return _keys_live() and net_active()
+
+
+## Paint one, tinted by the equipped style. `alpha` fades the whole thing,
+## glow included, so a bubble can leave without the halo outliving it.
+func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool) -> void:
+	if idx < 0 or idx >= EMOTES.size():
+		return
+	var tex := _emote_texture(EMOTES[idx])
+	if tex == null:
+		return
+	var style := Profile.worn("emote")
+	var t := Time.get_ticks_msec() / 1000.0
+	if glow:
+		# A soft disc behind it. Three rings rather than a texture, because the
+		# sticker is white on a dark board and needs seating, not decoration.
+		var g := Cosmetics.emote_glow(style, t)
+		var mid := at.get_center()
+		for i in 3:
+			var f := 1.0 - float(i) / 3.0
+			_overlay.draw_circle(mid, at.size.x * (0.62 + 0.13 * float(i)),
+				Color(g, 0.16 * f * alpha))
+	var tint := Cosmetics.emote_tint(style, t)
+	_overlay.draw_texture_rect(tex, at, false, Color(tint.r, tint.g, tint.b, alpha))
+
+
 ## Whether the drawn keyboard is up and listening.
 func _keys_live() -> bool:
 	return portrait and phase == Phase.PLAY and not paused and player.alive
@@ -3710,6 +3936,91 @@ func _draw_keyboard() -> void:
 		_panel(r, bg, edge, 9.0, 2.0)
 		_otext(_font_bold, r.get_center(), String(k["label"]),
 			26 if id.length() == 1 else 19, ink)
+
+## The emote key, and the fan when it is open.
+##
+## Drawn after the keyboard so the open column sits over the board rather than
+## under it, and on `_overlay` like everything else that must not move with the
+## screen shake — an emote menu that jitters while you are trying to pick from it
+## is a menu you will pick the wrong thing from.
+func _draw_emote_key() -> void:
+	if not _emotes_live():
+		return
+	var key := Keyboard.emote_rect(get_viewport_rect().size, _keyboard_bottom())
+	var cooling: bool = _emote_cool > 0.0
+	var down: bool = _emote_touch != -2
+
+	var edge := Color("#c77dff", 0.5 if not cooling else 0.18)
+	var bg := _key_bg.darkened(0.25) if not down else _key_bg.lightened(0.10)
+	_panel(key, bg, edge, 9.0, 2.0 if down else 1.0)
+
+	# The face on the key is the first emote, which doubles as the legend: there
+	# is no room for the word "emote" at this size and a smiley needs no word.
+	var pad := key.size.y * 0.16
+	_draw_emote(Rect2(key.position + Vector2((key.size.x - key.size.y) * 0.5 + pad,
+		pad), Vector2(key.size.y - pad * 2.0, key.size.y - pad * 2.0)), 0,
+		0.30 if cooling else 0.95, false)
+
+	if cooling:
+		# The wedge that says when, rather than a number nobody will read while
+		# a board is falling on them.
+		var f: float = 1.0 - _emote_cool / EMOTE_COOLDOWN
+		_overlay.draw_arc(key.get_center(), key.size.y * 0.42, -PI * 0.5,
+			-PI * 0.5 + TAU * f, 24, Color("#c77dff", 0.55), 2.0)
+
+	if not _emote_open:
+		return
+
+	# The column. A rail behind it so seven stickers over a moving board still
+	# read as one list rather than as seven things that happened to line up.
+	var rects := _emote_rects()
+	var first: Rect2 = rects[rects.size() - 1]
+	var last: Rect2 = rects[0]
+	var rail := Rect2(first.position.x - 12.0, first.position.y - 10.0,
+		first.size.x + 24.0,
+		last.position.y + last.size.y - first.position.y + 20.0)
+	_panel(rail, Color("#0b1020", 0.93), Color("#c77dff", 0.35), 14.0, 2.0)
+
+	for i in rects.size():
+		var r: Rect2 = rects[i]
+		var on: bool = i == _emote_pick
+		if on:
+			_panel(r.grow(6.0), Color("#c77dff", 0.20), Color("#c77dff", 0.85),
+				10.0, 2.0)
+		# The picked one lifts and the rest sit back, so the choice is legible
+		# from the corner of an eye that is mostly on the board.
+		_draw_emote(r.grow(4.0 if on else 0.0), i, 1.0 if on else 0.72, on)
+
+
+## What the opponent just said, over their card.
+##
+## Anchored to the rival card in the portrait HUD rather than to the middle of
+## the screen: an emote is *from* somebody, and one that appears detached from
+## the person who sent it is a decoration. It also keeps the board clear, which
+## the sending menu deliberately does not.
+func _draw_emote_bubble(card: Rect2) -> void:
+	if _emote_in.is_empty():
+		return
+	var left := float(_emote_in.get("left", 0.0))
+	# Fades out over the last half second, and pops in over the first tenth.
+	var age: float = EMOTE_SHOW - left
+	var alpha: float = clampf(left / 0.5, 0.0, 1.0)
+	var pop: float = clampf(age / 0.10, 0.0, 1.0)
+	var size: float = 78.0 * (0.72 + 0.28 * pop)
+	var mid := Vector2(card.get_center().x, card.position.y - size * 0.52 - 6.0)
+	var box := Rect2(mid - Vector2(size, size) * 0.5, Vector2(size, size))
+
+	# The bubble behind it, with a tail pointing at whose it is.
+	var pad := 9.0
+	var bub := box.grow(pad)
+	_panel(bub, Color("#0b1020", 0.90 * alpha), Color("#c77dff", 0.45 * alpha),
+		12.0, 2.0)
+	var tip := Vector2(mid.x, bub.position.y + bub.size.y + 9.0)
+	_overlay.draw_colored_polygon(PackedVector2Array([
+		tip, tip + Vector2(-9.0, -10.0), tip + Vector2(9.0, -10.0)]),
+		Color("#0b1020", 0.90 * alpha))
+	_draw_emote(box, int(_emote_in.get("i", 0)), alpha, true)
+
 
 ## The keys as they are drawn, plus the line above which the keyboard stops
 ## claiming taps. There is nothing else left to draw: inside the band every pixel
@@ -4353,6 +4664,7 @@ func _draw_overlay() -> void:
 	if phase == Phase.PLAY:
 		if portrait:
 			_draw_keyboard()
+			_draw_emote_key()
 			_draw_back_button()
 		_draw_score_pops()
 		_draw_power_pops()
@@ -5520,6 +5832,24 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					WWBoard.TIER_COLORS[i * 2], id, false)
 				_text_fit_overlay(_font_bold, rr.get_center(),
 					["AL", "SHIP", "ENT"][i], 15, rr.size.x - 8.0, ink)
+		"emote":
+			# Three of the seven, in the style being considered, at the size they
+			# arrive at. Three rather than one because the point of a style is how
+			# the set looks together, and rather than seven because seven at this
+			# width are too small to tell apart.
+			var ew: float = minf(box.size.y * 0.72, box.size.x / 3.6)
+			for i in 3:
+				var er := Rect2(mid.x - ew * 1.7 + float(i) * (ew + 10.0) ,
+					mid.y - ew * 0.5, ew, ew)
+				var glow := Cosmetics.emote_glow(id, t)
+				for k in 3:
+					var gf := 1.0 - float(k) / 3.0
+					_overlay.draw_circle(er.get_center(),
+						ew * (0.58 + 0.13 * float(k)), Color(glow, 0.14 * gf))
+				var tex := _emote_texture(EMOTES[[0, 4, 5][i]])
+				if tex != null:
+					_overlay.draw_texture_rect(tex, er, false,
+						Cosmetics.emote_tint(id, t))
 		"victory":
 			match id:
 				"confetti":
@@ -7473,6 +7803,35 @@ func _unhandled_input(event: InputEvent) -> void:
 	# side, from one that landed on the wrong key. So the keyboard reads the
 	# touches themselves, and once any have arrived the mouse path below stands
 	# down for good rather than delivering the same press twice.
+	# The emote key is tested before the keyboard and swallows its touch for the
+	# whole gesture.
+	#
+	# Its own rect stops exactly where the keyboard band starts, so the two do not
+	# actually fight over any pixel the finger aims at. The forgiveness margin
+	# does: `grow(8)` reaches eight pixels into the band, and `_key_at` snaps
+	# anything inside the band to the nearest key — which at that corner is P. So
+	# the order is what keeps the margin from costing a letter.
+	if event is InputEventScreenTouch:
+		var et := event as InputEventScreenTouch
+		_touch_input = true
+		if et.pressed and _emote_touch == -2 and _emotes_live() \
+				and Keyboard.emote_rect(get_viewport_rect().size,
+					_keyboard_bottom()).grow(8.0).has_point(
+						et.position - Vector2(0.0, TOUCH_LIFT)):
+			_emote_begin(et.index)
+			return
+		if not et.pressed and et.index == _emote_touch:
+			_emote_release()
+			return
+	# Sliding is only ever the emote menu. The keyboard deliberately does not
+	# track it — a finger sliding across letters types nothing, which is what
+	# stops a thumb resting on the glass from writing a word.
+	if event is InputEventScreenDrag and _emote_touch != -2:
+		var dg := event as InputEventScreenDrag
+		if dg.index == _emote_touch:
+			_emote_drag(dg.position)
+			return
+
 	if event is InputEventScreenTouch:
 		var st := event as InputEventScreenTouch
 		_touch_input = true

@@ -81,5 +81,38 @@ static func keys(size: Vector2, bottom: float) -> Array:
 
 
 ## Total height, so a caller can work out what is left for everything else.
+##
+## The emote key is deliberately *not* in here. It sits above the top letter row
+## in space the board was already leaving empty, and folding it into the height
+## would push `PORTRAIT_BOARD_TOP` down and shrink the playfield on every phone —
+## which is a real cost, paid on every screen, for a control used a handful of
+## times a match. So it hangs off the top of the band and is hit-tested ahead of
+## the keyboard rather than as part of it.
 static func height() -> float:
 	return float(ROWS.size()) * (KEY_H + GAP) + ACTION_H + GAP
+
+
+## How tall the emote key is, and how far above the letters it floats.
+const EMOTE_H := 54.0
+const EMOTE_RISE := 10.0
+
+
+## The emote key, sitting directly above P.
+##
+## Above P specifically because it is the far right of the top row: the only
+## letter with nothing above it and no neighbour to its right, so a thumb
+## overshooting it lands on screen furniture rather than on another letter. It is
+## also the corner a right thumb reaches without crossing the board.
+##
+## Narrower than P on purpose. It is a hold-to-open control, so a stray tap costs
+## nothing — but a stray tap that *misses P* costs a letter, and the whole point
+## of the last keyboard pass was that letters are the thing you must not miss.
+static func emote_rect(size: Vector2, bottom: float) -> Rect2:
+	var wide: float = size.x - SIDE * 2.0
+	var kw: float = (wide - GAP * 9.0) / 10.0
+	var top: float = bottom - ACTION_H - GAP - float(ROWS.size()) * (KEY_H + GAP)
+	var w: float = kw * 0.86
+	# Right-aligned to P rather than centred on it, so the key and the letter
+	# share the edge the thumb is already aiming at.
+	var x: float = SIDE + 9.0 * (kw + GAP) + (kw - w)
+	return Rect2(x, top - EMOTE_H - EMOTE_RISE, w, EMOTE_H)

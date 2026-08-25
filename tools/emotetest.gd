@@ -61,9 +61,89 @@ func _init() -> void:
 		_expect("%-6s has transparent margins and an opaque middle" % name,
 			_has_alpha_range(img))
 
+	_styles()
+	# Awaited, or it returns at its first `await` having asserted nothing — and
+	# a section that prints its heading and no results looks like a section that
+	# passed.
+	await _gesture()
+
 	print("--- %s ---" % ("the emotes are ready" if fails == 0
 		else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
+
+
+## Every style has to produce a colour, and the default has to be reachable
+## without owning anything — a cosmetic slot whose first entry is locked leaves
+## `worn` returning something the player cannot see.
+func _styles() -> void:
+	print("--- the styles paint ---")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+	_expect("emote is a cosmetic slot", p.SLOTS.has("emote"))
+	_expect("and it has a name", String(p.SLOT_NAMES.get("emote", "")) != "")
+
+	var entries: Array = p.entries("emote")
+	_expect("there are styles to choose from", entries.size() >= 4)
+	_expect("the first is free", (entries[0] as Dictionary)["need"].is_empty())
+
+	for e: Dictionary in entries:
+		var id := String(e["id"])
+		_expect("%-7s is painted" % id, Cosmetics.EMOTE_STYLES.has(id))
+		# Multiply cannot lift a channel, so a style darker than the art is a
+		# style that can only ever make the character muddier.
+		var c: Color = Cosmetics.emote_tint(id, 0.0)
+		_expect("%-7s is bright enough to tint with (v=%.2f)" % [id, c.v],
+			c.v > 0.55)
+
+	# The cycling one has to actually cycle, or it is an expensive white.
+	var a: Color = Cosmetics.emote_tint("holo", 0.0)
+	var b: Color = Cosmetics.emote_tint("holo", 2.0)
+	_expect("holo moves over time", not a.is_equal_approx(b))
+	_expect("an unknown style falls back rather than crashing",
+		Cosmetics.emote_tint("nonsense", 0.0).v > 0.0)
+
+
+## The gesture, driven the way a thumb drives it. None of this needs a match —
+## the point is that the state machine cannot be left half-open.
+func _gesture() -> void:
+	print("--- the gesture opens, picks and closes ---")
+	var game = load("res://scenes/main.tscn").instantiate()
+	get_root().add_child(game)
+	await process_frame
+
+	_expect("nothing is held to begin with", game._emote_touch == -2)
+	_expect("and the menu is shut", not game._emote_open)
+
+	game._emote_begin(0)
+	_expect("a press takes the touch", game._emote_touch == 0)
+	_expect("but does not open it yet", not game._emote_open)
+
+	# Held, but not in a match — the menu must not open over a solo board.
+	game._tick_emotes(game.EMOTE_HOLD + 0.05)
+	_expect("a hold outside a match opens nothing", not game._emote_open)
+	_expect("and the gesture is dropped", game._emote_touch == -2)
+
+	# The wire index is clamped, because it arrives from another device.
+	game._on_net_emote(999)
+	_expect("an out-of-range emote is ignored", game._emote_in.is_empty())
+	game._on_net_emote(-1)
+	_expect("and so is a negative one", game._emote_in.is_empty())
+	game._on_net_emote(2)
+	_expect("a real one is shown", int(game._emote_in.get("i", -1)) == 2)
+
+	# And it leaves on its own, or it would sit over the card forever.
+	game._tick_emotes(game.EMOTE_SHOW + 0.1)
+	_expect("and it expires by itself", game._emote_in.is_empty())
+
+	# The cooldown is what stops a held finger flooding the other screen.
+	game._emote_cool = game.EMOTE_COOLDOWN
+	game._send_emote(0)
+	_expect("a second emote inside the cooldown is refused",
+		is_equal_approx(game._emote_cool, game.EMOTE_COOLDOWN))
+	game._tick_emotes(game.EMOTE_COOLDOWN + 0.1)
+	_expect("and the cooldown runs out", is_zero_approx(game._emote_cool))
+
+	_expect("the wire list matches the files", game.EMOTES == EMOTES)
+	game.queue_free()
 
 
 ## White somewhere and near-black somewhere, among the pixels that are actually

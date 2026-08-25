@@ -212,6 +212,57 @@ static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color
 const BLOCK_STYLES := ["solid", "outline", "glass", "circuit"]
 
 
+# ------------------------------------------------------------------- emotes
+#
+# The emote art is drawn white on purpose, so a style here is a single multiply
+# away from being the whole look. `draw_texture_rect`'s modulate multiplies:
+# white takes the colour exactly, and the black eyes and linework cannot be
+# lifted by a multiply at all, so the ink survives every style below without any
+# of them having to know it exists.
+#
+# `glow` is the halo behind the sticker rather than a second tint on it. Emotes
+# land on a dark board over a busy playfield, and a white-bodied character with
+# nothing behind it reads as a hole punched in the screen; a soft disc of the
+# style's own colour is what seats it.
+
+## Ordered, because the cosmetics screen shows them in this order and the first
+## one is what an unequipped profile falls back to.
+const EMOTE_STYLES := {
+	# Bare white. The default, and the one the art was drawn as — every other
+	# style is this one multiplied by something.
+	"chalk": {"tint": "#e6ecff", "glow": "#8d99bd"},
+	"gold": {"tint": "#ffd166", "glow": "#ff9f45"},
+	"mint": {"tint": "#6bcb77", "glow": "#2fa35a"},
+	"coral": {"tint": "#ff7b6b", "glow": "#d63b3b"},
+	"orchid": {"tint": "#c77dff", "glow": "#8b4dd6"},
+	# The premium one, and the only one that moves. A fixed hue would have been
+	# a sixth colour rather than a reason to buy anything.
+	"holo": {"tint": "#ffffff", "glow": "#7de2ff", "cycle": true},
+}
+
+
+## The colour to multiply an emote by, at time `t` in seconds.
+##
+## `t` only matters for the cycling style; every other one ignores it, so a
+## caller never has to ask which kind it is holding.
+static func emote_tint(id: String, t: float) -> Color:
+	var s: Dictionary = EMOTE_STYLES.get(id, EMOTE_STYLES["chalk"])
+	if not bool(s.get("cycle", false)):
+		return Color(String(s["tint"]))
+	# Around the wheel every six seconds, at a saturation that still leaves the
+	# character white-ish rather than turning it into a colour swatch with a
+	# face. Value stays at 1: multiply can only darken, so anything less here
+	# comes out muddy on top of the board.
+	return Color.from_hsv(fposmod(t / 6.0, 1.0), 0.42, 1.0)
+
+
+static func emote_glow(id: String, t: float) -> Color:
+	var s: Dictionary = EMOTE_STYLES.get(id, EMOTE_STYLES["chalk"])
+	if bool(s.get("cycle", false)):
+		return Color.from_hsv(fposmod(t / 6.0 + 0.5, 1.0), 0.55, 1.0)
+	return Color(String(s["glow"]))
+
+
 ## Paint one, and report what colour its label should be — the ink has to be
 ## decided per style rather than assumed dark, because two of the four are
 ## mostly transparent.
