@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="270" height="522" viewBox="0 0 270 522">
+  <title>Word Wars — custom board template</title>
+  <desc>
+    Artboard is the board panel: 270 x 522 game units.
+    Playfield is 252 x 504, inset 9 units on every side.
+    Grid is 6 columns x 12 rows at 42 units per cell.
+    Draw art on the ART layer. Delete the GUIDES layer before exporting.
+  </desc>
+
+  <defs>
+    <!-- The panel's real shape. Anything outside it is clipped away in game,
+         so art may bleed to the artboard edge without showing a seam. -->
+    <clipPath id="panelClip">
+      <rect x="0" y="0" width="270" height="522" rx="10" ry="10"/>
+    </clipPath>
+    <pattern id="cells" x="9" y="9" width="42" height="42" patternUnits="userSpaceOnUse">
+      <rect width="42" height="42" fill="none" stroke="#7bdff2" stroke-width="0.5" stroke-opacity="0.5"/>
+    </pattern>
+  </defs>
+
+  <!-- ================================================================= ART -->
+  <!-- Replace everything in this group. It is clipped to the panel's rounded
+       rectangle, which is what the game actually draws. -->
+  <g id="ART" clip-path="url(#panelClip)">
+    <rect x="0" y="0" width="270" height="522" fill="#0e142a"/>
+  </g>
+
+  <!-- ============================================================== GUIDES -->
+  <!-- Reference only. Delete this whole group before exporting. -->
+  <g id="GUIDES" fill="none" font-family="monospace">
+
+    <!-- The playfield: 252 x 504, where blocks actually live. -->
+    <rect x="9" y="9" width="252" height="504" fill="url(#cells)"/>
+    <rect x="9" y="9" width="252" height="504" stroke="#7bdff2" stroke-width="1"/>
+
+    <!-- Danger band: the top three rows. The game washes this red as the stack
+         approaches the ceiling, so busy or red artwork here fights a warning
+         the player needs to read. Keep it quiet. -->
+    <rect x="9" y="9" width="252" height="126" fill="#f94144" fill-opacity="0.10"/>
+    <text x="135" y="78" fill="#f94144" font-size="9" text-anchor="middle"
+          opacity="0.85">DANGER BAND — keep quiet</text>
+
+    <!-- The ceiling line, drawn by the game at half a cell down. -->
+    <line x1="9" y1="30" x2="261" y2="30" stroke="#f94144" stroke-width="1"
+          stroke-dasharray="4 3" opacity="0.8"/>
+
+    <!-- Panel edge: 10-unit corner radius, 2-unit border the theme colours. -->
+    <rect x="1" y="1" width="268" height="520" rx="10" ry="10"
+          stroke="#c77dff" stroke-width="1" stroke-dasharray="6 4" opacity="0.9"/>
+    <text x="265" y="264" fill="#c77dff" font-size="7" text-anchor="middle"
+          opacity="0.9" transform="rotate(90 265 264)">panel edge · r=10 · 2-unit border</text>
+
+    <!-- One cell, called out, with the 3-unit inset a block is drawn at. -->
+    <rect x="9" y="471" width="42" height="42" stroke="#ffd166" stroke-width="1"/>
+    <rect x="12" y="474" width="36" height="36" stroke="#ffd166" stroke-width="0.5"
+          stroke-dasharray="3 2" opacity="0.7"/>
+    <text x="57" y="487" fill="#ffd166" font-size="8" opacity="0.9">42 x 42 cell</text>
+    <text x="57" y="498" fill="#ffd166" font-size="7" opacity="0.7">blocks inset 3</text>
+
+    <!-- Column and row counts. -->
+    <text x="135" y="7" fill="#8d99bd" font-size="7" text-anchor="middle">6 columns</text>
+    <text x="6" y="264" fill="#8d99bd" font-size="7" text-anchor="middle"
+          transform="rotate(-90 6 264)">12 rows</text>
+  </g>
+</svg>
