@@ -44,7 +44,7 @@ const KEY_EVERY := 0.055
 ## window the impact animation needs to land before the screen gets busy again.
 const THINK := 0.34
 ## Long enough to show the loop several times over. Trimmed to length later.
-const REEL_SECONDS := 14.0
+const REEL_SECONDS := 13.0
 
 ## Words the reel will not type.
 ##
@@ -111,11 +111,16 @@ func _init() -> void:
 	# which is twenty seconds of a reel with nothing in it and nothing to type
 	# at. The daily's opening pile is exactly the fix — a board that already
 	# means something on frame one — so it is borrowed wholesale.
+	# Twice, and hard. One pile leaves the board a third full, and the picker
+	# always takes the longest word available — so it clears faster than the ramp
+	# refills and the reel goes quiet in the middle, which is exactly the dead air
+	# the first cut was criticised for.
+	game._deal_daily_opening()
 	game._deal_daily_opening()
 	# And kept coming. The standard ramp is built for a three-minute match; over
 	# half a minute of footage it would deal twice.
-	game.pressure_interval = 2.6
-	game.pressure_timer = 1.2
+	game.pressure_interval = 1.25
+	game.pressure_timer = 0.6
 	await process_frame
 
 	var elapsed := 0.0
