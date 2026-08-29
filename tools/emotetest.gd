@@ -1,41 +1,47 @@
 extends SceneTree
-## The emote art, pinned: seven names, seven textures, and the one property the
-## tinting depends on.
+## The emote art, pinned: three sheets, the grid they are packed on, and the
+## wire indices they hang off.
 ##
 ##   godot --headless --script tools/emotetest.gd
 ##
 ## ## Why an asset test at all
 ##
-## Emotes are referenced by name over the wire — a match sends `EMOTES[i]`, not a
-## picture — so a renamed or missing file is not a missing picture, it is an
-## index that resolves to nothing on one player's phone and to the wrong feeling
-## on the other's. Nothing about that fails loudly at build time, and it cannot
-## be seen at all without two devices and a live match.
+## Emotes are referenced by index over the wire — a match sends a number, not a
+## picture — so a renamed file or a miscounted grid is not a missing picture, it
+## is an index that resolves to nothing on one player's phone and to the wrong
+## feeling on the other's. Nothing about that fails loudly at build time, and it
+## cannot be seen at all without two devices and a live match.
 ##
-## ## The colour checks are the load-bearing ones
+## ## The grid checks are the load-bearing ones
 ##
-## These are drawn with `draw_texture_rect`'s modulate, which multiplies, so both
-## ends of the source art matter and neither is visible in a diff.
+## The character is drawn from a sprite sheet with `draw_texture_rect_region`,
+## and every number describing that sheet lives in two places: in
+## `tools/build_emotes.py`, which packs it, and in `game.gd`, which reads it.
+## A cell size or frame count that drifts between the two does not crash — it
+## draws a sliver of the wrong frame, or half of two, which is the kind of thing
+## that survives review because it only shows up in motion.
 ##
-## The white end is what takes the tint. The art arrived at #B2B2B2 and was
-## levelled to white on the way in; at 70% grey it would come back at 70% of
-## whatever colour was asked for, which reads as muddy rather than as wrong, and
-## muddy survives review.
+## The two-pixel gutter is checked for the same reason. Bilinear filtering
+## reaches a texel past the region it is handed, so a frame packed hard against
+## its neighbour smears that neighbour's shoulder down its own edge. The margin
+## is what stops it, it is invisible in the file, and a re-pack at a different
+## cell size would quietly eat it.
 ##
-## The dark end is what multiply cannot lift, so it is the same on every style —
-## which made it the one part of an emote that had to already belong. It arrived
-## at #000000, a colour the rest of this game uses precisely nowhere, and against
-## a UI that bottoms out at #0b1020 it read as a hole punched through the panel.
-## Raised to #2a3355, which the menus already use.
+## ## And the four that are gone
 ##
-## Both were done to the files rather than in a shader. This project has no
-## shaders, and neither of these is a per-frame problem.
+## The fan offers three of the seven. The other four are still named in `EMOTES`
+## and still on disk, because a phone on the older build can send one, and this
+## asserts the fallback has something to land on.
 
 var fails := 0
 
 ## Every emote, in wire order. The index is what crosses the network, so this
 ## array is an on-disk format: append only, and never reorder.
 const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
+
+## What the fan offers, and what it no longer does.
+const MENU := [0, 2, 4]
+const RETIRED := ["cry", "angry", "huh", "think"]
 
 
 func _init() -> void:
@@ -44,80 +50,125 @@ func _init() -> void:
 	print("--- the set is complete ---")
 	_expect("seven emotes are named", EMOTES.size() == 7)
 
-	var loaded := {}
-	for name: String in EMOTES:
-		var path := "res://emotes/%s.png" % name
-		var tex := load(path) as Texture2D
-		_expect("%-6s loads" % name, tex != null)
-		if tex != null:
-			loaded[name] = tex
+	var game = load("res://scenes/main.tscn").instantiate()
+	get_root().add_child(game)
+	await process_frame
 
-	print("--- every one is the size it should be ---")
-	for name: String in loaded:
-		var tex: Texture2D = loaded[name]
-		_expect("%-6s is 512x512 (got %dx%d)" % [name, tex.get_width(), tex.get_height()],
-			tex.get_width() == 512 and tex.get_height() == 512)
-
-	print("--- white bodies, dark ink, no pure black ---")
-	for name: String in loaded:
-		var img: Image = (loaded[name] as Texture2D).get_image()
-		_expect("%-6s is white, inked, and free of pure black" % name, _tintable(img))
-
-	print("--- and there is something to see ---")
-	for name: String in loaded:
-		var img: Image = (loaded[name] as Texture2D).get_image()
-		_expect("%-6s has transparent margins and an opaque middle" % name,
-			_has_alpha_range(img))
-
-	_styles()
+	_sheets(game)
+	_wiring(game)
+	_retired()
+	_slot_is_gone()
 	# Awaited, or it returns at its first `await` having asserted nothing — and
 	# a section that prints its heading and no results looks like a section that
 	# passed.
-	await _gesture()
+	await _gesture(game)
 
 	print("--- %s ---" % ("the emotes are ready" if fails == 0
 		else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
 
 
-## Every style has to produce a colour, and the default has to be reachable
-## without owning anything — a cosmetic slot whose first entry is locked leaves
-## `worn` returning something the player cannot see.
-func _styles() -> void:
-	print("--- the styles paint ---")
+## Every sheet loads, is exactly the size its grid says, has something in every
+## cell, and keeps its margins clear.
+func _sheets(game) -> void:
+	print("--- the sheets are packed the way the game reads them ---")
+	var cell: float = game.EMOTE_CELL
+	var gutter: float = game.EMOTE_GUTTER
+	_expect("the cell is bigger than its margins", cell > gutter * 2.0 + 8.0)
+
+	for idx: int in game.EMOTE_ANIM:
+		var anim: Dictionary = game.EMOTE_ANIM[idx]
+		var name := String(anim["sheet"])
+		var count := int(anim["frames"])
+		var cols := int(anim["cols"])
+		var rows: int = int(ceil(float(count) / float(cols)))
+
+		var tex := load("res://emotes/%s.png" % name) as Texture2D
+		_expect("%-12s loads" % name, tex != null)
+		if tex == null:
+			continue
+		_expect("%-12s is %dx%d as its grid says (got %dx%d)"
+			% [name, cols * int(cell), rows * int(cell),
+				tex.get_width(), tex.get_height()],
+			tex.get_width() == cols * int(cell)
+			and tex.get_height() == rows * int(cell))
+
+		var img: Image = tex.get_image()
+		var blank := 0
+		var leaky := 0
+		for i in count:
+			var r: Rect2 = game._emote_frame(anim, float(i) / game.EMOTE_FPS)
+			if not _has_content(img, r):
+				blank += 1
+			if not _margin_clear(img, i, cols, cell, gutter):
+				leaky += 1
+		_expect("%-12s has all %d frames drawn" % [name, count], blank == 0)
+		_expect("%-12s keeps a clear margin round every cell" % name, leaky == 0)
+		# The palette rule the old art was re-levelled for, and the reason it is
+		# still worth asserting: `game.gd` uses `#000000` precisely nowhere, the
+		# whole UI bottoms out at `#0b1020`, and pure black on screen reads as a
+		# hole punched through the panel rather than as ink.
+		_expect("%-12s is free of pure black" % name, not _has_pure_black(img))
+
+	# The frame walks the grid and comes back round. A cycle that ran off the
+	# end would sample empty sheet, which is an emote that vanishes mid-play.
+	var first: Dictionary = game.EMOTE_ANIM[MENU[0]]
+	var n := int(first["frames"])
+	var a: Rect2 = game._emote_frame(first, 0.0)
+	var b: Rect2 = game._emote_frame(first, float(n) / game.EMOTE_FPS)
+	_expect("the cycle loops back to its first frame", a.is_equal_approx(b))
+	var mid: Rect2 = game._emote_frame(first, float(n / 2) / game.EMOTE_FPS)
+	_expect("and moves in between", not a.is_equal_approx(mid))
+	_expect("a negative age does not walk off the sheet",
+		game._emote_frame(first, -1.0).position.x >= 0.0)
+
+
+## The three the fan offers, and the promise that goes with the numbers.
+func _wiring(game) -> void:
+	print("--- the fan and the wire agree ---")
+	_expect("the menu is the three that were animated", game.EMOTE_MENU == MENU)
+	for i in game.EMOTE_MENU.size():
+		var idx := int(game.EMOTE_MENU[i])
+		_expect("slot %d is a real wire index" % i,
+			idx >= 0 and idx < EMOTES.size())
+		_expect("and %-5s has a sheet" % EMOTES[idx], game.EMOTE_ANIM.has(idx))
+	# The whole reason these three indices and not 0, 1, 2. Every index this
+	# build can send is one the seven-emote build already understood, so a match
+	# across versions reads correctly in both directions.
+	_expect("nothing sent here is new to an older build",
+		MENU.max() < EMOTES.size())
+	_expect("the column is as tall as the menu",
+		(game._emote_rects() as Array).size() == game.EMOTE_MENU.size())
+	_expect("the wire list matches the files", game.EMOTES == EMOTES)
+
+
+## The four the fan dropped are still drawable, because somebody else's phone
+## can still send one.
+func _retired() -> void:
+	print("--- the retired four still have something to land on ---")
+	for name: String in RETIRED:
+		var tex := load("res://emotes/%s.png" % name) as Texture2D
+		_expect("%-6s still loads" % name, tex != null)
+
+
+## The cosmetic slot that existed to tint white art, and does not any more.
+func _slot_is_gone() -> void:
+	print("--- the tint went, and took its slot with it ---")
 	var p = Engine.get_main_loop().root.get_node("Profile")
-	_expect("emote is a cosmetic slot", p.SLOTS.has("emote"))
-	_expect("and it has a name", String(p.SLOT_NAMES.get("emote", "")) != "")
-
-	var entries: Array = p.entries("emote")
-	_expect("there are styles to choose from", entries.size() >= 4)
-	_expect("the first is free", (entries[0] as Dictionary)["need"].is_empty())
-
-	for e: Dictionary in entries:
-		var id := String(e["id"])
-		_expect("%-7s is painted" % id, Cosmetics.EMOTE_STYLES.has(id))
-		# Multiply cannot lift a channel, so a style darker than the art is a
-		# style that can only ever make the character muddier.
-		var c: Color = Cosmetics.emote_tint(id, 0.0)
-		_expect("%-7s is bright enough to tint with (v=%.2f)" % [id, c.v],
-			c.v > 0.55)
-
-	# The cycling one has to actually cycle, or it is an expensive white.
-	var a: Color = Cosmetics.emote_tint("holo", 0.0)
-	var b: Color = Cosmetics.emote_tint("holo", 2.0)
-	_expect("holo moves over time", not a.is_equal_approx(b))
-	_expect("an unknown style falls back rather than crashing",
-		Cosmetics.emote_tint("nonsense", 0.0).v > 0.0)
+	_expect("emote is no longer a cosmetic slot", not p.SLOTS.has("emote"))
+	_expect("and has no name left behind", not p.SLOT_NAMES.has("emote"))
+	_expect("and no entries left behind", (p.entries("emote") as Array).is_empty())
+	# Every remaining slot still has to work, or removing one has broken the
+	# screen that lists them.
+	for slot: String in p.SLOTS:
+		_expect("%-8s still has a wearable default" % slot,
+			String(p.worn(slot)) != "")
 
 
 ## The gesture, driven the way a thumb drives it. None of this needs a match —
 ## the point is that the state machine cannot be left half-open.
-func _gesture() -> void:
+func _gesture(game) -> void:
 	print("--- the gesture opens, picks and closes ---")
-	var game = load("res://scenes/main.tscn").instantiate()
-	get_root().add_child(game)
-	await process_frame
-
 	_expect("nothing is held to begin with", game._emote_touch == -2)
 	_expect("and the menu is shut", not game._emote_open)
 
@@ -138,6 +189,12 @@ func _gesture() -> void:
 	game._on_net_emote(2)
 	_expect("a real one is shown", int(game._emote_in.get("i", -1)) == 2)
 
+	# One of the four the fan dropped. It has to still arrive, or a match
+	# against the older build is one where half of what they say is silence.
+	game._on_net_emote(3)
+	_expect("and so does one this build cannot send",
+		int(game._emote_in.get("i", -1)) == 3)
+
 	# And it leaves on its own, or it would sit over the card forever.
 	game._tick_emotes(game.EMOTE_SHOW + 0.1)
 	_expect("and it expires by itself", game._emote_in.is_empty())
@@ -150,8 +207,6 @@ func _gesture() -> void:
 	game._tick_emotes(game.EMOTE_COOLDOWN + 0.1)
 	_expect("and the cooldown runs out", is_zero_approx(game._emote_cool))
 
-	_expect("the wire list matches the files", game.EMOTES == EMOTES)
-
 	# ------------------------------------------------------------ the wire
 	#
 	# The half that cannot be tested by playing: sending needs a live match and
@@ -161,7 +216,7 @@ func _gesture() -> void:
 	# step between the two devices except the radio itself.
 	print("--- the packet survives the round trip ---")
 	game._emote_in = {}
-	var packet := {"type": "emote", "payload": {"i": 3}}
+	var packet := {"type": "emote", "payload": {"i": 2}}
 	var wire = JSON.parse_string(JSON.stringify(packet))
 	_expect("it parses back to a dictionary", typeof(wire) == TYPE_DICTIONARY)
 
@@ -174,7 +229,7 @@ func _gesture() -> void:
 
 	game._on_multiplayer_data(wire as Dictionary)
 	_expect("the dispatcher shows it anyway",
-		int(game._emote_in.get("i", -1)) == 3)
+		int(game._emote_in.get("i", -1)) == 2)
 
 	# The send path, which headless cannot take: `_send_emote` needs a live
 	# `GKMatch` and there is not one here. So what is asserted is the guard —
@@ -185,15 +240,15 @@ func _gesture() -> void:
 	_expect("there is no match in a headless run", not game.net_active())
 	game._emote_out = {}
 	game._emote_cool = 0.0
-	game._send_emote(5)
+	game._send_emote(4)
 	_expect("a send with no match echoes nothing", game._emote_out.is_empty())
 	_expect("and costs no cooldown", is_zero_approx(game._emote_cool))
 
 	# The two slots are independent, so a reply cannot delete what it replies to.
-	game._emote_out = {"i": 5, "left": game.EMOTE_SHOW}
+	game._emote_out = {"i": 4, "left": game.EMOTE_SHOW}
 	_expect("yours and theirs coexist",
-		int(game._emote_in.get("i", -1)) == 3
-		and int(game._emote_out.get("i", -1)) == 5)
+		int(game._emote_in.get("i", -1)) == 2
+		and int(game._emote_out.get("i", -1)) == 4)
 	game._tick_emotes(game.EMOTE_SHOW + 0.1)
 	_expect("and both expire", game._emote_in.is_empty()
 		and game._emote_out.is_empty())
@@ -201,48 +256,58 @@ func _gesture() -> void:
 	game.queue_free()
 
 
-## White somewhere and dark ink somewhere, among the pixels actually drawn, and
-## nothing at pure black at all.
-##
-## The first two are what makes a tint work: white takes the colour, and the ink
-## stays dark because multiply cannot lift it, which is what stops a tinted emote
-## collapsing into a flat silhouette.
-##
-## The third is a palette rule, and it is the reason the art was re-levelled.
-## `game.gd` uses `#000000` exactly nowhere — the whole UI bottoms out at
-## `#0b1020` — so pure black anywhere on screen is only ever these files, and it
-## read as a hole punched through the panel. The ink now sits at `#2a3355`, which
-## is a colour the menus already use. Asserted rather than trusted because it is
-## invisible in a diff and a re-export from the drawing tool would undo it.
-func _tintable(img: Image) -> bool:
-	var white := 0
-	var ink := 0
-	var pure_black := 0
-	for y in range(0, img.get_height(), 4):
-		for x in range(0, img.get_width(), 4):
-			var c := img.get_pixel(x, y)
-			if c.a < 0.5:
-				continue
-			if c.r > 0.97 and c.g > 0.97 and c.b > 0.97:
-				white += 1
-			elif c.v < 0.45:
-				ink += 1
-			if c.r < 0.02 and c.g < 0.02 and c.b < 0.02:
-				pure_black += 1
-	return white > 200 and ink > 20 and pure_black == 0
-
-
-## A sticker, not a full-bleed image: the corners have to be empty or it will
-## sit in a rectangle of its own background when it pops up over the board.
-func _has_alpha_range(img: Image) -> bool:
-	var corner_clear := img.get_pixel(2, 2).a < 0.1 \
-		and img.get_pixel(img.get_width() - 3, 2).a < 0.1
+## Whether a frame has a character in it at all. A cell that came out empty
+## means the grid in `game.gd` and the grid on disk disagree about the shape of
+## the sheet, which is the one failure that looks like nothing until it is on a
+## phone.
+func _has_content(img: Image, r: Rect2) -> bool:
 	var solid := 0
-	for y in range(0, img.get_height(), 8):
-		for x in range(0, img.get_width(), 8):
+	var y := int(r.position.y)
+	while y < int(r.end.y):
+		var x := int(r.position.x)
+		while x < int(r.end.x):
 			if img.get_pixel(x, y).a > 0.9:
 				solid += 1
-	return corner_clear and solid > 100
+			x += 4
+		y += 4
+	return solid > 100
+
+
+## The transparent ring that keeps bilinear filtering from reaching into the
+## next frame. Checked all the way round rather than sampled, because a leak
+## down one edge is exactly what a mis-set gutter produces.
+func _margin_clear(img: Image, i: int, cols: int, cell: float,
+		gutter: float) -> bool:
+	var ox := (i % cols) * int(cell)
+	var oy := (i / cols) * int(cell)
+	var span := int(cell)
+	var g := int(gutter)
+	for k in span:
+		for d in g:
+			if img.get_pixel(ox + k, oy + d).a > 0.02:
+				return false
+			if img.get_pixel(ox + k, oy + span - 1 - d).a > 0.02:
+				return false
+			if img.get_pixel(ox + d, oy + k).a > 0.02:
+				return false
+			if img.get_pixel(ox + span - 1 - d, oy + k).a > 0.02:
+				return false
+	return true
+
+
+## Pure black anywhere among the pixels actually drawn. See `_sheets` for why
+## this is a rule rather than a preference.
+func _has_pure_black(img: Image) -> bool:
+	var y := 0
+	while y < img.get_height():
+		var x := 0
+		while x < img.get_width():
+			var c := img.get_pixel(x, y)
+			if c.a > 0.5 and c.r < 0.02 and c.g < 0.02 and c.b < 0.02:
+				return true
+			x += 3
+		y += 3
+	return false
 
 
 func _expect(what: String, ok: bool) -> void:

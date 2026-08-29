@@ -257,8 +257,14 @@ func level_progress() -> Dictionary:
 # requirement, because "reach a nine-chain" is a thing somebody can go and do
 # and "reach a nine-chain and 400 words and level 12" is a wall.
 
+## "emote" was a ninth slot until the art was redrawn as BloqBot. It styled the
+## emotes by multiplying white art with a colour, and the new character is
+## already coloured, so there was no longer anything for the slot to change.
+## A stale `equipped["emote"]` in an older save is left where it is — nothing
+## iterates it any more, and rewriting the file to drop one dead key is a worse
+## trade than carrying it.
 const SLOTS := ["title", "theme", "blocks", "typing", "attack", "cursor",
-	"victory", "emote"]
+	"victory"]
 
 const SLOT_NAMES := {
 	"title": "TITLE",
@@ -268,7 +274,6 @@ const SLOT_NAMES := {
 	"attack": "ATTACK",
 	"cursor": "CURSOR",
 	"victory": "VICTORY",
-	"emote": "EMOTES",
 }
 
 const COSMETICS := {
@@ -326,24 +331,6 @@ const COSMETICS := {
 		{"id": "rays", "name": "Sunburst", "need": {"wins": 8}},
 		{"id": "shatter", "name": "Shatter", "need": {"flawless": 3}},
 		{"id": "supernova", "name": "Supernova", "need": {"buy": PACK_PREMIUM}},
-	],
-	# Emotes are the one cosmetic the opponent sees, so the requirements lean on
-	# things you do *to* somebody rather than on time served — a chain, a win, a
-	# match played. Wearing one is a small claim, and it should have cost
-	# something the person reading it would recognise.
-	"emote": [
-		{"id": "chalk", "name": "Chalk", "need": {}},
-		{"id": "gold", "name": "Gold", "need": {"matches": 5}},
-		{"id": "mint", "name": "Mint", "need": {"level": 4}},
-		{"id": "orchid", "name": "Orchid", "need": {"wins": 6}},
-		{"id": "coral", "name": "Coral", "need": {"chain": 7}},
-		# Earned, not bought, and the requirement is wins on purpose. The pack is
-		# sold as "three things you cannot earn" on the title plate, in settings
-		# and in the App Store metadata — a fourth premium cosmetic would have
-		# made that copy wrong everywhere at once, on a product already in
-		# review. Emotes are a versus feature, so the showpiece style being the
-		# reward for winning is where it wanted to live anyway.
-		{"id": "holo", "name": "Holo", "need": {"wins": 20}},
 	],
 }
 

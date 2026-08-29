@@ -3475,7 +3475,62 @@ var _touch_input := false
 
 ## In wire order. The index is what crosses the network, so this is an on-disk
 ## format: append only, and never reorder. `emotetest` pins it against the files.
+##
+## Four of these are no longer offered — see `EMOTE_MENU`. They stay named here
+## because a phone running the older build can still send index 3, and a hole in
+## this array would turn that into an emote that arrives as nothing.
 const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
+
+## The wire indices the fan actually offers, in the order they are stacked.
+##
+## The character was redrawn as BloqBot and only three of the seven feelings
+## were animated, so the menu is three tall. Which three is a choice about the
+## *wire*, not about the art: keeping cheer, shock and nice at 0, 2 and 4 means
+## every index this build sends is one an older build already understands, so a
+## match between the two versions still reads correctly in both directions
+## rather than needing a version check nobody can add retroactively.
+const EMOTE_MENU := [0, 2, 4]
+
+## Wire index -> the sheet that animates it, for those that have one. Anything
+## not in here falls back to the single still in `res://emotes/<name>.png`,
+## which is what an index from an older build lands on.
+##
+## `frames` and `cols` describe the grid `tools/build_emotes.py` packed. They
+## are duplicated between the two on purpose — the script prints them, and the
+## alternative was a manifest file to parse at load for six integers.
+const EMOTE_ANIM := {
+	0: {"sheet": "bot_excited", "frames": 24, "cols": 6},
+	2: {"sheet": "bot_shocked", "frames": 18, "cols": 6},
+	4: {"sheet": "bot_love", "frames": 18, "cols": 6},
+}
+## One cell of a sheet, and the transparent margin inside it. The game draws the
+## inner square: bilinear filtering reaches a texel past the region it is given,
+## and without the margin the frame beside it bleeds down the edge.
+const EMOTE_CELL := 160.0
+const EMOTE_GUTTER := 2.0
+## Hand-animation rate. The three cycles are 24, 18 and 18 frames, so at twelve
+## a side they run 2.0s, 1.5s and 1.5s against an `EMOTE_SHOW` of 2.4 — the long
+## one plays through once and the short ones come round again, which is what
+## they were drawn for.
+const EMOTE_FPS := 12.0
+## What the key's legend shows, in fractions of a frame: BloqBot's head.
+##
+## The key is about thirty pixels tall on a phone. The old character was a
+## square with a face on it and read at that size by construction; BloqBot is a
+## whole body, and measured off the packed sheet its helmet is barely half the
+## frame — so three quarters of those thirty pixels went on limbs nobody can
+## resolve, and the legend came out a smudge. Cropped to the head it is a face
+## again, which is the only job the legend has.
+const EMOTE_KEY_HEAD := Rect2(0.24, 0.10, 0.54, 0.54)
+
+## The halo behind the character, and the only colour the emotes have left now
+## that nothing tints them.
+##
+## Taken off BloqBot's own visor. It has to be *its* blue rather than the UI's
+## purple, because the thing this is separating is a navy character whose ink is
+## `#0b1220` from a panel that bottoms out at `#0b1020` — near enough the same
+## colour that the outline disappears into the bubble without it.
+const EMOTE_GLOW := Color("#68c4e0")
 
 ## How long the key must be held before the menu appears. Short enough not to
 ## feel like a wait, long enough that a brush past it on the way to P does not
@@ -3486,8 +3541,11 @@ const EMOTE_HOLD := 0.16
 const EMOTE_COOLDOWN := 2.5
 ## How long a received emote stays up.
 const EMOTE_SHOW := 2.4
-## One tile in the fan.
-const EMOTE_TILE := 62.0
+## One tile in the fan. Grown from 62 when the column went from seven tall to
+## three: at seven the height was the constraint and the tiles were as big as
+## the reach of a thumb allowed, and at three there is room to draw a whole
+## character rather than a thumbnail of one.
+const EMOTE_TILE := 78.0
 const EMOTE_TILE_GAP := 8.0
 
 ## How solid an emote is when it is decoration rather than a message.
@@ -3509,8 +3567,12 @@ var _emote_tex: Dictionary = {}
 var _emote_touch := -2
 var _emote_held := 0.0
 var _emote_open := false
-## Index into `EMOTES` under the finger, or -1 for none — which is what sliding
-## back down to the key gives you, and is how the gesture is cancelled.
+## Which tile of the fan is under the finger, or -1 for none — which is what
+## sliding back down to the key gives you, and is how the gesture is cancelled.
+##
+## A position in `EMOTE_MENU`, not a wire index. The two were the same thing
+## until the menu stopped offering all seven, and the conversion happens once,
+## in `_emote_release`, so nothing else has to know which kind it is holding.
 var _emote_pick := -1
 ## Seconds until another can be sent.
 var _emote_cool := 0.0
@@ -3593,8 +3655,8 @@ func _emote_release() -> void:
 	_emote_held = 0.0
 	_emote_open = false
 	_emote_pick = -1
-	if pick >= 0:
-		_send_emote(pick)
+	if pick >= 0 and pick < EMOTE_MENU.size():
+		_send_emote(int(EMOTE_MENU[pick]))
 
 
 ## Out, and shown on your own screen at the same moment.
@@ -3629,8 +3691,8 @@ func _on_net_emote(idx: int) -> void:
 	Haptics.fire("tap", 0.4)
 
 
-## Where the seven tiles sit when the menu is open: straight up from the key,
-## nearest the thumb first.
+## Where the tiles sit when the menu is open: straight up from the key, nearest
+## the thumb first.
 ##
 ## Built from the key's own rect rather than from the screen, so the column
 ## cannot drift away from the control that opened it.
@@ -3646,7 +3708,7 @@ func _emote_rects() -> Array:
 	var rail_half: float = EMOTE_TILE * 0.5 + 12.0
 	var cx: float = clampf(key.get_center().x, rail_half + 6.0,
 		size.x - rail_half - 6.0)
-	for i in EMOTES.size():
+	for i in EMOTE_MENU.size():
 		var y: float = key.position.y - EMOTE_TILE_GAP \
 			- float(i + 1) * (EMOTE_TILE + EMOTE_TILE_GAP)
 		out.append(Rect2(cx - EMOTE_TILE * 0.5, y, EMOTE_TILE, EMOTE_TILE))
@@ -3667,12 +3729,28 @@ func _emote_at(p: Vector2) -> int:
 	return -1
 
 
+## A sheet or a still, by file name, loaded once. The retired stills are only
+## ever asked for when an older build sends one, so this being lazy is what
+## keeps four textures nobody will see out of memory in the usual match.
 func _emote_texture(name: String) -> Texture2D:
 	if _emote_tex.has(name):
 		return _emote_tex[name] as Texture2D
 	var tex := _load_or_null("res://emotes/%s.png" % name) as Texture2D
 	_emote_tex[name] = tex
 	return tex
+
+
+## The cell of `anim`'s sheet showing at time `t`, in pixels.
+##
+## Inset by the gutter, so the rect handed to `draw_texture_rect_region` is the
+## frame and nothing of its neighbours.
+func _emote_frame(anim: Dictionary, t: float) -> Rect2:
+	var count: int = maxi(1, int(anim["frames"]))
+	var cols: int = maxi(1, int(anim["cols"]))
+	var i: int = posmod(int(t * EMOTE_FPS), count)
+	var inner: float = EMOTE_CELL - EMOTE_GUTTER * 2.0
+	return Rect2(float(i % cols) * EMOTE_CELL + EMOTE_GUTTER,
+		float(i / cols) * EMOTE_CELL + EMOTE_GUTTER, inner, inner)
 
 
 ## Whether the key is worth drawing at all. Emotes are a thing you send to
@@ -3682,27 +3760,62 @@ func _emotes_live() -> bool:
 	return _keys_live() and net_active()
 
 
-## Paint one, tinted by the equipped style. `alpha` fades the whole thing,
-## glow included, so a bubble can leave without the halo outliving it.
-func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool) -> void:
+## Paint one. `alpha` fades the whole thing, glow included, so a bubble can
+## leave without the halo outliving it.
+##
+## `age` is how far into the animation to draw, in seconds. Pass -1 for the
+## shared wall clock, which is what makes a column of tiles bop together instead
+## of each one running its own cycle from whenever it was first drawn.
+##
+## Nothing is tinted any more. BloqBot arrived already coloured, and a multiply
+## over art that is navy and cyan does not restyle it, it only ever makes it
+## darker — so the tint went, and the cosmetic slot that existed to drive it
+## went with it.
+func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool,
+		age := -1.0) -> void:
 	if idx < 0 or idx >= EMOTES.size():
 		return
-	var tex := _emote_texture(EMOTES[idx])
-	if tex == null:
-		return
-	var style := Profile.worn("emote")
-	var t := Time.get_ticks_msec() / 1000.0
 	if glow:
 		# A soft disc behind it. Three rings rather than a texture, because the
-		# sticker is white on a dark board and needs seating, not decoration.
-		var g := Cosmetics.emote_glow(style, t)
+		# character lands on a dark board and needs seating, not decoration.
 		var mid := at.get_center()
 		for i in 3:
 			var f := 1.0 - float(i) / 3.0
 			_overlay.draw_circle(mid, at.size.x * (0.62 + 0.13 * float(i)),
-				Color(g, 0.16 * f * alpha))
-	var tint := Cosmetics.emote_tint(style, t)
-	_overlay.draw_texture_rect(tex, at, false, Color(tint.r, tint.g, tint.b, alpha))
+				Color(EMOTE_GLOW, 0.16 * f * alpha))
+	var white := Color(1.0, 1.0, 1.0, alpha)
+	if EMOTE_ANIM.has(idx):
+		var anim: Dictionary = EMOTE_ANIM[idx]
+		var sheet := _emote_texture(String(anim["sheet"]))
+		if sheet == null:
+			return
+		var t: float = age if age >= 0.0 else Time.get_ticks_msec() / 1000.0
+		_overlay.draw_texture_rect_region(sheet, at, _emote_frame(anim, t), white)
+		return
+	# One of the four the fan no longer offers, sent by an older build.
+	var still := _emote_texture(EMOTES[idx])
+	if still != null:
+		_overlay.draw_texture_rect(still, at, false, white)
+
+
+## The key's legend: frame zero of the first emote, cropped to the head.
+##
+## Frozen rather than animated. The key is up for the whole match, directly
+## above P, and a character dancing in the corner of the eye of somebody trying
+## to type is movement with nothing to say — the animation is the *message*, and
+## it should only play where a message is being chosen or read.
+func _draw_emote_head(at: Rect2, alpha: float) -> void:
+	var idx := int(EMOTE_MENU[0])
+	if not EMOTE_ANIM.has(idx):
+		return
+	var anim: Dictionary = EMOTE_ANIM[idx]
+	var sheet := _emote_texture(String(anim["sheet"]))
+	if sheet == null:
+		return
+	var frame := _emote_frame(anim, 0.0)
+	_overlay.draw_texture_rect_region(sheet, at,
+		Rect2(frame.position + EMOTE_KEY_HEAD.position * frame.size,
+			EMOTE_KEY_HEAD.size * frame.size), Color(1.0, 1.0, 1.0, alpha))
 
 
 ## Whether the drawn keyboard is up and listening.
@@ -3993,12 +4106,15 @@ func _draw_emote_key() -> void:
 	var bg := _key_bg.darkened(0.25) if not down else _key_bg.lightened(0.10)
 	_panel(key, bg, edge, 9.0, 2.0 if down else 1.0)
 
-	# The face on the key is the first emote, which doubles as the legend: there
-	# is no room for the word "emote" at this size and a smiley needs no word.
-	var pad := key.size.y * 0.16
-	_draw_emote(Rect2(key.position + Vector2((key.size.x - key.size.y) * 0.5 + pad,
-		pad), Vector2(key.size.y - pad * 2.0, key.size.y - pad * 2.0)), 0,
-		0.30 if cooling else 0.95, false)
+	# The face on the key doubles as the legend: there is no room for the word
+	# "emote" at this size and a smiley needs no word. Padded tighter than the
+	# 0.16 the old square wanted, because a head is round and a square with a
+	# face on it was not — the same margin round a helmet reads as a gap.
+	var pad := key.size.y * 0.10
+	_draw_emote_head(Rect2(key.position
+		+ Vector2((key.size.x - key.size.y) * 0.5 + pad, pad),
+		Vector2(key.size.y - pad * 2.0, key.size.y - pad * 2.0)),
+		0.30 if cooling else 0.95)
 
 	if cooling:
 		# The wedge that says when, rather than a number nobody will read while
@@ -4010,8 +4126,8 @@ func _draw_emote_key() -> void:
 	if not _emote_open:
 		return
 
-	# The column. A rail behind it so seven stickers over a moving board still
-	# read as one list rather than as seven things that happened to line up.
+	# The column. A rail behind it so the stickers over a moving board still read
+	# as one list rather than as three things that happened to line up.
 	var rects := _emote_rects()
 	var first: Rect2 = rects[rects.size() - 1]
 	var last: Rect2 = rects[0]
@@ -4031,7 +4147,7 @@ func _draw_emote_key() -> void:
 		# full: this column is sitting on top of a board somebody is still
 		# reading, and letting a little of it through is the difference between
 		# covering the stack and hiding it.
-		_draw_emote(r.grow(4.0 if on else 0.0), i,
+		_draw_emote(r.grow(4.0 if on else 0.0), int(EMOTE_MENU[i]),
 			EMOTE_MENU_ALPHA if on else 0.70, on)
 
 
@@ -4066,7 +4182,11 @@ func _draw_emote_bubble(at: Vector2, entry: Dictionary, mine: bool) -> void:
 	_overlay.draw_colored_polygon(PackedVector2Array([
 		tip, tip + Vector2(-9.0, -10.0), tip + Vector2(9.0, -10.0)]),
 		Color("#0b1020", 0.90 * alpha))
-	_draw_emote(box, int(entry.get("i", 0)), alpha, true)
+	# Driven by the bubble's own age, so the cycle starts on the frame it was
+	# drawn to start on. On the shared clock a shrug would arrive halfway
+	# through its own shrug, which is the difference between a reaction and a
+	# loop that happened to be passing.
+	_draw_emote(box, int(entry.get("i", 0)), alpha, true, age)
 
 
 ## The keys as they are drawn, plus the line above which the keyboard stops
@@ -5879,25 +5999,6 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					WWBoard.TIER_COLORS[i * 2], id, false)
 				_text_fit_overlay(_font_bold, rr.get_center(),
 					["AL", "SHIP", "ENT"][i], 15, rr.size.x - 8.0, ink)
-		"emote":
-			# Three of the seven, in the style being considered, at the size they
-			# arrive at. Three rather than one because the point of a style is how
-			# the set looks together, and rather than seven because seven at this
-			# width are too small to tell apart.
-			var ew: float = minf(box.size.y * 0.72, box.size.x / 3.6)
-			for i in 3:
-				var er := Rect2(mid.x - ew * 1.7 + float(i) * (ew + 10.0) ,
-					mid.y - ew * 0.5, ew, ew)
-				var glow := Cosmetics.emote_glow(id, t)
-				for k in 3:
-					var gf := 1.0 - float(k) / 3.0
-					_overlay.draw_circle(er.get_center(),
-						ew * (0.58 + 0.13 * float(k)), Color(glow, 0.14 * gf))
-				var tex := _emote_texture(EMOTES[[0, 4, 5][i]])
-				if tex != null:
-					var c := Cosmetics.emote_tint(id, t)
-					_overlay.draw_texture_rect(tex, er, false,
-						Color(c.r, c.g, c.b, EMOTE_MENU_ALPHA))
 		"victory":
 			match id:
 				"confetti":

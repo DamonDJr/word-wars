@@ -1,0 +1,6 @@
+Source art, not game assets.
+
+The loose animation frames in here are what tools/build_emotes.py packs into
+the sheets in res://emotes/. Without this file Godot imports all sixty of them
+as textures in their own right and ships them inside the .pck — sixty 512x512
+copies of art that is already in the build at a tenth the size.
