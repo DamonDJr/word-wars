@@ -908,6 +908,81 @@ func _layout_boards() -> void:
 ## Rivals are reduced to chips. You cannot read four boards on a phone and
 ## pretending otherwise costs the one board you can read; a name, lives and how
 ## much is falling on them is the part you actually act on.
+## Where the rival chips sit in the portrait header, paired with whose they are.
+##
+## Pulled out of `_draw_portrait_hud` because the emote bubbles hang off these
+## rectangles and are drawn from a different canvas item — see
+## `_draw_portrait_emotes` for why they have to be. Two functions deriving the
+## same rectangle from the same four numbers is how a bubble ends up with its
+## tail pointing at where a card used to be.
+## `size` is passed in rather than read here, the way `_draw_portrait_hud` takes
+## it, so the layout can be asked about a phone from a headless run — where the
+## viewport is the 1280x720 desktop one and every rectangle would come back the
+## wrong shape.
+func _portrait_rival_cards(size: Vector2) -> Array:
+	var out: Array = []
+	var rivals: Array = []
+	for s: SideState in sides:
+		if s.slot > 0 and s.in_match:
+			rivals.append(s)
+	if rivals.is_empty():
+		return out
+	var cw: float = minf(196.0, (size.x - 24.0) / float(rivals.size()) - 8.0)
+	var span: float = float(rivals.size()) * cw + float(rivals.size() - 1) * 8.0
+	for i in rivals.size():
+		out.append({"side": rivals[i], "rect": Rect2(
+			size.x * 0.5 - span * 0.5 + float(i) * (cw + 8.0),
+			safe_top + 100.0, cw, 62.0)})
+	return out
+
+
+## The pair of emote bubbles, hung off the rival chip in the portrait header.
+##
+## Drawn from `_draw_overlay` rather than from `_draw_portrait_hud`, where they
+## used to live and where they never once appeared. A bubble is made of
+## `_panel`, which paints on `_overlay`; `_draw_portrait_hud` runs in *this*
+## node's draw pass, and a `draw_*` call aimed at another canvas item outside
+## its own pass is refused outright. So for four builds the key opened, the
+## packet went out, the packet arrived, both ends set their slot — and neither
+## end drew anything. The same trap `_draw_overlay` warns about a few lines
+## further down, sprung in the one place nobody looked.
+##
+## Both hang off the first rival. `_emote_in` carries no sender, so there is
+## nothing to attach it to in a three-rival match — and there is never a
+## three-rival match here, because emotes need `net_active` and Game Center
+## matches are one against one.
+func _draw_portrait_emotes(size: Vector2) -> void:
+	if _emote_in.is_empty() and _emote_out.is_empty():
+		return
+	var at := _portrait_emote_anchors(size)
+	if at.is_empty():
+		return
+	_draw_emote_bubble(at[0], _emote_in, false)
+	_draw_emote_bubble(at[1], _emote_out, true)
+
+
+## Where the two bubbles are centred, as `[theirs, yours]` — or empty when
+## there is no rival chip to hang them off.
+##
+## Split out from the drawing so the placement can be asserted. It is the half
+## of this that can be got wrong silently: a bubble drawn off the side of the
+## screen and a bubble not drawn at all look identical from the sofa, and the
+## bug this replaced went four builds without anybody being able to say which
+## of the two it was.
+func _portrait_emote_anchors(size: Vector2) -> Array:
+	var cards := _portrait_rival_cards(size)
+	if cards.is_empty():
+		return []
+	var r: Rect2 = (cards[0] as Dictionary)["rect"]
+	# One either side of the name, rather than theirs above it. Above put the
+	# bubble over the clock and the pressure countdown for the two and a half
+	# seconds it was up — the two readings you are steering by — and the point
+	# of anchoring an emote to somebody is that it sits *by* them, which beside
+	# the card does just as well as on top of it.
+	var mid: float = r.get_center().y
+	return [Vector2(r.end.x + 58.0, mid), Vector2(r.position.x - 58.0, mid)]
+
+
 func _draw_portrait_hud(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	# The header hangs off the top of the safe area rather than the top of the
@@ -931,40 +1006,22 @@ func _draw_portrait_hud(size: Vector2) -> void:
 		draw_rect(Rect2(cx - 30.0 + i * 22.0, top + 76.0, 15.0, 9.0),
 			player.accent if lit else Color("#2a3355"), true)
 
-	var rivals := []
-	for s: SideState in sides:
-		if s.slot > 0 and s.in_match:
-			rivals.append(s)
-	if not rivals.is_empty():
-		var cw: float = minf(196.0, (size.x - 24.0) / float(rivals.size()) - 8.0)
-		var span: float = float(rivals.size()) * cw + float(rivals.size() - 1) * 8.0
-		for i in rivals.size():
-			var s2: SideState = rivals[i]
-			var r := Rect2(cx - span * 0.5 + float(i) * (cw + 8.0), top + 100.0, cw, 62.0)
-			var aimed: bool = player.target == s2.slot
-			_panel(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
-				2.0 if aimed else 1.0)
-			_text_fit(_font_bold, Vector2(r.get_center().x, r.position.y + 17.0),
-				_show(s2.label), 14, cw - 12.0, s2.accent if s2.alive else Color("#4d5878"))
-			for k in LIVES:
-				draw_rect(Rect2(r.get_center().x - 20.0 + k * 14.0, r.position.y + 28.0,
-					9.0, 6.0), s2.accent if k < s2.lives else Color("#2a3355"), true)
-			var inbound := s2.pending_cells()
-			_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
-				("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
-				Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
-			# Theirs over their card; yours beside it, on the side the card is not
-			# using. With one rival the card is centred and there is room either
-			# way — left, because that is the side your own lives already read
-			# from.
-			if s2.slot > 0 and net_active():
-				var lift: float = 78.0 * 0.52 + 6.0
-				_draw_emote_bubble(
-					Vector2(r.get_center().x, r.position.y - lift),
-					_emote_in, false)
-				_draw_emote_bubble(
-					Vector2(r.position.x - 58.0, r.get_center().y),
-					_emote_out, true)
+	for card: Dictionary in _portrait_rival_cards(size):
+		var s2: SideState = card["side"]
+		var r: Rect2 = card["rect"]
+		var aimed: bool = player.target == s2.slot
+		_panel(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
+			2.0 if aimed else 1.0)
+		_text_fit(_font_bold, Vector2(r.get_center().x, r.position.y + 17.0),
+			_show(s2.label), 14, r.size.x - 12.0,
+			s2.accent if s2.alive else Color("#4d5878"))
+		for k in LIVES:
+			draw_rect(Rect2(r.get_center().x - 20.0 + k * 14.0, r.position.y + 28.0,
+				9.0, 6.0), s2.accent if k < s2.lives else Color("#2a3355"), true)
+		var inbound := s2.pending_cells()
+		_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
+			("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
+			Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
 
 	# Everything below the board: what is falling on you, the run you are on,
 	# and the line you are typing, stacked into the gap above the keyboard.
@@ -4831,6 +4888,8 @@ func _draw_overlay() -> void:
 	if phase == Phase.PLAY:
 		if portrait:
 			_draw_keyboard()
+			if net_active():
+				_draw_portrait_emotes(size)
 			_draw_emote_key()
 			_draw_back_button()
 		_draw_score_pops()

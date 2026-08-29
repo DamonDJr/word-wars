@@ -56,6 +56,7 @@ func _init() -> void:
 
 	_sheets(game)
 	_wiring(game)
+	await _bubbles(game)
 	_retired()
 	_slot_is_gone()
 	# Awaited, or it returns at its first `await` having asserted nothing — and
@@ -140,6 +141,66 @@ func _wiring(game) -> void:
 	_expect("the column is as tall as the menu",
 		(game._emote_rects() as Array).size() == game.EMOTE_MENU.size())
 	_expect("the wire list matches the files", game.EMOTES == EMOTES)
+
+
+## Where the two bubbles land in the portrait header.
+##
+## This is the half of an emote that failed silently for four builds. Both ends
+## worked — key, packet, dispatcher, slot — and nothing was ever drawn, because
+## the bubbles were painted from `_draw_portrait_hud`, which runs in the game
+## node's own draw pass, onto `_overlay`, which was not in one. Godot refuses
+## that and returns; the match carries on.
+##
+## Nothing headless can catch the draw pass itself. What it can catch is the
+## other way this disappears — an anchor off the side of the screen, or one
+## sitting on the clock — so the placement is pinned instead: beside the rival
+## chip, fully on screen, and below the readings the header is for.
+func _bubbles(game) -> void:
+	print("--- the bubbles land beside the rival, on screen ---")
+	# The project's own viewport is the 1280x720 desktop one, and the chip is
+	# laid out from whatever `get_viewport_rect` says — so a run against the
+	# default would pass a phone-shaped bug. Forced to the portrait design size,
+	# which is the only shape this code is ever reached in.
+	game.portrait = true
+	get_root().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+	get_root().content_scale_size = game.PORTRAIT_SIZE
+	game._measure_safe_area(game.PORTRAIT_SIZE)
+	game.start_match("Magpie", 1)
+	game.phase = game.Phase.PLAY
+	await process_frame
+
+	var size := Vector2(game.PORTRAIT_SIZE)
+
+	var cards: Array = game._portrait_rival_cards(size)
+	_expect("a one-on-one match has one rival chip", cards.size() == 1)
+	if cards.is_empty():
+		return
+	var card: Rect2 = (cards[0] as Dictionary)["rect"]
+
+	var at: Array = game._portrait_emote_anchors(size)
+	_expect("and two anchors hang off it", at.size() == 2)
+	if at.size() != 2:
+		return
+
+	# Half a bubble: the art, plus the padding the panel puts round it.
+	var half: float = 78.0 * 0.5 + 9.0
+	for i in 2:
+		var p: Vector2 = at[i]
+		var who := "theirs" if i == 0 else "yours "
+		_expect("%s is fully on screen (x=%.0f)" % [who, p.x],
+			p.x - half >= 0.0 and p.x + half <= size.x)
+		_expect("%s is fully on screen (y=%.0f)" % [who, p.y],
+			p.y - half >= 0.0 and p.y + half <= size.y)
+		# The clock and the pressure countdown sit at safe_top + 34 and + 60.
+		# A bubble over either of them is two and a half seconds of not being
+		# able to read the two numbers the header exists for.
+		_expect("%s clears the clock and the countdown" % who,
+			p.y - half > game.safe_top + 68.0)
+		_expect("%s is beside the chip, not on it" % who,
+			p.x + half <= card.position.x or p.x - half >= card.end.x)
+
+	_expect("theirs and yours are on opposite sides",
+		(at[0] as Vector2).x > card.end.x and (at[1] as Vector2).x < card.position.x)
 
 
 ## The four the fan dropped are still drawable, because somebody else's phone
