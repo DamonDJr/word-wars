@@ -997,8 +997,8 @@ func _draw_portrait_hud(size: Vector2) -> void:
 		_commas(int(round(score_shown))), 26, int(26 + 8.0 * kick),
 		Color("#ff6b6b") if (daily and clock <= DAILY_ALARM) else Color("#e6ecff"),
 		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 34.0)
-	_text_centered(_font, Vector2(cx, top + 60.0),
-		"pressure in %ds" % int(ceil(pressure_timer)), 11, Color("#5d6a92"))
+	_text_centered(_font, Vector2(cx, top + 62.0),
+		"pressure in %ds" % int(ceil(pressure_timer)), 16, Color("#5d6a92"))
 
 	# Your lives, as the same pips the landscape header uses.
 	for i in LIVES:
@@ -1056,8 +1056,13 @@ func _draw_portrait_hud(size: Vector2) -> void:
 		note = "chain x%d" % player.chain
 	elif message_life > 0.0:
 		note = message
+	# The one line of running commentary a phone player gets — what the word in
+	# front of them is about to do, and what the game just said back. It was 12,
+	# which on the device is under seven points, and it is the last thing anybody
+	# has spare attention for mid-word. The band under the board was widened by
+	# the same amount it grew, so it is not sitting on the keyboard.
 	if note != "":
-		_text_fit(_font, Vector2(cx, below + 90.0), note, 12, size.x - 40.0,
+		_text_fit(_font, Vector2(cx, below + 96.0), note, 17, size.x - 40.0,
 			Color("#ffd166") if hits > 0 else Color("#8d99bd"))
 
 
@@ -1143,8 +1148,11 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 
 
 ## Where the board has to stop, so the typed line and the keyboard both fit.
+## The band under the board carries the chain meter, the word being typed and the
+## one line of commentary under it. 92 was cut for that line set at 12; the line
+## is 17 now, and without the extra it would be drawn over the top row of keys.
 func _portrait_board_bottom() -> float:
-	return _keyboard_bottom() - Keyboard.height() - 92.0
+	return _keyboard_bottom() - Keyboard.height() - 104.0
 
 
 ## Where the board starts, below the status header and whatever the phone has
@@ -1936,6 +1944,11 @@ func _play_word(attacker: SideState, word: String) -> void:
 		attacker.chain_fill = _chain_gain(word)
 	attacker.chain = int(floor(attacker.chain_fill))
 	attacker.chain_window = (CHAIN_BASE + word.length() * CHAIN_PER_CHAR) * attacker.grace
+	# The lesson gets a longer window than the game does. See `LESSON_CHAIN_GRACE`
+	# — the step that teaches the chain was failing people on their typing speed
+	# rather than on the rule it exists to show them.
+	if mode == Mode.TUTORIAL:
+		attacker.chain_window *= LESSON_CHAIN_GRACE
 	attacker.chain_timer = attacker.chain_window
 	attacker.best_chain = maxi(attacker.best_chain, attacker.chain)
 	# Banked after the chain steps up, so the word that extends a run is paid at
@@ -3058,6 +3071,28 @@ func _tick_bots(delta: float) -> void:
 # thing, so nobody is ever carried past a rule they have not got yet — and being
 # slow costs a first-time player nothing.
 
+## The chain the KEEP FIRING step asks for, and what it settles for.
+##
+## It asked for four, which is four words fired inside the window each one
+## bought — about two and a half seconds for a short word — and that is a
+## typing-speed test sitting in the middle of a lesson about how the game works.
+## Players got stuck there and stopped, which costs the whole rest of the
+## tutorial to teach a rule they had already read.
+##
+## So: three rather than four, and after `LESSON_CHAIN_EASE` seconds of trying,
+## two. Two is still a chain — it is the rule being demonstrated, which is the
+## only thing this step is for — and the card says which number is being asked
+## for, so nobody is quietly passed on a bar they can see they did not clear.
+const LESSON_CHAIN_GOAL := 3
+const LESSON_CHAIN_EASE := 30.0
+## How much longer the chain window is held open during the lesson.
+##
+## Only during the lesson. The window is the game's core rhythm and this is not
+## the place to teach it slack — but the step before a first-time player has
+## typed a dozen words in their life is not the place to enforce it either, and
+## a window they can actually hit is what makes the rule visible at all.
+const LESSON_CHAIN_GRACE := 2.0
+
 ## Set up whatever situation the current step needs. Called once when the step
 ## arrives; `lesson_age` is how long it has been up, which is only used to let a
 ## board settle before checking anything.
@@ -3120,12 +3155,32 @@ func _lesson_check() -> bool:
 		"reach":
 			return player.board.blocks.is_empty()
 		"chain":
-			return player.chain >= 4
+			return player.chain >= _lesson_chain_goal()
 		"danger":
 			return player.board.stack_top() >= WWBoard.ROWS - 3
 		"done":
 			return false     # ends on the key, not on a condition
 	return false
+
+
+## What the KEEP FIRING step is asking for right now. Eases off once the step has
+## been up long enough that the player is plainly not going to be hurried into
+## it; `lesson_age` is reset by `_lesson_begin`, so this is time spent on this
+## step rather than time in the tutorial.
+func _lesson_chain_goal() -> int:
+	if lesson_age >= LESSON_CHAIN_EASE:
+		return LESSON_CHAIN_GOAL - 1
+	return LESSON_CHAIN_GOAL
+
+
+## The line under the lesson body. Every step's is fixed copy except the chain,
+## whose target moves — and a hint saying "chain three words" while the board is
+## being satisfied by two would be the card lying about its own rule.
+func _lesson_hint(step: Dictionary) -> String:
+	if String(step.get("id", "")) == "chain":
+		var goal := _lesson_chain_goal()
+		return "chain %s words without pausing" % ["two" if goal <= 2 else "three"]
+	return String(step.get("hint", ""))
 
 
 func _lesson_tick(delta: float) -> void:
@@ -5600,20 +5655,26 @@ func _draw_coaching(size: Vector2) -> void:
 		return
 
 	if mode == Mode.TRAINING:
-		_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", 16, Color("#7bdff2"))
+		# In portrait this is floating over the top of the board rather than in a
+		# centre column, which is a reason for it to be readable at a glance and
+		# not a reason for it to be small — a drill you cannot read your own
+		# figures on is not a drill.
+		var lab := _read_size(11)
+		var num := _read_size(16)
+		_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", num, Color("#7bdff2"))
 		var rows := [
 			["CLEARED", str(player.blocks_cleared)],
 			["BEST CHAIN", "x%d" % player.best_chain],
 			["WPM", str(int(round(_wpm())))],
 			["PACE", String(TRAINING_PACE[train_pace]["name"]).to_upper()],
 		]
-		var y := 332.0
+		var y: float = 332.0 if not portrait else 348.0
 		for r: Array in rows:
-			_otext_pair(_font, _font_bold, Vector2(cx, y), r[0], r[1], 11, 16,
+			_otext_pair(_font, _font_bold, Vector2(cx, y), r[0], r[1], lab, num,
 				Color("#5d6a92"), Color("#e6ecff"), 30.0)
-			y += 28.0
+			y += 28.0 if not portrait else 42.0
 		_otext(_font, Vector2(cx, y + 14.0),
-			"tap the corner to stop" if portrait else "ESC to stop", 11,
+			"tap the corner to stop" if portrait else "ESC to stop", lab,
 			Color("#4d5878"))
 		return
 
@@ -5621,36 +5682,71 @@ func _draw_coaching(size: Vector2) -> void:
 	if step.is_empty():
 		return
 
+	# Two settings for the same card, not one setting scaled.
+	#
+	# A phone draws in a 720-wide design space against the desktop's 1280, so
+	# every size here was worth a little over half as much on the device the game
+	# actually ships to: the lesson body, set at 14, came out at about seven
+	# points on an iPhone — under half what Apple calls a readable minimum, and
+	# the first thing anybody said about the tutorial. Portrait gets its own
+	# numbers rather than a multiplier, because the card has to grow to hold them
+	# and the two have to be chosen together.
+	var t_size: int = 30 if portrait else 21
+	var b_size: int = 24 if portrait else 14
+	var h_size: int = 21 if portrait else 12
+	var s_size: int = 17 if portrait else 11
+	var c_size: int = 24 if portrait else 15
+	var step_off: float = 34.0 if portrait else 26.0
+	var title_off: float = 78.0 if portrait else 54.0
+	var body_off: float = 122.0 if portrait else 90.0
+	var foot: float = 36.0 if portrait else 26.0
+
+	# The body is wrapped by the font to the card it is actually in, so the copy
+	# in `tutorial.gd` is written as sentences rather than as lines broken by hand
+	# at whatever width the landscape card used to be.
+	var body := String(step["body"])
+	var body_w: float = wide - (72.0 if portrait else 36.0)
+	var body_h: float = _font.get_multiline_string_size(
+		body, HORIZONTAL_ALIGNMENT_CENTER, body_w, b_size).y
+
+	# Tall enough for what is in it. The card was a fixed 214 and the type it now
+	# carries does not fit in that on a phone.
+	var h: float = body_off + body_h + foot * 2.0 + (14.0 if portrait else 10.0)
 	# The card is placed where the rival board would be, because that is the one
 	# part of the screen a lesson can occupy without hiding anything that matters.
-	var r := Rect2(cx - wide * 0.5, 236.0, wide, 214.0)
+	# On a phone there is no rival column, so it grows upward into the gap under
+	# the header instead of downward over the board — the playfield loses no more
+	# of itself to the bigger type than it did to the small type.
+	var top: float = 236.0
+	if portrait:
+		top = maxf(safe_top + 100.0, 450.0 - h)
+	var r := Rect2(cx - wide * 0.5, top, wide, h)
 	_panel(r, Color("#111730"), Color("#90be6d", 0.4), 12.0, 2.0)
-	_otext(_font, Vector2(cx, 262.0), "STEP %d OF %d" % [lesson + 1, Tutorial.count()],
-		11, Color("#5d6a92"))
-	_text_fit_overlay(_font_bold, Vector2(cx, 290.0), String(step["title"]), 21,
-		wide - 40.0, Color("#e6ecff"))
+	_otext(_font, Vector2(cx, top + step_off),
+		"STEP %d OF %d" % [lesson + 1, Tutorial.count()], s_size, Color("#5d6a92"))
+	_text_fit_overlay(_font_bold, Vector2(cx, top + title_off), String(step["title"]),
+		t_size, wide - 40.0, Color("#e6ecff"))
 
-	var y := 326.0
-	for line: String in String(step["body"]).split("\n"):
-		_text_fit_overlay(_font, Vector2(cx, y), line, 14, wide - 36.0,
-			Color("#aab4d4"))
-		y += 22.0
+	_overlay.draw_multiline_string(_font,
+		Vector2(cx - body_w * 0.5, top + body_off + _font.get_ascent(b_size)),
+		body, HORIZONTAL_ALIGNMENT_CENTER, body_w, b_size, -1, Color("#aab4d4"))
 
 	if lesson_done or String(step["id"]) == "done":
 		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 200.0)
-		_otext(_font_bold, Vector2(cx, r.end.y - 26.0),
-			"TAP FIRE TO CONTINUE" if portrait else "SPACE TO CONTINUE", 15,
+		_otext(_font_bold, Vector2(cx, r.end.y - foot),
+			"TAP FIRE TO CONTINUE" if portrait else "SPACE TO CONTINUE", c_size,
 			Color("#90be6d") * Color(1, 1, 1, pulse))
 	else:
-		_otext(_font, Vector2(cx, r.end.y - 26.0), String(step["hint"]), 12,
-			Color("#7c88ad"))
+		_text_fit_overlay(_font, Vector2(cx, r.end.y - foot), _lesson_hint(step),
+			h_size, wide - 36.0, Color("#7c88ad"))
 
 	# A row of pips, so seven steps reads as a short thing with an end to it.
-	var pip := 10.0
-	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * 6.0
+	var pip: float = 16.0 if portrait else 10.0
+	var pgap: float = 8.0 if portrait else 6.0
+	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * pgap
 	for i in Tutorial.count():
-		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + 6.0), r.end.y + 14.0,
-			pip, 4.0),
+		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + pgap), r.end.y + 16.0,
+			pip, 6.0 if portrait else 4.0),
 			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
 
 
@@ -6446,20 +6542,25 @@ func _draw_rules_panel(size: Vector2) -> void:
 	# and broken by the font rather than by hand at one particular width.
 	var pw: float = minf(860.0, size.x - GRID_MARGIN * 2.0)
 	var inner: float = pw - 40.0
+	var body_size := _read_size(14)
+	# Shorter sentences than this used to carry. Nothing was dropped — every rule
+	# that was here is still here — but each paragraph had a clause explaining the
+	# clause before it, and this is the screen somebody opens because they are
+	# already lost. The qualifications went; the rules stayed.
 	var paras := [
 		"Type a word, fire with %s. Its LAST letters brand a block on your rival." % [
 			"the FIRE key" if portrait else "SPACE or ENTER"],
-		"Clear a block by typing a word that STARTS with its letters. Garbage is ONLY ever "
-			+ "removed that way — nothing you send blocks it. Answer it while still inbound "
-			+ "and it never lands. One word reaches one block per two letters: four AL "
+		"Clear a block by typing a word that STARTS with its letters. That is the only "
+			+ "way — attacking never defends you. Answer one while it is still falling "
+			+ "and it never lands. A word clears one block per two letters, so four AL "
 			+ "blocks need ALIGNMENT.",
-		"Block size comes only from your chain: 1, 2, 3, 5, 7, 9 words for each step up. "
-			+ "A tenth word cashes the run in as a SALVO of single blocks and resets you to "
-			+ "nothing. Pause or fire a non-word and the run is gone.",
-		"Topping out costs one of THREE LIVES and wipes your board — it does not end the "
-			+ "match. Words score by their letters, times your chain, times what they broke, "
-			+ "and every cell of block you send pays on top. Overfilling somebody's board "
-			+ "pays a bonus, and so does winning.",
+		"The blocks you send grow only with your chain: 1, 2, 3, 5, 7 then 9 words for "
+			+ "each step up. A tenth cashes the run in as a SALVO and resets you. Pause, "
+			+ "or fire a non-word, and the run is gone.",
+		"Topping out costs one of THREE LIVES and wipes your board. It does not end the "
+			+ "match. Words score by their letters, times your chain, times what they "
+			+ "broke, and every cell you send pays on top. Overfilling a rival pays a "
+			+ "bonus, and so does winning.",
 		"With three or more boards in play, every attacker past the first aiming at "
 			+ "the same board hits a tier harder. Ganging up works, and being ganged "
 			+ "up on is worth re-aiming over.",
@@ -6470,7 +6571,7 @@ func _draw_rules_panel(size: Vector2) -> void:
 	var body := 0.0
 	for p: String in paras:
 		body += _font.get_multiline_string_size(
-			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14).y + 10.0
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, body_size).y + 10.0
 	var top: float = 172.0 + safe_top
 	_panel(Rect2(cx - pw * 0.5, top, pw, body + _rules_extra() + 40.0),
 		Color("#111730"), Color(PLAYER_ACCENT, 0.22), 12.0)
@@ -6478,10 +6579,10 @@ func _draw_rules_panel(size: Vector2) -> void:
 	var y: float = top + 22.0
 	for p: String in paras:
 		var mh: float = _font.get_multiline_string_size(
-			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14).y
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, body_size).y
 		_overlay.draw_multiline_string(_font,
-			Vector2(cx - inner * 0.5, y + _font.get_ascent(14)),
-			p, HORIZONTAL_ALIGNMENT_CENTER, inner, 14, -1, Color("#aab4d4"))
+			Vector2(cx - inner * 0.5, y + _font.get_ascent(body_size)),
+			p, HORIZONTAL_ALIGNMENT_CENTER, inner, body_size, -1, Color("#aab4d4"))
 		y += mh + 10.0
 
 	# Power words are worth spelling out here, but they are meant to be met in
@@ -6491,8 +6592,8 @@ func _draw_rules_panel(size: Vector2) -> void:
 	_overlay.draw_rect(Rect2(cx - inner * 0.5, y - 8.0, inner, 1.0),
 		Color(PLAYER_ACCENT, 0.2), true)
 	y += 16.0
-	_otext(_font_bold, Vector2(cx, y), "POWER WORDS", 15, Color("#e6ecff"))
-	y += 24.0
+	_otext(_font_bold, Vector2(cx, y), "POWER WORDS", _read_size(15), Color("#e6ecff"))
+	y += float(_read_size(15)) + 9.0
 	var how := {
 		"COUNTER": "shoot down something already inbound     send one straight back",
 		"COMBO": "break three blocks at once     your next attack is a tier bigger",
@@ -6502,10 +6603,13 @@ func _draw_rules_panel(size: Vector2) -> void:
 	# Measured first so the four rows share one column layout: names right-aligned
 	# against a common edge, bodies all starting at the same x. Centring each row
 	# on its own width reads as four unrelated notes rather than a table.
+	var name_size := _read_size(14)
+	var part_size := _read_size(13)
+	var line_h := _rules_power_line()
 	var name_w := 0.0
 	for name: String in POWER_ORDER:
 		name_w = maxf(name_w, _font_bold.get_string_size(
-			name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x)
+			name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size).x)
 	# The bodies are a trigger and a reward separated by a wide gap, and the gap
 	# is what makes them read as two columns. There is no room for a gap that
 	# wide at 720, so on a phone the reward goes on its own line under it — two
@@ -6515,19 +6619,19 @@ func _draw_rules_panel(size: Vector2) -> void:
 	for name: String in POWER_ORDER:
 		for part: String in _power_parts(String(how[name]), stacked):
 			body_w = maxf(body_w, _font.get_string_size(
-				part, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x)
+				part, HORIZONTAL_ALIGNMENT_LEFT, -1, part_size).x)
 	var left := cx - (name_w + 18.0 + body_w) * 0.5
 
 	for name: String in POWER_ORDER:
 		var tint := Color(String(POWERS[name]["tint"]))
-		var nm := _font_bold.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14)
-		_otext(_font_bold, Vector2(left + name_w - nm.x * 0.5, y), name, 14, tint)
+		var nm := _font_bold.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, name_size)
+		_otext(_font_bold, Vector2(left + name_w - nm.x * 0.5, y), name, name_size, tint)
 		for part: String in _power_parts(String(how[name]), stacked):
-			var bd := _font.get_string_size(part, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
-			_otext(_font, Vector2(left + name_w + 18.0 + bd.x * 0.5, y), part, 13,
+			var bd := _font.get_string_size(part, HORIZONTAL_ALIGNMENT_LEFT, -1, part_size)
+			_otext(_font, Vector2(left + name_w + 18.0 + bd.x * 0.5, y), part, part_size,
 				Color("#8d99bd"))
-			y += 19.0
-		y += 5.0 if stacked else 5.0
+			y += line_h
+		y += 5.0
 
 
 ## A power word's line, as one column or two rows.
@@ -6540,11 +6644,18 @@ func _power_parts(text: String, stacked: bool) -> Array:
 	return out if out.size() > 1 else [text]
 
 
+## One line of a power word's description. Shared with `_rules_extra`, which has
+## to predict the height of a table it does not draw.
+func _rules_power_line() -> float:
+	return float(_read_size(13)) + 6.0
+
+
 ## Everything under the paragraphs: the rule, the heading, and a row per power
 ## word.
 func _rules_extra() -> float:
-	var rows: float = float(POWER_ORDER.size()) * (43.0 if portrait else 24.0)
-	return 12.0 + 16.0 + 24.0 + rows
+	# Two lines a row on a phone, where the trigger and the reward are stacked.
+	var per: float = _rules_power_line() * (2.0 if portrait else 1.0) + 5.0
+	return 12.0 + 16.0 + float(_read_size(15)) + 9.0 + float(POWER_ORDER.size()) * per
 
 
 func _draw_gameover(size: Vector2) -> void:
@@ -6679,6 +6790,22 @@ func _over_fill() -> float:
 
 func _over_size(base: int) -> int:
 	return int(round(float(base) * (1.25 if portrait else 1.0)))
+
+
+## Prose, at a size a phone can actually be read at.
+##
+## The two design spaces are 1280 and 720 wide, so anything set at one size is
+## worth a little over half as much on a phone as it is on a monitor: the rules
+## sheet, set at 14, arrived on an iPhone at roughly seven points. That is half
+## Apple's floor for body text, and "the instructions are tiny" was the first
+## thing said about this game by somebody who had not built it.
+##
+## 1.6 rather than the summary screen's 1.25 because these are paragraphs and
+## that is a headline — a number you glance at survives being small in a way a
+## sentence you have to read does not. Both panels using it size themselves from
+## their contents, so raising it moves the panel rather than overflowing it.
+func _read_size(base: int) -> int:
+	return int(round(float(base) * (1.6 if portrait else 1.0)))
 
 
 func _score_row_h() -> float:

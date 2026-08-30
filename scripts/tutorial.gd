@@ -22,55 +22,69 @@ class_name Tutorial
 ## in the string would have been shorter and would have read as a translation
 ## rather than as a sentence; "tap FIRE to send it" is not the same sentence as
 ## "press SPACE to fire it" and should not pretend to be.
+##
+## Bodies are written as sentences with no line breaks in them. They used to
+## carry their own `\n`, broken by hand at the width the landscape card happened
+## to be — which on a phone, where the card is wider and the type is now half
+## again bigger, put the break in the middle of a clause. `game.gd` wraps them to
+## whatever the card actually is, so the copy can be judged as copy.
+##
+## Every one of them was also cut. A first-time player reads this card while a
+## board they do not understand is sitting under it, and a second clause
+## qualifying the first is a clause they will not get to: the sentences here say
+## the rule and stop. What was cut was never the rule — it was the aside about
+## the rule, which is what the game itself is about to demonstrate anyway.
 
 const STEPS := [
 	{
 		"id": "fire",
 		"title": "TYPE A WORD",
-		"body": "Anything you like. Press SPACE to fire it.",
-		"body_touch": "Anything you like. Tap FIRE to send it.",
+		"body": "Any word at all. Press SPACE to fire it.",
+		"body_touch": "Any word at all. Tap FIRE to send it.",
 		"hint": "three letters or more",
 	},
 	{
 		"id": "tail",
 		"title": "YOUR ENDING IS THEIR BEGINNING",
-		"body": "The LAST letters of that word are now stamped on a block —\n"
-			+ "and this one has been dropped on you.",
+		"body": "Its LAST letters are now stamped on a block — "
+			+ "and that block has been dropped on you.",
 		"hint": "watch the stamp",
 	},
 	{
 		"id": "answer",
 		"title": "ANSWER IT",
-		"body": "Type a word that STARTS with the letters on the block.\n"
-			+ "That is the only way garbage ever leaves your board.",
-		"hint": "attacking does not defend you",
+		"body": "Type a word that STARTS with the letters on the block. "
+			+ "It is the only way to clear garbage.",
+		"hint": "attacking will not save you",
 	},
 	{
 		"id": "reach",
 		"title": "LONGER WORDS REACH FURTHER",
-		"body": "Three blocks, same stamp. One word clears one block per two\n"
-			+ "letters — so a short answer only takes one of them.",
+		"body": "One word clears one block per two letters. "
+			+ "Three blocks need a six-letter word.",
 		"hint": "clear all three",
 	},
 	{
 		"id": "chain",
 		"title": "KEEP FIRING",
-		"body": "Blocks you send get bigger two ways: a long word hits hard on\n"
-			+ "its own, and a run without pausing lifts everything you throw.",
-		"hint": "reach a x4 chain",
+		"body": "Fire again before the bar under your board runs out. "
+			+ "A chain makes everything you send bigger.",
+		# Replaced at draw time with the goal actually being asked for, which
+		# eases off if this step is taking a while — see `_lesson_chain_goal`.
+		"hint": "chain three words",
 	},
 	{
 		"id": "danger",
 		"title": "FILLING UP COSTS A LIFE",
-		"body": "Not the match — one of three lives, and the board is wiped.\n"
-			+ "Clear this lot before it reaches the top.",
+		"body": "Top out and you lose a life and the whole board — but not the "
+			+ "match. Clear this lot before it reaches the top.",
 		"hint": "get the stack down",
 	},
 	{
 		"id": "done",
 		"title": "THAT IS THE WHOLE GAME",
-		"body": "Everything else — power words, salvos, the chain ladder —\n"
-			+ "is built on those four rules.",
+		"body": "Power words, salvos and the chain ladder are all built on those "
+			+ "four rules.",
 		"hint": "press SPACE to finish",
 		"hint_touch": "tap FIRE to finish",
 	},
