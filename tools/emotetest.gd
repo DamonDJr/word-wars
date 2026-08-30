@@ -1,5 +1,5 @@
 extends SceneTree
-## The emote art, pinned: three sheets, the grid they are packed on, and the
+## The emote art, pinned: seven sheets, the grid they are packed on, and the
 ## wire indices they hang off.
 ##
 ##   godot --headless --script tools/emotetest.gd
@@ -27,28 +27,39 @@ extends SceneTree
 ## is what stops it, it is invisible in the file, and a re-pack at a different
 ## cell size would quietly eat it.
 ##
-## ## And the four that are gone
+## ## And the wire, which is the part that cannot be taken back
 ##
-## The fan offers three of the seven. The other four are still named in `EMOTES`
-## and still on disk, because a phone on the older build can send one, and this
+## Nine names, of which the fan offers seven. `huh` and `think` are still named
+## and still on disk because a phone on an older build can send them, and this
 ## asserts the fallback has something to land on.
+##
+## The first seven are frozen: that is what a 0.36.0 phone believes, and it is
+## still in the field. `hype` and `dead` are appended past them rather than
+## folded into the two free slots, so an older phone clamps them away instead of
+## drawing the wrong feeling — asserted below, because the cost of getting it
+## wrong is a format that cannot be corrected afterwards.
 
 var fails := 0
 
 ## Every emote, in wire order. The index is what crosses the network, so this
 ## array is an on-disk format: append only, and never reorder.
-const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
+const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think",
+	"hype", "dead"]
+
+## What a phone on 0.36.0 and earlier knows. Frozen, and the prefix every later
+## build has to keep.
+const OLD_WIRE := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
 
 ## What the fan offers, and what it no longer does.
-const MENU := [0, 2, 4]
-const RETIRED := ["cry", "angry", "huh", "think"]
+const MENU := [0, 1, 2, 3, 4, 7, 8]
+const RETIRED := ["huh", "think"]
 
 
 func _init() -> void:
 	await process_frame
 
 	print("--- the set is complete ---")
-	_expect("seven emotes are named", EMOTES.size() == 7)
+	_expect("nine emotes are named", EMOTES.size() == 9)
 
 	var game = load("res://scenes/main.tscn").instantiate()
 	get_root().add_child(game)
@@ -124,22 +135,30 @@ func _sheets(game) -> void:
 		game._emote_frame(first, -1.0).position.x >= 0.0)
 
 
-## The three the fan offers, and the promise that goes with the numbers.
+## The seven the fan offers, and the promise that goes with the numbers.
 func _wiring(game) -> void:
 	print("--- the fan and the wire agree ---")
-	_expect("the menu is the three that were animated", game.EMOTE_MENU == MENU)
+	_expect("the menu is the seven that were animated", game.EMOTE_MENU == MENU)
 	for i in game.EMOTE_MENU.size():
 		var idx := int(game.EMOTE_MENU[i])
 		_expect("slot %d is a real wire index" % i,
 			idx >= 0 and idx < EMOTES.size())
 		_expect("and %-5s has a sheet" % EMOTES[idx], game.EMOTE_ANIM.has(idx))
-	# The whole reason these three indices and not 0, 1, 2. Every index this
-	# build can send is one the seven-emote build already understood, so a match
-	# across versions reads correctly in both directions.
-	_expect("nothing sent here is new to an older build",
-		MENU.max() < EMOTES.size())
-	_expect("the column is as tall as the menu",
-		(game._emote_rects() as Array).size() == game.EMOTE_MENU.size())
+
+	# The append-only promise, which is the whole reason hype and dead are 7 and
+	# 8 rather than the free 5 and 6. A 0.36.0 phone reads an index against its
+	# own seven names: shift any of those and every emote it receives becomes a
+	# different feeling, on a build already in the field and with no way to tell
+	# it otherwise.
+	_expect("the seven a 0.36.0 phone knows are untouched",
+		Array(EMOTES.slice(0, 7)) == OLD_WIRE)
+	for idx: int in MENU:
+		if idx < OLD_WIRE.size():
+			_expect("%-5s still means what it always did" % EMOTES[idx],
+				String(EMOTES[idx]) == String(OLD_WIRE[idx]))
+	_expect("the new two are appended past what it knows",
+		MENU.filter(func(i): return i >= OLD_WIRE.size()) == [7, 8])
+
 	_expect("the wire list matches the files", game.EMOTES == EMOTES)
 
 
@@ -202,11 +221,30 @@ func _bubbles(game) -> void:
 	_expect("theirs and yours are on opposite sides",
 		(at[0] as Vector2).x > card.end.x and (at[1] as Vector2).x < card.position.x)
 
+	# The fan, on the same phone. It went three tall and back to seven, and
+	# height is the binding constraint again: the column grows upward from a key
+	# that sits just above the keyboard, so a tile too tall runs off the top of
+	# the screen rather than overlapping anything that would show up in a diff.
+	var rects: Array = game._emote_rects(size)
+	_expect("the column is as tall as the menu",
+		rects.size() == game.EMOTE_MENU.size())
+	var top: Rect2 = rects[rects.size() - 1]
+	var bottom: Rect2 = rects[0]
+	# The rail is drawn ten pixels above the topmost tile.
+	_expect("the whole column fits on screen (top at %.0f)" % top.position.y,
+		top.position.y - 10.0 >= 0.0)
+	for i in rects.size():
+		var t: Rect2 = rects[i]
+		_expect("tile %d is on screen sideways" % i,
+			t.position.x >= 0.0 and t.end.x <= size.x)
+	_expect("and it stays clear of the board's own bottom edge",
+		bottom.end.y <= size.y)
 
-## The four the fan dropped are still drawable, because somebody else's phone
+
+## The two the fan dropped are still drawable, because somebody else's phone
 ## can still send one.
 func _retired() -> void:
-	print("--- the retired four still have something to land on ---")
+	print("--- the retired two still have something to land on ---")
 	for name: String in RETIRED:
 		var tex := load("res://emotes/%s.png" % name) as Texture2D
 		_expect("%-6s still loads" % name, tex != null)
@@ -250,11 +288,19 @@ func _gesture(game) -> void:
 	game._on_net_emote(2)
 	_expect("a real one is shown", int(game._emote_in.get("i", -1)) == 2)
 
-	# One of the four the fan dropped. It has to still arrive, or a match
-	# against the older build is one where half of what they say is silence.
-	game._on_net_emote(3)
+	# One of the two the fan dropped. It has to still arrive, or a match against
+	# an older build is one where part of what they say is silence.
+	game._on_net_emote(5)
 	_expect("and so does one this build cannot send",
-		int(game._emote_in.get("i", -1)) == 3)
+		int(game._emote_in.get("i", -1)) == 5)
+	# And the far end of the appended pair, which is the index most likely to be
+	# fumbled by an off-by-one in a clamp that was written when there were seven.
+	game._on_net_emote(EMOTES.size() - 1)
+	_expect("the last emote in the list is not clamped away",
+		int(game._emote_in.get("i", -1)) == EMOTES.size() - 1)
+	game._on_net_emote(EMOTES.size())
+	_expect("but one past it still is",
+		int(game._emote_in.get("i", -1)) == EMOTES.size() - 1)
 
 	# And it leaves on its own, or it would sit over the card forever.
 	game._tick_emotes(game.EMOTE_SHOW + 0.1)
@@ -358,16 +404,25 @@ func _margin_clear(img: Image, i: int, cols: int, cell: float,
 
 ## Pure black anywhere among the pixels actually drawn. See `_sheets` for why
 ## this is a rule rather than a preference.
+## Every pixel, not a sample of them.
+##
+## This used to stride by three, and that made it a coin toss: the stray black
+## pixels are single ones at line crossings, so which sheets tripped it came
+## down to where the grid happened to land. Two sheets with the same defect
+## reported differently in the same run, which is worse than not checking.
+##
+## Straight over the byte buffer, because seven sheets is four million pixels
+## and `get_pixel` per pixel turns a test into a coffee break.
 func _has_pure_black(img: Image) -> bool:
-	var y := 0
-	while y < img.get_height():
-		var x := 0
-		while x < img.get_width():
-			var c := img.get_pixel(x, y)
-			if c.a > 0.5 and c.r < 0.02 and c.g < 0.02 and c.b < 0.02:
-				return true
-			x += 3
-		y += 3
+	var flat := img.duplicate() as Image
+	flat.convert(Image.FORMAT_RGBA8)
+	var d := flat.get_data()
+	var i := 0
+	while i < d.size():
+		# Alpha first: it rejects most of a sticker's area in one comparison.
+		if d[i + 3] > 127 and d[i] <= 5 and d[i + 1] <= 5 and d[i + 2] <= 5:
+			return true
+		i += 4
 	return false
 
 

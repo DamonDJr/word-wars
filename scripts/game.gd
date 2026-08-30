@@ -1155,8 +1155,13 @@ func _portrait_board_top() -> float:
 
 ## The baseline the keyboard's last row sits on. Held off the very bottom edge
 ## by the home indicator, which otherwise takes swipes meant for the FIRE key.
-func _keyboard_bottom() -> float:
-	return get_viewport_rect().size.y - 18.0 - safe_bottom
+## `height` overrides the viewport's own, and exists so the keyboard and the
+## emote column can be asked about a phone from a headless run — where the
+## viewport is the 1280x720 desktop one and a seven-tall fan would appear to fit
+## in places it does not. Every real caller leaves it alone.
+func _keyboard_bottom(height := -1.0) -> float:
+	var h: float = height if height > 0.0 else get_viewport_rect().size.y
+	return h - 18.0 - safe_bottom
 
 
 ## The free space between your board and the rivals. The centre column has to
@@ -3533,42 +3538,55 @@ var _touch_input := false
 ## In wire order. The index is what crosses the network, so this is an on-disk
 ## format: append only, and never reorder. `emotetest` pins it against the files.
 ##
-## Four of these are no longer offered — see `EMOTE_MENU`. They stay named here
-## because a phone running the older build can still send index 3, and a hole in
-## this array would turn that into an emote that arrives as nothing.
-const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
-
-## The wire indices the fan actually offers, in the order they are stacked.
+## `huh` and `think` are no longer offered — see `EMOTE_MENU`. They stay named
+## here because a phone running an older build can still send index 5, and a
+## hole in this array would turn that into an emote that arrives as nothing.
 ##
-## The character was redrawn as BloqBot and only three of the seven feelings
-## were animated, so the menu is three tall. Which three is a choice about the
-## *wire*, not about the art: keeping cheer, shock and nice at 0, 2 and 4 means
-## every index this build sends is one an older build already understands, so a
-## match between the two versions still reads correctly in both directions
-## rather than needing a version check nobody can add retroactively.
-const EMOTE_MENU := [0, 2, 4]
+## `hype` and `dead` are appended rather than folded onto those two free slots.
+## The index is what crosses the wire and the *name* is what the receiver draws,
+## so reusing 5 for hype would make a 0.36.0 phone answer a star-eyed cheer with
+## the old shrug sticker — the wrong feeling, permanently, in a format that
+## cannot be corrected later. Appended, that phone clamps 7 and 8 in
+## `_on_net_emote` and shows nothing, which is the honest failure.
+const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think",
+	"hype", "dead"]
+
+## The wire indices the fan offers, in the order they are stacked — nearest the
+## thumb first.
+##
+## Wire order for the first five, because that is the order the fan has always
+## had and thumbs learn positions rather than pictures. The two new feelings go
+## on the end, where they cost nobody their muscle memory: hype and dead are the
+## ones with no older counterpart, so they are also the two that will show up as
+## silence on a phone that has not updated, and the top of the column is the
+## least surprising place for that to happen.
+const EMOTE_MENU := [0, 1, 2, 3, 4, 7, 8]
 
 ## Wire index -> the sheet that animates it, for those that have one. Anything
 ## not in here falls back to the single still in `res://emotes/<name>.png`,
-## which is what an index from an older build lands on.
+## which is what `huh` or `think` from an older build lands on.
 ##
 ## `frames` and `cols` describe the grid `tools/build_emotes.py` packed. They
 ## are duplicated between the two on purpose — the script prints them, and the
-## alternative was a manifest file to parse at load for six integers.
+## alternative was a manifest file to parse at load for fourteen integers.
 const EMOTE_ANIM := {
 	0: {"sheet": "bot_excited", "frames": 24, "cols": 6},
+	1: {"sheet": "bot_cry", "frames": 18, "cols": 6},
 	2: {"sheet": "bot_shocked", "frames": 18, "cols": 6},
+	3: {"sheet": "bot_mad", "frames": 18, "cols": 6},
 	4: {"sheet": "bot_love", "frames": 18, "cols": 6},
+	7: {"sheet": "bot_hype", "frames": 18, "cols": 6},
+	8: {"sheet": "bot_dead", "frames": 18, "cols": 6},
 }
 ## One cell of a sheet, and the transparent margin inside it. The game draws the
 ## inner square: bilinear filtering reaches a texel past the region it is given,
 ## and without the margin the frame beside it bleeds down the edge.
 const EMOTE_CELL := 160.0
 const EMOTE_GUTTER := 2.0
-## Hand-animation rate. The three cycles are 24, 18 and 18 frames, so at twelve
-## a side they run 2.0s, 1.5s and 1.5s against an `EMOTE_SHOW` of 2.4 — the long
-## one plays through once and the short ones come round again, which is what
-## they were drawn for.
+## Hand-animation rate. The cycles are 24 frames for cheer and 18 for the rest,
+## so at twelve a side they run 2.0s and 1.5s against an `EMOTE_SHOW` of 2.4 —
+## the long one plays through once and the short ones come round again, which is
+## what they were drawn for.
 const EMOTE_FPS := 12.0
 ## What the key's legend shows, in fractions of a frame: BloqBot's head.
 ##
@@ -3598,11 +3616,11 @@ const EMOTE_HOLD := 0.16
 const EMOTE_COOLDOWN := 2.5
 ## How long a received emote stays up.
 const EMOTE_SHOW := 2.4
-## One tile in the fan. Grown from 62 when the column went from seven tall to
-## three: at seven the height was the constraint and the tiles were as big as
-## the reach of a thumb allowed, and at three there is room to draw a whole
-## character rather than a thumbnail of one.
-const EMOTE_TILE := 78.0
+## One tile in the fan. Briefly 78 while the column was three tall and height
+## was free; back to 62 now that seven feelings are drawn, because at seven the
+## height is the constraint again — a column of 78s reaches most of the way up
+## a phone and covers the board it is supposed to be answering.
+const EMOTE_TILE := 62.0
 const EMOTE_TILE_GAP := 8.0
 
 ## How solid an emote is when it is decoration rather than a message.
@@ -3753,9 +3771,8 @@ func _on_net_emote(idx: int) -> void:
 ##
 ## Built from the key's own rect rather than from the screen, so the column
 ## cannot drift away from the control that opened it.
-func _emote_rects() -> Array:
-	var size := get_viewport_rect().size
-	var key := Keyboard.emote_rect(size, _keyboard_bottom())
+func _emote_rects(size: Vector2) -> Array:
+	var key := Keyboard.emote_rect(size, _keyboard_bottom(size.y))
 	var out: Array = []
 	# Pulled back in from the edge. The key sits hard against the right margin
 	# because P does, but the column is wider than the key and its rail is wider
@@ -3776,7 +3793,7 @@ func _emote_rects() -> Array:
 ## is one tile wide and a thumb dragging straight up does not travel straight.
 func _emote_at(p: Vector2) -> int:
 	var at := p - Vector2(0.0, TOUCH_LIFT)
-	var rects := _emote_rects()
+	var rects := _emote_rects(get_viewport_rect().size)
 	for i in rects.size():
 		var r: Rect2 = rects[i]
 		if at.y >= r.position.y - EMOTE_TILE_GAP * 0.5 \
@@ -3849,7 +3866,7 @@ func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool,
 		var t: float = age if age >= 0.0 else Time.get_ticks_msec() / 1000.0
 		_overlay.draw_texture_rect_region(sheet, at, _emote_frame(anim, t), white)
 		return
-	# One of the four the fan no longer offers, sent by an older build.
+	# `huh` or `think`: no longer offered here, still sendable by an older build.
 	var still := _emote_texture(EMOTES[idx])
 	if still != null:
 		_overlay.draw_texture_rect(still, at, false, white)
@@ -4185,7 +4202,7 @@ func _draw_emote_key() -> void:
 
 	# The column. A rail behind it so the stickers over a moving board still read
 	# as one list rather than as three things that happened to line up.
-	var rects := _emote_rects()
+	var rects := _emote_rects(get_viewport_rect().size)
 	var first: Rect2 = rects[rects.size() - 1]
 	var last: Rect2 = rects[0]
 	var rail := Rect2(first.position.x - 12.0, first.position.y - 10.0,

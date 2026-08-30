@@ -47,14 +47,38 @@ COLS = 6
 # EMOTE_ANIM; changing one means changing both.
 SETS = {
     "BloqBotExcited": "bot_excited",
+    "BloqBotCry": "bot_cry",
     "BloqBotShocked": "bot_shocked",
+    "BloqBotMad": "bot_mad",
     "BloqBotLove": "bot_love",
+    "BloqBotHype": "bot_hype",
+    "BloqBotDead": "bot_dead",
 }
+
+
+# BloqBot's own linework, and the floor every drawn pixel is held to.
+#
+# `game.gd` uses #000000 precisely nowhere — the whole UI bottoms out at
+# #0b1020 — so pure black on screen is only ever these files, and against a
+# panel that dark it reads as a hole punched through it rather than as ink. The
+# old white character was re-levelled by hand for the same reason; doing it here
+# means a re-export from the drawing tool cannot quietly undo it.
+#
+# Only Mad actually trips this, with the black puffs over its head. Everything
+# else bottoms out at 29 already, so the threshold sits well below anything the
+# art draws on purpose and well above true black.
+INK = np.array([0x0b, 0x12, 0x20], dtype=np.float32) / 255.0
+INK_FLOOR = 16.0 / 255.0
 
 
 def scaled(path, size):
     """One frame at `size`, resized through premultiplied alpha."""
     im = np.asarray(Image.open(path).convert("RGBA"), dtype=np.float32) / 255.0
+    # Lifted before the resize, not after, so the anti-aliased edge blends
+    # towards the ink colour rather than towards a black the art no longer has.
+    drawn = im[..., 3] > 0.0
+    black = drawn & (im[..., :3].max(axis=2) <= INK_FLOOR)
+    im[black, 0:3] = INK
     a = im[..., 3:4]
     pre = np.concatenate([im[..., :3] * a, a], axis=2)
     small = np.asarray(
@@ -68,7 +92,15 @@ def scaled(path, size):
     # recover, so those pixels are left to the dilate below.
     rgb = np.divide(small[..., :3], out_a, out=np.zeros_like(small[..., :3]),
                     where=out_a > 1e-4)
-    return np.concatenate([np.clip(rgb, 0.0, 1.0), out_a], axis=2)
+    rgb = np.clip(rgb, 0.0, 1.0)
+    # And lifted a second time, because Lanczos has negative lobes: a dark
+    # pixel beside a bright one rings *below* the darkest input and clamps at
+    # zero. That is where the handful of black pixels in every sheet came from
+    # — the source has nothing under 29, and the resize was manufacturing them.
+    out = np.concatenate([rgb, out_a], axis=2)
+    rung = (out[..., 3] > 1e-4) & (out[..., :3].max(axis=2) <= INK_FLOOR)
+    out[rung, 0:3] = INK
+    return out
 
 
 def dilate(sheet, passes=4):
