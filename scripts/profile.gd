@@ -72,8 +72,19 @@ var since_ad := 0
 ## the match rather than here.
 var ad_gap := 0
 
-const ADS_EVERY_MIN := 3
-const ADS_EVERY_MAX := 5
+## Two to three, down from three to five.
+##
+## A tester reported two breaks in twenty minutes of play, which is the clock
+## budget below working exactly as written and being far too patient about it.
+## The old numbers were chosen before there was any revenue to weigh them
+## against; they are gentler than anything else in the category, and gentle is
+## only a virtue while somebody is still playing.
+##
+## Two is the floor on purpose. One would put a break after every single match,
+## which is the rhythm players learn to feel coming — and the match they learn to
+## feel it on is the one they stop before.
+const ADS_EVERY_MIN := 2
+const ADS_EVERY_MAX := 3
 
 ## Seconds of counted play since the last break, and how many this gap is worth.
 ##
@@ -90,14 +101,23 @@ const ADS_EVERY_MAX := 5
 ## mode it is in — every mode that counts hands over the seconds it took, and the
 ## arithmetic is the same everywhere.
 ##
-## Nine to fourteen minutes because that is what three to five matches has
-## actually been costing: it is the same spacing, measured with a different
-## instrument, so the rhythm a player already has does not change under them.
+## Five to eight minutes, down from nine to fourteen.
+##
+## The two budgets are kept in step deliberately: the clock is meant to be the
+## one survival trips and the match count the one everything else trips, and that
+## only holds while a gap costs about the same measured either way. Nine to
+## fourteen was what three to five matches cost; five to eight is what two to
+## three costs. Moving one without the other would have made the clock the rule
+## everywhere, which is the opposite of what it is for.
+##
+## Still conservative against the category, which mostly runs interstitials every
+## two to four minutes. There is room to go further if the numbers ask for it —
+## but retention is harder to win back than an impression is to lose.
 var play_since_ad := 0.0
 var ad_gap_seconds := 0.0
 
-const ADS_MINUTES_MIN := 9.0
-const ADS_MINUTES_MAX := 14.0
+const ADS_MINUTES_MIN := 5.0
+const ADS_MINUTES_MAX := 8.0
 
 
 ## The next gap. Inclusive of both ends, so five is as reachable as three.

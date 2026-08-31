@@ -3573,6 +3573,11 @@ func _finish_survival() -> void:
 			"powers": player.power_tally,
 		})
 	earned = _earned_since(was_xp, was_level, was_unlocked)
+	# Inside the floor check's shadow on purpose: `survival_took` is empty for a
+	# run too short to bank, and a ten-second death has no business on a global
+	# board either. Held and sent later if Game Center is not there yet.
+	if not survival_took.is_empty():
+		Boards.submit_survival(player.score)
 	var beat: bool = bool(survival_took.get("time", false)) \
 		or bool(survival_took.get("score", false))
 	winner = "YOU" if beat else ""

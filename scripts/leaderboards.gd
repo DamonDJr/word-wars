@@ -133,6 +133,79 @@ func refresh() -> void:
 	_wake()
 
 
+# ------------------------------------------------------------------ survival
+#
+# A second board, kept deliberately apart from the first rather than folded into
+# it.
+#
+# Everything above is built around one board and one rank: `_board`, `rank`,
+# `friend_rank` and the whole `_wake` -> `_flush` -> `_load_ranks` chain are the
+# daily's, and the summary reads them by name. Generalising that to a dictionary
+# of boards would touch every line of a path that is live, working, and the only
+# thing on the daily summary — to add a mode that wants none of it.
+#
+# So survival gets what it actually needs, which is a submit and nothing else.
+# No rank is read back because no screen shows one yet; when one does, that is
+# the moment to make this generic, with a reason to.
+
+## Highest score from a run, on the survival board. Empty disables it, the same
+## way an empty `DAILY_ID` disables the daily.
+const SURVIVAL_ID := "com.damonj.wordwars.survival"
+
+var _sv_board = null
+## A score waiting for somewhere to go. Unlike the daily's, this one takes the
+## highest rather than the latest: a player can finish three runs on a plane, and
+## the board wants their best, not their last.
+var _sv_pending := -1
+var _sv_loading := false
+
+
+## A finished run, on its way to Apple. Safe signed out, off-device, or before
+## authentication finishes — it is held and sent when there is somewhere to send.
+func submit_survival(score: int) -> void:
+	if not available() or SURVIVAL_ID == "" or score <= 0:
+		return
+	_sv_pending = maxi(_sv_pending, score)
+	if not _signed_in():
+		return
+	_sv_wake()
+
+
+func _sv_wake() -> void:
+	if _sv_pending < 0:
+		return
+	if _sv_board != null:
+		var score := _sv_pending
+		_sv_pending = -1
+		_sv_board.submit_score(score, 0, MultiplayerManager.local_player,
+			_on_sv_submitted)
+		return
+	if _sv_loading:
+		return
+	_sv_loading = true
+	GKLeaderboard.load_leaderboards(
+		PackedStringArray([SURVIVAL_ID]), _on_sv_loaded)
+
+
+func _on_sv_loaded(boards: Array, error) -> void:
+	_sv_loading = false
+	if error != null or boards.is_empty():
+		# Said out loud because nothing on screen will: survival has no rank row,
+		# so a missing board is invisible until somebody checks App Store Connect.
+		push_warning("Boards: no survival leaderboard %s" % SURVIVAL_ID)
+		return
+	_sv_board = boards[0]
+	_sv_wake()
+
+
+func _on_sv_submitted(error) -> void:
+	if error == null:
+		return
+	# The run is already on the record screen. Losing the global placing is the
+	# whole cost, and it is not worth a message over somebody's death screen.
+	print("[Boards] survival submit refused: %s" % str(error))
+
+
 func _on_gc_state_changed(_text: String) -> void:
 	if not available():
 		return
@@ -145,6 +218,8 @@ func _on_gc_state_changed(_text: String) -> void:
 		_set_state(State.WAITING, "waiting for Game Center")
 		return
 	_wake()
+	# A run finished while signed out has been waiting for exactly this.
+	_sv_wake()
 
 
 ## Get the board, then do whatever is outstanding with it.
