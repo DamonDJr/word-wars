@@ -46,6 +46,7 @@ func _init() -> void:
 	_the_budget_is_time_as_well_as_matches()
 	_a_run_pays_as_it_goes()
 	_a_break_stops_the_run_under_it()
+	await _the_curtain_covers_the_run_first()
 	_premium_asks_for_nothing()
 	_normal_play_is_untouched()
 
@@ -409,6 +410,74 @@ func _a_break_stops_the_run_under_it() -> void:
 	for i in 600:
 		game._process(1.0 / 60.0)
 	_expect("and it picks up again once the break is over", game.match_time > 50.0)
+
+
+## The break that reads as a crash if it is not announced: mid-run, a second
+## after a life is lost, with the board still on screen.
+func _the_curtain_covers_the_run_first() -> void:
+	print("--- the curtain ---")
+	var ads: Node = get_root().get_node("Ads")
+	game.start_match("Survival", 0, [], game.Mode.SURVIVAL)
+	game.phase = game.Phase.PLAY
+	game.match_time = 200.0
+	game.player.board.reset()
+	game.player.pending.clear()
+
+	# Force the break to be due on the very next life, and get an ad into hand so
+	# `_break_due` says yes. The addon's own mock is what `Ads` talks to
+	# off-device — same loader, same callbacks — and it answers on a timer.
+	P.since_ad = 99
+	P.ad_gap = 1
+	P.play_since_ad = 0.0
+	ads.fetch()
+	for i in 40:
+		if ads.has_ad():
+			break
+		await create_timer(0.05).timeout
+	_expect("the mock has a break to serve", ads.has_ad())
+	_expect("a break is due on this life", game._break_due())
+
+	game._lose_life(game.player)
+	_expect("losing a life does not cut straight to the advert", not ads.showing())
+	_expect("it closes the curtain instead", game._ad_paused())
+	_expect("and the run is still on the board behind it",
+		game.phase == game.Phase.PLAY)
+
+	# Half a second in, the screen is going dark but not yet asking for anything.
+	for i in 30:
+		game._process(1.0 / 60.0)
+	_expect("the curtain covers before the break is asked for",
+		game._curtain_alpha() > 0.0 and not ads.showing())
+	_expect("and it says what is coming back", game._curtain_note != "")
+
+	# The clock underneath it does not move for any of that — the announcement is
+	# part of the pause, not time the player is charged for.
+	var was: float = game.match_time
+	for i in 60:
+		game._process(1.0 / 60.0)
+	_expect("nothing under it ticks", is_equal_approx(game.match_time, was))
+
+	# Run it out. The curtain reaches the point where it asks, and because the
+	# mock is holding an ad, the break goes up behind a screen that is already
+	# covered rather than instead of one that was not.
+	for i in 240:
+		game._process(1.0 / 60.0)
+		if ads.showing():
+			break
+	_expect("then the break arrives, fully covered", ads.showing())
+	_expect("with the curtain still up over it",
+		is_equal_approx(game._curtain_alpha(), 1.0))
+
+	# And it takes itself away rather than snapping back to the board.
+	ads._done(true)
+	_expect("the ad closing starts the curtain lifting", game._ad_paused())
+	for i in 120:
+		game._process(1.0 / 60.0)
+	_expect("which finishes on its own", not game._ad_paused())
+	_expect("and hands the run back", game.phase == game.Phase.PLAY)
+	for i in 60:
+		game._process(1.0 / 60.0)
+	_expect("running again", game.match_time > was)
 
 
 ## Somebody who paid to remove ads must not have their device asking for them.

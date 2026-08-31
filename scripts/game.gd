@@ -1780,7 +1780,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	# has already swallowed it, but the stand-in used off-device is a canvas
 	# layer inside our own window — and a keystroke landing on the summary behind
 	# it would walk to a screen the player cannot see.
-	if Ads.showing():
+	#
+	# The curtain either side of it counts for the same reason: it is opaque, and
+	# a key pressed at something you cannot see is not a decision.
+	if _ad_paused():
 		return
 
 	# Any key cuts the splash short — and does only that, so an impatient press
@@ -2392,16 +2395,131 @@ func _break_due() -> bool:
 	return _ad_allowed() and Profile.ad_due() and Ads.has_ad()
 
 
+# ------------------------------------------------------------------ the curtain
+#
+# An interstitial arrives as a native full-screen view with no warning and no
+# animation of ours: one frame you are playing, the next you are looking at an
+# advert. At the end of a match that is merely abrupt. In survival it lands
+# mid-run, a second after a life is lost, and "the game vanished and something
+# else opened" is indistinguishable from a crash — which is what it was reported
+# as.
+#
+# So the game closes its own curtain first. It fades up over whatever is on
+# screen, says what is happening and what will still be there afterwards, and
+# only then is the break asked for. Coming back it fades off rather than cutting,
+# for the same reason in reverse.
+#
+# The curtain is not only decoration, it is also the pause. Nothing underneath it
+# ticks and nothing underneath it can be tapped — see `_ad_paused`, which the
+# process loop and both input handlers read. Without that, the survival board
+# would keep dealing blocks behind a screen the player cannot see through.
+
+enum Curtain { NONE, CLOSING, HOLDING, WAITING, OPENING }
+
+## Long enough to be read as deliberate, short enough not to be a toll charged on
+## every break. The hold is what makes it read as an announcement rather than a
+## glitch: a curtain that closes and instantly becomes an advert has not actually
+## told anybody anything.
+const CURTAIN_CLOSE := 0.7
+const CURTAIN_HOLD := 0.6
+const CURTAIN_OPEN := 0.5
+## If the network never reports back, lift anyway. `Ads` has its own rescue timer
+## and always emits `finished`, so this should be unreachable — but the failure it
+## covers is a permanently opaque screen with a live game behind it, which is the
+## worst thing on this list by a distance and costs three lines to rule out.
+const CURTAIN_GIVE_UP := 90.0
+
+var _curtain := Curtain.NONE
+var _curtain_t := 0.0
+## What is on the far side of the break, decided when the curtain starts closing.
+## By the time it lifts the phase may have moved on, and a line promising a
+## scoreboard that is no longer coming is worse than no line at all.
+var _curtain_note := ""
+
+
+## True while a break is being announced, shown, or cleared away.
+func _ad_paused() -> bool:
+	return _curtain != Curtain.NONE or Ads.showing()
+
+
+## What to promise the player on the way out. Written as what they get back
+## rather than as what is about to happen: the advert is the obvious part.
+func _ad_note() -> String:
+	if mode == Mode.SURVIVAL and phase == Phase.PLAY:
+		return "your run picks up where it left off"
+	if phase == Phase.OVER:
+		return "your scoreboard is waiting behind this"
+	return "back in a moment"
+
+
 ## Try to put one up. Called as the match ends, with the summary already built
 ## behind it, so there is nothing to hand back when it finishes — closing the ad
-## reveals the scoreboard that was there all along.
+## reveals the scoreboard that was there all along. Called mid-run in survival
+## too, where what is behind it is the run.
+##
+## The break is not shown from here any more; the curtain is started and shows it
+## when it is fully closed. `_break_due` still answers first, so a break that was
+## never going to happen does not get a curtain drawn for it.
 func _try_ad_break() -> void:
 	if not _break_due():
 		return
-	if not Ads.show():
+	if _curtain != Curtain.NONE:
 		return
-	# Sound and music belong to whatever is on screen, and that is no longer us.
-	Music.stop()
+	_curtain = Curtain.CLOSING
+	_curtain_t = 0.0
+	_curtain_note = _ad_note()
+
+
+## Move the curtain along. Ticked from `_process` whether or not the rest of the
+## frame is, because it is the thing that has to keep moving when nothing else
+## does.
+func _tick_curtain(delta: float) -> void:
+	match _curtain:
+		Curtain.CLOSING:
+			_curtain_t += delta / CURTAIN_CLOSE
+			if _curtain_t >= 1.0:
+				_curtain_t = 0.0
+				_curtain = Curtain.HOLDING
+		Curtain.HOLDING:
+			_curtain_t += delta / CURTAIN_HOLD
+			if _curtain_t < 1.0:
+				return
+			_curtain_t = 0.0
+			# Fully covered, so whatever the SDK does with the screen now happens
+			# behind something rather than instead of something.
+			if Ads.show():
+				_curtain = Curtain.WAITING
+				# Sound and music belong to whatever is on screen, and from here
+				# that is no longer us.
+				Music.stop()
+			else:
+				# Refused at the last moment. Nothing was shown, the counter keeps
+				# its place, and the curtain lifts on the game it never left.
+				_curtain = Curtain.OPENING
+		Curtain.WAITING:
+			_curtain_t += delta
+			if _curtain_t >= CURTAIN_GIVE_UP:
+				push_warning("Ads: the break never lifted the curtain — opening it anyway")
+				_curtain_t = 0.0
+				_curtain = Curtain.OPENING
+		Curtain.OPENING:
+			_curtain_t += delta / CURTAIN_OPEN
+			if _curtain_t >= 1.0:
+				_curtain_t = 0.0
+				_curtain = Curtain.NONE
+				_curtain_note = ""
+
+
+## How much of the screen the curtain is covering, 0 to 1.
+func _curtain_alpha() -> float:
+	match _curtain:
+		Curtain.CLOSING:
+			return clampf(_curtain_t, 0.0, 1.0)
+		Curtain.HOLDING, Curtain.WAITING:
+			return 1.0
+		Curtain.OPENING:
+			return clampf(1.0 - _curtain_t, 0.0, 1.0)
+	return 0.0
 
 
 ## The break is over. `shown` is false when the network refused at the last
@@ -2410,6 +2528,11 @@ func _try_ad_break() -> void:
 func _on_ad_finished(shown: bool) -> void:
 	if shown:
 		Profile.clear_ad()
+	# Whatever happened, the screen is ours again — and it is still covered, so
+	# there is something to take away rather than a cut back to the game.
+	if _curtain == Curtain.WAITING or _curtain == Curtain.HOLDING:
+		_curtain = Curtain.OPENING
+		_curtain_t = 0.0
 	_music_key = ""
 	_music_hold = 0.0
 	_tick_music(0.0)
@@ -2800,6 +2923,12 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
+	# The curtain moves whatever else is or is not happening — it is the one thing
+	# on screen while everything under it is stopped, so it cannot be inside the
+	# part that stops.
+	if _curtain != Curtain.NONE:
+		_tick_curtain(delta)
+
 	# A break stops the run underneath it.
 	#
 	# Until survival there was no such thing as an ad over a live match — every
@@ -2809,10 +2938,12 @@ func _process(delta: float) -> void:
 	# seconds of it: you would come back from an advert to a board you had no
 	# hand in burying, having also been charged the time on your own record.
 	#
-	# `Ads.showing` is already the flag that stops input reaching the game for
-	# exactly the same reason. This is the other half of it.
-	if Ads.showing() and phase == Phase.PLAY:
+	# The curtain counts, not just the advert: the second and a bit it spends
+	# closing and opening is time the player cannot see the board through either.
+	if _ad_paused() and phase == Phase.PLAY:
 		_tick_music(delta)
+		queue_redraw()
+		_overlay.queue_redraw()
 		return
 
 	# Measured against the wall clock, not `delta` — `delta` is the thing being
@@ -5204,38 +5335,89 @@ func _draw_overlay() -> void:
 			_draw_pause(size)
 		elif not player.alive:
 			_draw_spectating(size)
+	else:
+		if phase == Phase.SPLASH:
+			# The menu assembles underneath while the art dissolves off the top of
+			# it, so the two never trade places against an empty screen.
+			_draw_title(size)
+			_draw_splash(size)
+		elif phase == Phase.TITLE:
+			_draw_title(size)
+		elif phase == Phase.SOLO:
+			_draw_solo(size)
+		elif phase == Phase.PRACTICE:
+			_draw_practice(size)
+		elif phase == Phase.MASTERY:
+			_draw_mastery(size)
+		elif phase == Phase.COSMETICS:
+			_draw_cosmetics(size)
+		elif phase == Phase.SETTINGS:
+			_draw_settings(size)
+		elif phase == Phase.COUNTDOWN:
+			_draw_countdown(size)
+		elif phase == Phase.OVER:
+			_draw_gameover(size)
+			# Over the summary rather than inside it, and last, so nothing the
+			# scoreboard draws lands on top of the question.
+			_draw_rematch_popup(size)
+
+		# Last, so it sits over whatever the screen drew — several of these paint
+		# a full-width header straight through the corner it lives in.
+		if portrait:
+			_draw_scrollbar(size)
+			_draw_back_button()
+
+	# Over absolutely everything, playfield and menus alike. The `return` that
+	# used to end the PLAY branch is an `else` now for exactly this: the curtain
+	# has to be the last thing drawn on every screen a break can arrive on, and
+	# two call sites is how one of them ends up forgotten.
+	_draw_ad_curtain(size)
+
+
+## The curtain an ad break arrives behind.
+##
+## Deliberately plain. This is the one screen in the game whose whole job is to
+## say "this was on purpose and you have not lost anything" — a busy card would
+## be read as another part of the advert, and the wordmark would be the game
+## appearing to introduce it. A heading, a promise about what is behind it, and a
+## bar that visibly fills so the wait reads as a countdown rather than a hang.
+func _draw_ad_curtain(size: Vector2) -> void:
+	var a := _curtain_alpha()
+	if a <= 0.0:
 		return
+	var cx := size.x * 0.5
+	var cy := size.y * 0.5
+	# Eased, so the cover arrives fastest in the middle rather than creeping in
+	# and out at the ends where it is most visible as a fade.
+	var cover: float = a * a * (3.0 - 2.0 * a)
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, cover * 0.99), true)
 
-	if phase == Phase.SPLASH:
-		# The menu assembles underneath while the art dissolves off the top of
-		# it, so the two never trade places against an empty screen.
-		_draw_title(size)
-		_draw_splash(size)
-	elif phase == Phase.TITLE:
-		_draw_title(size)
-	elif phase == Phase.SOLO:
-		_draw_solo(size)
-	elif phase == Phase.PRACTICE:
-		_draw_practice(size)
-	elif phase == Phase.MASTERY:
-		_draw_mastery(size)
-	elif phase == Phase.COSMETICS:
-		_draw_cosmetics(size)
-	elif phase == Phase.SETTINGS:
-		_draw_settings(size)
-	elif phase == Phase.COUNTDOWN:
-		_draw_countdown(size)
-	elif phase == Phase.OVER:
-		_draw_gameover(size)
-		# Over the summary rather than inside it, and last, so nothing the
-		# scoreboard draws lands on top of the question.
-		_draw_rematch_popup(size)
+	# The words only once it is dark enough for them to be the brightest thing on
+	# screen; printed over a half-faded playfield they read as an overlay bug.
+	var ink: float = clampf((a - 0.55) / 0.45, 0.0, 1.0)
+	if ink <= 0.0:
+		return
+	_otext(_font_bold, Vector2(cx, cy - _read_size(16)), "AD BREAK",
+		_read_size(20), Color("#e6ecff", ink))
+	_text_fit_overlay(_font, Vector2(cx, cy + _read_size(10)), _curtain_note,
+		_read_size(13), size.x - GRID_MARGIN * 4.0, Color("#8d99bd", ink))
 
-	# Last, so it sits over whatever the screen drew — several of these paint a
-	# full-width header straight through the corner it lives in.
-	if portrait:
-		_draw_scrollbar(size)
-		_draw_back_button()
+	# How far through the announcement we are. Full by the time the break is
+	# asked for, and held there while it is up — a bar that restarts or empties
+	# would be claiming to know how long an advert lasts, which nothing here does.
+	var bw: float = minf(260.0, size.x - GRID_MARGIN * 4.0)
+	var by: float = cy + _read_size(34)
+	var fill := 1.0
+	if _curtain == Curtain.CLOSING:
+		fill = clampf(_curtain_t * 0.5, 0.0, 1.0)
+	elif _curtain == Curtain.HOLDING:
+		fill = clampf(0.5 + _curtain_t * 0.5, 0.0, 1.0)
+	_overlay.draw_rect(Rect2(cx - bw * 0.5, by, bw, 3.0),
+		Color("#2a3355", ink), true)
+	_overlay.draw_rect(Rect2(cx - bw * 0.5, by, bw * fill, 3.0),
+		Color(PLAYER_ACCENT, ink), true)
 
 
 ## The numbers you just earned, rising off the bottom of your own board and
@@ -8472,7 +8654,7 @@ func _draw_decor() -> void:
 # ----------------------------------------------------------------- mouse input
 
 func _unhandled_input(event: InputEvent) -> void:
-	if Ads.showing():
+	if _ad_paused():
 		return
 	# Two thumbs. Godot turns touches into mouse presses one at a time — the
 	# second finger down while the first is still held produces no event at all —

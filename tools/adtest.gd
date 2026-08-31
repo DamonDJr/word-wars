@@ -54,6 +54,25 @@ func _await_loaded() -> bool:
 	return false
 
 
+## Wait for the curtain to finish closing and the break to actually arrive. The
+## game's own `_process` drives it, so this only has to let real time pass.
+func _await_curtain() -> bool:
+	for i in 60:
+		if A.showing():
+			return true
+		await create_timer(0.05).timeout
+	return false
+
+
+## And for it to take itself away again afterwards.
+func _await_curtain_lifted() -> bool:
+	for i in 60:
+		if not game._ad_paused():
+			return true
+		await create_timer(0.05).timeout
+	return false
+
+
 ## Finish a match the way the rules finish one.
 func _play_one() -> void:
 	game.start_match("Duelist", 1)
@@ -95,12 +114,19 @@ func _it_fires_at_the_end_of_the_match() -> void:
 	_expect("and the summary is up", game.phase == game.Phase.OVER)
 
 	_play_one()
-	_expect("the break is on screen the moment the match ends", A.showing())
+	# The curtain goes up first now. An interstitial that arrives with no warning
+	# reads as the game having been cut out from under you — which is what it was
+	# reported as — so the game covers the screen, says so, and only then asks.
+	_expect("the curtain closes the moment the match ends", game._ad_paused())
+	_expect("but nothing is on screen yet", not A.showing())
 	# The whole point of the move: the scoreboard is already behind it, so there
 	# is no second screen to come back to and nothing owed to the player.
 	_expect("with the summary already built behind it",
 		game.phase == game.Phase.OVER)
-	_expect("and input is refused while it is up", A.showing())
+	_expect("and input is refused from its first frame", game._ad_paused())
+
+	var arrived: bool = await _await_curtain()
+	_expect("the break arrives once the screen is covered", arrived)
 
 	var before: int = P.since_ad
 	await _dismiss()
@@ -109,6 +135,11 @@ func _it_fires_at_the_end_of_the_match() -> void:
 	_expect("and the counter is spent", P.since_ad == 0)
 	_expect("with a fresh gap rolled",
 		P.ad_gap >= P.ADS_EVERY_MIN and P.ad_gap <= P.ADS_EVERY_MAX)
+
+	# And the curtain takes itself away rather than cutting back to the game.
+	_expect("the curtain is still covering as the ad closes", game._ad_paused())
+	var lifted: bool = await _await_curtain_lifted()
+	_expect("then lifts on its own", lifted)
 
 	# And Rematch is now instant — the break is behind us, not in front.
 	P.ad_gap = 99
