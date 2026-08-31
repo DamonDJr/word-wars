@@ -241,7 +241,7 @@ enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
 ## around them. Neither can be lost, and neither banks anything: a mode with no
 ## opponent and no death would be an XP farm, and the level has to keep meaning
 ## matches played through.
-enum Mode { NORMAL, TUTORIAL, TRAINING, DAILY }
+enum Mode { NORMAL, TUTORIAL, TRAINING, DAILY, SURVIVAL }
 
 ## The daily board: one run, everybody gets the same one, and it is over when
 ## the clock runs out rather than when somebody wins.
@@ -289,6 +289,60 @@ const DAILY_OPEN_MAX := 0.45
 ## Sizes the opening pile is built from. No 3x3 or 4x3 — a slab that big in the
 ## first second is a wall, not a starting position.
 const DAILY_OPEN_TIERS := [0, 0, 1, 1, 2, 3]
+
+# ------------------------------------------------------------------ survival
+#
+# The daily's solitaire with the clock taken off the front of it and put on the
+# scoreboard instead. Same board, same rules, same three lives — what changes is
+# what is being asked. The daily asks how much you can wring out of sixty fixed
+# seconds. Survival asks how long you can hold on, and answers it by never
+# stopping.
+#
+# There is no seed and no once-a-day. A shared board only means anything when
+# every run is the same length, and these are not — so survival is dealt fresh
+# every time and can be played until you are sick of it.
+#
+# It opens on an empty board, which the daily deliberately does not. A minute
+# cannot afford twenty seconds of nothing happening; a run with no end can, and
+# needs it: the whole shape of the mode is a calm opening that becomes
+# unplayable, and starting a third buried skips the first act of it.
+
+## The ramp, which is the entire design of the mode.
+##
+## Slower to start and much further to fall than the daily's. Blocks open 4.6
+## seconds apart — calmer than the daily's 3.4, because there are minutes to fill
+## rather than one — and close on 1.15, which is below the daily's floor of 1.6
+## and is meant to be. 1.6 is "faster than anyone can answer" for the last
+## fifteen seconds of a sprint; the floor here has to be somewhere a good player
+## eventually drowns rather than somewhere they can hold forever, or the mode has
+## no ending and the scoreboard measures patience.
+##
+## At 0.055 a step it takes about three minutes of play to reach the floor, which
+## is roughly where a competent run is by then. Nobody meets the hardest version
+## of this in their first thirty seconds.
+const SURVIVAL_PRESSURE_START := 4.6
+const SURVIVAL_PRESSURE_MIN := 1.15
+const SURVIVAL_PRESSURE_STEP := 0.055
+## Seconds elapsed at which the ambient block steps up a size.
+##
+## Four gates rather than the daily's two, and the last two are past the point
+## where the rate has stopped falling. That is what actually ends a run: once the
+## interval is flat, weight is the only thing left to escalate, and a 3x2 slab
+## every 1.15 seconds is not survivable by anybody. The mode has to have a
+## ceiling somewhere or the best players never finish a run.
+const SURVIVAL_TIER_AT := [70.0, 165.0, 300.0, 460.0]
+## The mode's colour, everywhere it is drawn: the title plate, the centre column
+## during a run, the Again button, and the summary of a run that took no record.
+## Red because the whole of survival is a board getting away from you, and this
+## palette already uses gold for the thing worth having and red for the thing
+## about to cost you.
+const SURVIVAL_ACCENT := Color("#f94144")
+
+## Under this, a run is not worth writing down. Quitting out of the countdown or
+## topping out in the first few seconds should not be able to take a record, and
+## `record_survival` counts runs for XP — so without a floor, starting and
+## abandoning is a way to farm levels.
+const SURVIVAL_MIN_RUN := 10.0
 
 ## What an attack is worth. One cell of block, this many points.
 ##
@@ -596,6 +650,17 @@ var lesson_done := false
 var _lesson_word := ""
 ## Training pace, as an index into TRAINING_PACE.
 var train_pace := 1
+
+## How much of this survival run has already been charged to the ad budget.
+##
+## A run is one match that can last half an hour, so its time is handed over a
+## life at a time rather than all at once at the end — see `_bank_survival_time`.
+## Held as a mark on `match_time` rather than as a running total, because the
+## thing that must never happen is the same seconds being counted twice.
+var survival_banked := 0.0
+## Which records the run that just finished took, from `Profile.record_survival`.
+## Read by the summary, which is the only place it means anything.
+var survival_took: Dictionary = {}
 
 ## How often ambient garbage arrives in training, and what to call it. Practice
 ## is worthless if it is not at a speed you would actually meet.
@@ -1261,7 +1326,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	# LESSON along the top of a phone and a LESSON row on its own summary — a
 	# solo run that looked for all the world like a match against the tutorial
 	# bot. Nothing here is sent anywhere, so there is nothing for the seat to do.
-	slots_in_play = 1 if mode == Mode.DAILY else clampi(1 + bots, 2, SLOTS)
+	slots_in_play = 1 if single_board() else clampi(1 + bots, 2, SLOTS)
 	if lineup.is_empty():
 		lineup = _bot_lineup(diff, slots_in_play - 1)
 
@@ -1355,6 +1420,13 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		# Last, because it is the only thing here that touches the board, and it
 		# has to survive the `reset()` every side just took.
 		_deal_daily_opening()
+	elif mode == Mode.SURVIVAL:
+		pressure_interval = SURVIVAL_PRESSURE_START
+		pressure_timer = SURVIVAL_PRESSURE_START
+		# No opening pile, unlike the daily. A run with no end has time to build
+		# its own, and being handed one skips the calm the ramp is measured from.
+		survival_banked = 0.0
+		survival_took = {}
 	winner = ""
 	shake = 0.0
 	flash = 0.0
@@ -1515,7 +1587,32 @@ func _daily_clock(left: float) -> String:
 ## that would otherwise send a block, so there is exactly one place to look when
 ## asking why a daily does not attack.
 func solo_run() -> bool:
-	return mode == Mode.DAILY
+	return mode == Mode.DAILY or mode == Mode.SURVIVAL
+
+
+## The two modes played on one board against nothing but the clock. They share
+## every layout decision that follows from having no rival — one seat in the
+## match, no rival column, no chips along the top of a phone.
+func single_board() -> bool:
+	return mode == Mode.DAILY or mode == Mode.SURVIVAL
+
+
+## How long a survival run has lasted, as the player reads it. `m:ss` up to an
+## hour, and an hour is not a number this mode is going to see.
+func _survival_clock(t: float) -> String:
+	return "%d:%02d" % [int(t) / 60, int(t) % 60]
+
+
+## How big the ambient blocks are in survival. Same idea as `_daily_tier` and
+## deliberately a separate function: the two ramps are tuned against runs of
+## completely different lengths, and folding them together is how one of them
+## quietly gets retuned by a change meant for the other.
+func _survival_tier() -> int:
+	var t := 0
+	for at: float in SURVIVAL_TIER_AT:
+		if match_time >= at:
+			t += 1
+	return mini(t, TIERS.size() - 1)
 
 
 ## Deal the pile the day starts on.
@@ -1785,7 +1882,13 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_5: _activate("mastery")
 			KEY_6: _activate("cosmetics")
 			KEY_7: _activate("settings")
+			# Eight rather than renumbering. The plates carry no number badges, so
+			# these are a desktop convenience rather than something read off the
+			# screen — and shuffling 3 through 7 under somebody who has learnt
+			# them costs more than the new door being last in the list.
+			KEY_8: _activate("survival")
 			KEY_V: _activate("versus")
+			KEY_S: _activate("survival")
 			KEY_P: _activate("mastery")
 			KEY_H:
 				show_rules = not show_rules
@@ -2266,11 +2369,15 @@ func _rematch_sub() -> String:
 ## the other and nobody is waiting on anybody. See `_end_match` and the title
 ## action, which are the two halves of that.
 ##
+## Survival counts too, and it is the reason the cadence grew a second budget.
+## It banks a run, it feeds the clock, and it is the one mode long enough that a
+## break can land inside it rather than only after it — see `_lose_life`.
+##
 ## Still never in a lesson, a training run or the daily: none of them banks a
 ## match, so none of them has moved the counter, and a break at the end of one is
 ## being charged for something the game does not otherwise count.
 func _ad_allowed() -> bool:
-	return mode == Mode.NORMAL
+	return mode == Mode.NORMAL or mode == Mode.SURVIVAL
 
 
 ## Whether the match that just ended should be followed by a break.
@@ -2693,6 +2800,21 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
+	# A break stops the run underneath it.
+	#
+	# Until survival there was no such thing as an ad over a live match — every
+	# break landed on a summary, where there was nothing left to tick. Survival
+	# takes one when a life is lost, mid-run, and without this the clock would
+	# keep running and the pressure would keep dealing for the whole thirty
+	# seconds of it: you would come back from an advert to a board you had no
+	# hand in burying, having also been charged the time on your own record.
+	#
+	# `Ads.showing` is already the flag that stops input reaching the game for
+	# exactly the same reason. This is the other half of it.
+	if Ads.showing() and phase == Phase.PLAY:
+		_tick_music(delta)
+		return
+
 	# Measured against the wall clock, not `delta` — `delta` is the thing being
 	# slowed, so a freeze timed with it would never end.
 	if Time.get_ticks_msec() < _hitstop_until:
@@ -2985,6 +3107,13 @@ func _tick_pressure(delta: float) -> void:
 		pressure_interval = maxf(DAILY_PRESSURE_MIN,
 			pressure_interval - DAILY_PRESSURE_STEP)
 		pressure_timer = pressure_interval
+	elif mode == Mode.SURVIVAL:
+		# Gentler per step and a lower floor than the daily. See the constants:
+		# this ramp is tuned against a run of minutes rather than of one minute,
+		# and it has to end somewhere the best players actually drown.
+		pressure_interval = maxf(SURVIVAL_PRESSURE_MIN,
+			pressure_interval - SURVIVAL_PRESSURE_STEP)
+		pressure_timer = pressure_interval
 	else:
 		pressure_interval = maxf(PRESSURE_MIN, pressure_interval - PRESSURE_STEP)
 		pressure_timer = pressure_interval
@@ -3026,6 +3155,8 @@ func _seed_pressure(source: String) -> void:
 		# the entire fight, so it is the one thing that has to escalate.
 		if mode == Mode.DAILY:
 			p.tier = _daily_tier()
+		elif mode == Mode.SURVIVAL:
+			p.tier = _survival_tier()
 		else:
 			p.tier = 0
 		p.prefix = _mint_stamp(source, STAMP_WANT, side)
@@ -3257,6 +3388,73 @@ func _finish_daily() -> void:
 	WordBank.free_run()
 
 
+## Hand the ad budget whatever this run has played since it was last asked.
+##
+## A survival run is a single match that can outlast a dozen ordinary ones, so
+## charging it at the end would let somebody play for half an hour and be billed
+## as though they had played once. It pays as it goes instead, a life at a time,
+## with `survival_banked` marking how far up the clock the meter has been read.
+func _bank_survival_time() -> void:
+	var owed := match_time - survival_banked
+	if owed <= 0.0:
+		return
+	survival_banked = match_time
+	Profile.note_time_for_ads(owed)
+
+
+## All three lives are gone, which is the only way a survival run ends.
+##
+## There is no winning it, so `winner` is not about the run — it is about the
+## record. Beating your own best is the thing worth a fanfare here, and it is the
+## only thing on this screen a player can actually have done better than last
+## time. A run that took neither record gets the summary without the confetti,
+## which is the honest report of a middling run.
+func _finish_survival() -> void:
+	phase = Phase.OVER
+	over_age = 0.0
+	typed = ""
+	_hover_action = ""
+	_clear_hitstop()
+	tracers.clear()
+
+	var was_xp := Profile.xp_total()
+	var was_level := Profile.level()
+	var was_unlocked := Profile.unlocked_set()
+
+	# Short runs are not runs. Below the floor nothing is banked and nothing is
+	# claimed — otherwise starting and immediately topping out is both a way to
+	# farm XP and a way to put a ten-second entry on your own record.
+	survival_took = {}
+	if match_time >= SURVIVAL_MIN_RUN:
+		survival_took = Profile.record_survival({
+			"seconds": match_time,
+			"score": player.score,
+			"wpm": _wpm(),
+			"words": player.words_played,
+			"chars": chars_typed,
+			"salvos": player.salvos,
+			# Same derivation as a match's: COMBO fires on exactly "three or
+			# more broken by one word", so it already is the multi-clear count.
+			"multi_clears": int(player.power_tally.get("COMBO", 0)),
+			"chain": player.best_chain,
+			"combo": player.best_combo,
+			"longest": player.longest_word,
+			"powers": player.power_tally,
+		})
+	earned = _earned_since(was_xp, was_level, was_unlocked)
+	var beat: bool = bool(survival_took.get("time", false)) \
+		or bool(survival_took.get("score", false))
+	winner = "YOU" if beat else ""
+	Sfx.play("win" if beat else "lose")
+	Haptics.fire("win" if beat else "life")
+
+	# Whatever the last life cost, before the break that follows it is decided:
+	# the seconds a player has just spent are the ones that should be paying for
+	# the ad they are about to see.
+	_bank_survival_time()
+	_try_ad_break()
+
+
 func _finish_lesson() -> void:
 	Sfx.play("win")
 	_say("lesson complete", Color("#ffd166"))
@@ -3288,7 +3486,7 @@ func _lose_life(side: SideState) -> void:
 	# Practice you can fail is not practice. The board still comes apart — that
 	# is the feedback — but nothing is spent and the run carries on. The daily
 	# is not practice: it has real lives, and running out ends the run early.
-	if mode == Mode.DAILY:
+	if solo_run():
 		side.lives -= 1
 		side.chain = 0
 		side.chain_fill = 0.0
@@ -3306,10 +3504,24 @@ func _lose_life(side: SideState) -> void:
 		Sfx.play("lose")
 		Haptics.fire("life")
 		if side.lives <= 0:
-			_finish_daily()
+			if mode == Mode.SURVIVAL:
+				_finish_survival()
+			else:
+				_finish_daily()
 		elif side == player:
 			_say("topped out — %d %s left" % [side.lives,
 				"life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
+			# The one moment in a survival run where a break is not an
+			# interruption. The board has just come apart, the player is holding
+			# nothing, and `RESPITE` is already a pause the mode built in — so an
+			# ad here lands in a gap that exists anyway.
+			#
+			# Never on the last life: that one goes straight to the summary, and
+			# the summary takes its own break a second later. Two in a row is how
+			# a game gets uninstalled.
+			if mode == Mode.SURVIVAL:
+				_bank_survival_time()
+				_try_ad_break()
 		return
 	if mode != Mode.NORMAL:
 		side.chain = 0
@@ -3419,7 +3631,13 @@ func _end_match(loser: SideState) -> void:
 func _record_mastery() -> void:
 	# Counted alongside the record, so it moves for exactly the matches that
 	# count as matches — a tutorial or a practice run is not an ad break.
+	#
+	# Both budgets, because a break is due when either is spent and a match that
+	# only moved one of them would be half free. In practice a match trips the
+	# count long before four of them add up to the clock, which is the point: the
+	# clock is there for survival, where the count barely moves at all.
 	Profile.note_match_for_ads()
+	Profile.note_time_for_ads(match_time)
 	var was_xp := Profile.xp_total()
 	var was_level := Profile.level()
 	var was_unlocked := Profile.unlocked_set()
@@ -3444,6 +3662,17 @@ func _record_mastery() -> void:
 		"powers": player.power_tally,
 	})
 
+	earned = _earned_since(was_xp, was_level, was_unlocked)
+
+
+## What banking a run just bought, for the summary's mastery strip.
+##
+## Shared by matches and survival runs, which earn differently and report
+## identically: the level is a pure function of the record either way, so "what
+## changed" is the same three questions whatever moved it. The fanfare is here
+## rather than at the call sites for the same reason — a level gained in survival
+## should sound like a level gained anywhere else.
+func _earned_since(was_xp: int, was_level: int, was_unlocked: Dictionary) -> Dictionary:
 	var fresh: Array = []
 	var now := Profile.unlocked_set()
 	for slot: String in Profile.SLOTS:
@@ -3451,15 +3680,15 @@ func _record_mastery() -> void:
 			if not (was_unlocked[slot] as Array).has(id):
 				fresh.append("%s: %s" % [String(Profile.SLOT_NAMES[slot]),
 					String(Profile.entry(slot, String(id))["name"]).to_upper()])
-	earned = {
+	if not fresh.is_empty() or Profile.level() > was_level:
+		Sfx.play("salvo", 1.15)
+		Haptics.fire("level")
+	return {
 		"xp": Profile.xp_total() - was_xp,
 		"from": was_level,
 		"to": Profile.level(),
 		"new": fresh,
 	}
-	if not fresh.is_empty() or Profile.level() > was_level:
-		Sfx.play("salvo", 1.15)
-		Haptics.fire("level")
 
 
 ## Gross words per minute, the way a typing test counts it: every five characters
@@ -5654,6 +5883,35 @@ func _draw_coaching(size: Vector2) -> void:
 			Color("#4d5878"))
 		return
 
+	if mode == Mode.SURVIVAL:
+		# Same reasoning as the daily's, one screen up: in portrait the header
+		# already carries the clock, the score and the lives, and this card would
+		# be painted across the playfield it is reporting on.
+		if portrait:
+			return
+		_otext(_font_bold, Vector2(cx, 300.0), "SURVIVAL", 16, SURVIVAL_ACCENT)
+		_otext(_font, Vector2(cx, 322.0), "no clock — last as long as you can", 11,
+			Color("#5d6a92"))
+		var rows3 := [
+			["SURVIVED", _survival_clock(match_time)],
+			["SCORE", _commas(player.score)],
+			["BEST CHAIN", "x%d" % player.best_chain],
+			["LIVES", str(player.lives)],
+		]
+		var y3 := 356.0
+		for r: Array in rows3:
+			_otext_pair(_font, _font_bold, Vector2(cx, y3), r[0], r[1], 11, 16,
+				Color("#5d6a92"), Color("#e6ecff"), 30.0)
+			y3 += 28.0
+		# What there is to beat, while there is still time to beat it. A record
+		# you are only told about afterwards is not something you can play towards.
+		if Profile.survival_best_time > 0.0:
+			_otext(_font, Vector2(cx, y3 + 14.0),
+				"best %s" % _survival_clock(Profile.survival_best_time), 11,
+				Color("#ffd166") if match_time > Profile.survival_best_time
+					else Color("#4d5878"))
+		return
+
 	if mode == Mode.TRAINING:
 		# In portrait this is floating over the top of the board rather than in a
 		# centre column, which is a reason for it to be readable at a glance and
@@ -6669,6 +6927,12 @@ func _draw_gameover(size: Vector2) -> void:
 
 	var win := winner == "YOU"
 	var tint := Color("#ffd166") if win else Color("#ff6b6b")
+	# Every survival run ends in death, so the loss red would be the only colour
+	# this mode ever wore — and a four-minute run is not a failure, it is the
+	# score. Gold still means a record fell; short of that it gets the mode's own
+	# accent rather than the colour the game uses to say you were beaten.
+	if mode == Mode.SURVIVAL and not win:
+		tint = SURVIVAL_ACCENT
 
 	# The earned victory animation, behind everything else on the screen and only
 	# ever on a win. Losing gets the plain card: a celebration that fires either
@@ -6692,6 +6956,12 @@ func _draw_gameover(size: Vector2) -> void:
 	var headline := "YOU WIN" if win else "YOU LOSE"
 	if mode == Mode.DAILY:
 		headline = "TIME" if win else "TOPPED OUT"
+	# The clock, because in survival the clock is the score. "YOU LOSE" is true
+	# of every run ever played here and says nothing about this one; how long you
+	# lasted is the entire result, and it belongs in the biggest type on the
+	# screen rather than in a caption under it.
+	elif mode == Mode.SURVIVAL:
+		headline = _survival_clock(match_time)
 	# Sized down past the eight characters the slot was cut for, so the longest
 	# of them is no wider on screen than the shortest — 68 was measured against
 	# "YOU LOSE" and a phone has no margin to spare.
@@ -6735,6 +7005,13 @@ func _draw_gameover(size: Vector2) -> void:
 		difficulty.to_upper() if not net_active() else "VERSUS"]
 	if mode == Mode.DAILY:
 		subtitle = "DAILY SPRINT  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
+	elif mode == Mode.SURVIVAL:
+		# The headline is already the time, so this carries what to measure it
+		# against. A first run has nothing to beat and says so rather than
+		# printing "best 0:00", which reads as a bug in the record.
+		var mark := "no record yet" if Profile.survival_best_time <= 0.0 \
+			else "best %s" % _survival_clock(Profile.survival_best_time)
+		subtitle = "SURVIVAL  ·  %s  ·  %d wpm" % [mark, int(round(_wpm()))]
 	_text_fit_overlay(_font, Vector2(cx, _scoreboard_top() - 30.0), subtitle,
 		_over_size(15), size.x - GRID_MARGIN * 2.0, Color("#7c88ad"), 11)
 
@@ -6756,6 +7033,19 @@ func _draw_gameover(size: Vector2) -> void:
 		if int(run.get("score", 0)) >= Profile.daily_best and Profile.daily_best > 0:
 			_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0),
 				"a new best", 14, size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
+	elif mode == Mode.SURVIVAL:
+		# Which record fell, named. There are two of them and they are taken by
+		# different kinds of run — saying "a new best" without saying which would
+		# leave a player guessing what they had just done well.
+		var beat: Array = []
+		if bool(survival_took.get("time", false)):
+			beat.append("longest run")
+		if bool(survival_took.get("score", false)):
+			beat.append("highest score")
+		if not beat.is_empty():
+			_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0),
+				"a new best — %s" % " and ".join(beat), _over_size(14),
+				size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
@@ -6765,11 +7055,14 @@ func _draw_gameover(size: Vector2) -> void:
 	# now sit on top of.
 	if not portrait:
 		# The daily has no Rematch button — that is the whole shape of one run a
-		# day — so it must not be told to click one.
-		_otext(_font, Vector2(cx, strip_bottom + 26.0),
-			"ESC — title" if mode == Mode.DAILY
-				else "click Rematch to go again      ESC — title",
-			13, Color("#4d5878"))
+		# day — so it must not be told to click one. Survival has one and it is
+		# called something else, because there is nobody to have a rematch with.
+		var keys := "click Rematch to go again      ESC — title"
+		if mode == Mode.DAILY:
+			keys = "ESC — title"
+		elif mode == Mode.SURVIVAL:
+			keys = "click Again for a fresh run      ESC — title"
+		_otext(_font, Vector2(cx, strip_bottom + 26.0), keys, 13, Color("#4d5878"))
 
 
 ## What the win was worth, kept so the summary can reconcile its own headline.
@@ -7652,6 +7945,22 @@ func _menu_buttons() -> Array:
 				"label": "Title", "sub": "a new board at midnight", "note": "",
 				"rating": 0, "accent": Color("#ffd166"), "action": "title"})
 			return out
+		# Survival is the opposite case: there is nothing to wait for and no
+		# opponent to ask, so the door straight back in is the one that matters.
+		# It is not a Rematch — there was nobody to play — and it must not route
+		# through the one that is, which would deal a CPU match instead.
+		if mode == Mode.SURVIVAL:
+			var again := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0,
+				280.0, 14.0)
+			out.append({
+				"rect": again[0], "key": "",
+				"label": "Again", "sub": "a fresh board", "note": "", "rating": 0,
+				"accent": SURVIVAL_ACCENT, "action": "survival"})
+			out.append({
+				"rect": again[1], "key": "ESC",
+				"label": "Title", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
+			return out
 		# The opponent has to still be there to be asked. Once they have gone the
 		# button cannot do anything but fail, so the screen drops to the one door
 		# that still works rather than leaving a dead one on it.
@@ -7737,6 +8046,21 @@ func _versus_sub() -> String:
 	return "Play anyone — Game Center finds them"
 
 
+## What the survival door says for itself.
+##
+## The record, once there is one. A door that only ever says what the mode is
+## stops being read after the second time you see it; a door carrying the number
+## you are about to try to beat is a reason to go through it today.
+func _survival_sub() -> String:
+	if Profile.survival_best_time <= 0.0:
+		return "No clock. Last as long as you can."
+	var out := "Best %s" % _survival_clock(Profile.survival_best_time)
+	if Profile.survival_best_score > 0:
+		out += "  ·  %s" % _commas(Profile.survival_best_score)
+	return out + "  ·  %d run%s" % [Profile.survival_runs,
+		"" if Profile.survival_runs == 1 else "s"]
+
+
 func _title_modes() -> Array:
 	var fresh: bool = not bool(Profile.pref("taught"))
 	var dkey := daily_key()
@@ -7766,6 +8090,7 @@ func _title_modes() -> Array:
 			Color("#90be6d"), 0],
 		["DAI", "DAILY", dsub, "daily",
 			Color("#5d6a92") if spent else Color("#ffd166"), 1],
+		["SUR", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 1],
 		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 1],
 		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 1],
 		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
@@ -8355,6 +8680,12 @@ func _activate(action: String) -> void:
 		Sfx.play("back", 0.9)
 	elif action == "leave_match":
 		paused = false
+		# Walking out of a survival run banks no record and earns no XP, the same
+		# as abandoning a match — but the time was still played, and leaving on
+		# the life you are losing must not be a way to play for free. Charged
+		# before the mode is cleared, while there is still a run to charge for.
+		if mode == Mode.SURVIVAL:
+			_bank_survival_time()
 		Link.leave()
 		# `Link` is the dead netfox transport, so on its own this walked back to
 		# the title with the Game Center match still open: the opponent never
@@ -8453,6 +8784,13 @@ func _activate(action: String) -> void:
 			return
 		Link.leave()
 		start_match("Daily", 0, [], Mode.DAILY)
+	elif action == "survival":
+		# Reachable from the title and from its own summary, which is the whole
+		# of what "Again" does — there is nothing to check and nothing to spend,
+		# so a run is always available.
+		Link.leave()
+		MultiplayerManager.leave_match()
+		start_match("Survival", 0, [], Mode.SURVIVAL)
 	elif action == "cosmetics":
 		phase = Phase.COSMETICS
 		_hover_action = ""

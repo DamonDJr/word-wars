@@ -72,9 +72,34 @@ var _load_token := 0
 var _show_token := 0
 
 
+## Whether this install should be asking for ads at all.
+##
+## Two questions, and the second one is newer than the file. A player who has
+## paid to remove ads was already never *shown* one — `Profile.ad_due` refuses
+## before the cadence is even consulted — but the requests went out anyway, once
+## at launch and once at the start of every match, and were filled, and were
+## counted. That is an install fetching inventory it can never display: it pushes
+## the request count up and the impression rate down, which is the ratio the
+## network prices everything else off, and it does it hardest for the players who
+## paid the most.
+##
+## Asked in `fetch`, which is the only door to the loader, so no caller has to
+## remember. Asked again in `_ready`, where the answer also decides whether the
+## SDK is started at all — a premium install has no reason to initialise a
+## network it will never use.
+func wanted() -> bool:
+	return available() and not Profile.ads_removed()
+
+
 func _ready() -> void:
 	if not available():
 		print("[Ads] no ad plugin on this platform — the game runs without breaks")
+		return
+	# Connected whether or not the SDK is started: a purchase can land mid-session
+	# and everything already in the air has to be dropped when it does.
+	Profile.changed.connect(_on_profile_changed)
+	if not wanted():
+		print("[Ads] premium — the SDK is not started and nothing is requested")
 		return
 	MobileAds.set_request_configuration(_request_config())
 	MobileAds.initialize(OnInitializationCompleteListener.new())
@@ -91,6 +116,33 @@ func _ready() -> void:
 	# is the most ignorable form a real memory bug can take. A SceneTreeTimer
 	# dies with the tree, so nothing here outlives anything else.
 	get_tree().create_timer(INIT_GRACE).timeout.connect(fetch)
+
+
+## The profile changed, which for this file means one thing: somebody may have
+## just bought their way out of ads.
+##
+## `changed` fires on every save, so this has to be cheap and has to be safe to
+## run when nothing relevant happened. It is one-directional — premium cannot be
+## given back — so there is no branch here that starts the SDK late.
+func _on_profile_changed() -> void:
+	if wanted():
+		return
+	_drop()
+
+
+## Let go of anything in hand or in flight, without showing it.
+##
+## The request that fetched it has already been counted and cannot be taken back.
+## What this prevents is the impression: an ad loaded a second before the purchase
+## completed must not be sitting there waiting for the next match to end. Bumping
+## the load token is what turns an in-flight callback into one that destroys its
+## own ad instead of keeping it — the same mechanism an overtaken fetch uses.
+func _drop() -> void:
+	_load_token += 1
+	_loading = false
+	if _ad != null:
+		_ad.destroy()
+		_ad = null
 
 
 ## What the SDK is allowed to serve, and to whom.
@@ -157,10 +209,11 @@ func showing() -> bool:
 
 
 ## Go and get one. Safe to call whenever — already loading, already holding one,
-## or currently showing all decline quietly, so this can sit at the start of a
-## match without any of the callers having to know the state.
+## currently showing, or bought out of ads entirely all decline quietly, so this
+## can sit at the start of a match without any of the callers having to know the
+## state. `game.gd` calls it once per match and must keep being allowed to.
 func fetch() -> void:
-	if not available() or _loading or _showing or _ad != null:
+	if not wanted() or _loading or _showing or _ad != null:
 		return
 	_loading = true
 	_load_token += 1

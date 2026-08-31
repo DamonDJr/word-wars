@@ -75,23 +75,61 @@ var ad_gap := 0
 const ADS_EVERY_MIN := 3
 const ADS_EVERY_MAX := 5
 
+## Seconds of counted play since the last break, and how many this gap is worth.
+##
+## Counting matches was the whole rule until survival arrived, and survival broke
+## it in the one way a counter of matches can be broken: it is a single match
+## that can run for half an hour. A player who only plays survival would see one
+## break a session, which is neither what the game needs nor what they expect
+## from a free game — and the fix cannot be to count survival as several matches,
+## because then a run that ends in ninety seconds is charged for five.
+##
+## So there are two budgets and a break is due when *either* is spent. Normal
+## play keeps the match count it was tuned on and almost always trips that one
+## first; survival feeds the clock and trips this one. Nothing has to know which
+## mode it is in — every mode that counts hands over the seconds it took, and the
+## arithmetic is the same everywhere.
+##
+## Nine to fourteen minutes because that is what three to five matches has
+## actually been costing: it is the same spacing, measured with a different
+## instrument, so the rhythm a player already has does not change under them.
+var play_since_ad := 0.0
+var ad_gap_seconds := 0.0
+
+const ADS_MINUTES_MIN := 9.0
+const ADS_MINUTES_MAX := 14.0
+
 
 ## The next gap. Inclusive of both ends, so five is as reachable as three.
+##
+## Both budgets are rolled together and spent together. Rolling only one of them
+## at a break would leave the other carrying a number chosen for a gap that has
+## already been paid for.
 func roll_ad_gap() -> void:
 	ad_gap = randi_range(ADS_EVERY_MIN, ADS_EVERY_MAX)
+	ad_gap_seconds = randf_range(ADS_MINUTES_MIN, ADS_MINUTES_MAX) * 60.0
 
 
-## Whether a break is due. Asked at the end of a match, before the summary is
-## left, so the answer is about the match that just finished.
+## Whether a break is due. Asked at the end of a match — and, in survival, at the
+## end of a life — so the answer is about the play that just happened.
 func ad_due() -> bool:
 	if ads_removed():
 		return false
 	# A profile written before gaps existed, or a brand new one, has never rolled
 	# one. Done here rather than at load so there is exactly one place that can
-	# leave `ad_gap` at zero — and zero would make every match a break.
+	# leave a gap at zero — and zero would make every match a break.
+	#
+	# Filled in one at a time rather than as a pair, which `roll_ad_gap` would do.
+	# Every profile written before the clock budget existed carries a perfectly
+	# good match gap and no seconds at all, so rolling both on the first question
+	# would throw away a gap the player is already part-way through: every
+	# existing save would have its cadence quietly reset by the upgrade, and the
+	# match after it would be as likely to break as any other.
 	if ad_gap <= 0:
-		roll_ad_gap()
-	return since_ad >= ad_gap
+		ad_gap = randi_range(ADS_EVERY_MIN, ADS_EVERY_MAX)
+	if ad_gap_seconds <= 0.0:
+		ad_gap_seconds = randf_range(ADS_MINUTES_MIN, ADS_MINUTES_MAX) * 60.0
+	return since_ad >= ad_gap or play_since_ad >= ad_gap_seconds
 
 
 func note_match_for_ads() -> void:
@@ -101,8 +139,22 @@ func note_match_for_ads() -> void:
 	save()
 
 
+## Time that counts towards a break, in seconds.
+##
+## Saved, like the match count, so quitting to the title is not a way to never
+## see one. Called with the length of a match that has just finished, or of a
+## life that has just been spent — never with a running total, so the same
+## seconds cannot be handed over twice.
+func note_time_for_ads(seconds: float) -> void:
+	if ads_removed() or seconds <= 0.0:
+		return
+	play_since_ad += seconds
+	save()
+
+
 func clear_ad() -> void:
 	since_ad = 0
+	play_since_ad = 0.0
 	roll_ad_gap()
 	save()
 
@@ -197,12 +249,18 @@ const XP := {
 	"chain": 12,         ## per link of your best, squared below
 	"combo": 30,
 	"longest": 5,        ## per letter of your longest, squared below
+	## A survival run, which is not a match and cannot be won. Worth a shade more
+	## than a match is because it takes longer on average and has no win bonus
+	## behind it to reach for — without that it would be the one mode where
+	## playing well earns less than playing anything else.
+	"survival": 120,
 }
 
 
 func xp_total() -> int:
 	var n := 0
 	n += matches * int(XP["match"])
+	n += survival_runs * int(XP["survival"])
 	n += wins * int(XP["win"])
 	n += flawless * int(XP["flawless"])
 	n += words * int(XP["word"])
@@ -561,6 +619,62 @@ func record_daily(key: String, score: int, wpm: int, words: int, chain: int) -> 
 	changed.emit()
 
 
+# --------------------------------------------------------------- survival
+#
+# Two records rather than one, because the mode asks two different questions and
+# the same run rarely answers both. Lasting is a matter of clearing what arrives
+# and never getting greedy; scoring is a matter of holding chains together while
+# the board fills up underneath them. A player who only ever saw "best score"
+# would read survival as the daily with no clock, which is precisely what it is
+# not.
+
+## The longest run on file, in seconds, and the highest score any run has made.
+var survival_best_time := 0.0
+var survival_best_score := 0
+## How many have been played through. XP is a pure function of the record, so
+## this is what a survival run contributes to a level — see `XP["survival"]`.
+var survival_runs := 0
+
+
+## Bank a finished run, and say which records it took.
+##
+## Everything a run earned that is *comparable to a match* — words typed, the
+## chain it reached, the powers it fired — goes into the same lifetime totals a
+## match writes to, because they mean the same thing wherever they happened. What
+## it deliberately does not touch is `matches` and `wins`: survival always ends
+## in death, so counting it as a match would file every run ever played as a
+## loss, and the win rate on the record screen would decay towards zero for
+## somebody whose only crime was liking this mode.
+func record_survival(r: Dictionary) -> Dictionary:
+	survival_runs += 1
+	var seconds := float(r.get("seconds", 0.0))
+	var score := int(r.get("score", 0))
+	var took := {
+		"time": seconds > survival_best_time,
+		"score": score > survival_best_score,
+	}
+	survival_best_time = maxf(survival_best_time, seconds)
+	survival_best_score = maxi(survival_best_score, score)
+
+	words += int(r.get("words", 0))
+	chars += int(r.get("chars", 0))
+	salvos += int(r.get("salvos", 0))
+	multi_clears += int(r.get("multi_clears", 0))
+	best_wpm = maxf(best_wpm, float(r.get("wpm", 0.0)))
+	best_chain = maxi(best_chain, int(r.get("chain", 0)))
+	best_combo = maxi(best_combo, int(r.get("combo", 0)))
+	best_score = maxi(best_score, score)
+	var lw := String(r.get("longest", ""))
+	if lw.length() > longest_word.length():
+		longest_word = lw
+	for key in r.get("powers", {}):
+		powers[key] = int(powers.get(key, 0)) + int(r["powers"][key])
+
+	save()
+	changed.emit()
+	return took
+
+
 ## Every run on file, best first, for the leaderboard. Ties go to the older run:
 ## somebody matching a score they set last week has not beaten it.
 ##
@@ -670,6 +784,17 @@ func _read(path: String) -> Error:
 	ad_gap = int(cfg.get_value("shop", "ad_gap", 0))
 	if ad_gap < ADS_EVERY_MIN or ad_gap > ADS_EVERY_MAX:
 		ad_gap = 0
+	# Same clamp, same reason, on the budget that is measured in seconds. A file
+	# from before survival existed has neither key, which reads as zero and rolls
+	# a fresh pair on the first `ad_due` — there is nothing to migrate.
+	play_since_ad = maxf(0.0, float(cfg.get_value("shop", "play_since_ad", 0.0)))
+	ad_gap_seconds = float(cfg.get_value("shop", "ad_gap_seconds", 0.0))
+	if ad_gap_seconds < ADS_MINUTES_MIN * 60.0 \
+			or ad_gap_seconds > ADS_MINUTES_MAX * 60.0:
+		ad_gap_seconds = 0.0
+	survival_best_time = maxf(0.0, float(cfg.get_value("survival", "best_time", 0.0)))
+	survival_best_score = maxi(0, int(cfg.get_value("survival", "best_score", 0)))
+	survival_runs = maxi(0, int(cfg.get_value("survival", "runs", 0)))
 	daily = cfg.get_value("daily", "runs", {})
 	daily_best = int(cfg.get_value("daily", "best", 0))
 	daily_best_streak = int(cfg.get_value("daily", "best_streak", 0))
@@ -747,6 +872,11 @@ func save() -> void:
 	cfg.set_value("shop", "owned", owned)
 	cfg.set_value("shop", "since_ad", since_ad)
 	cfg.set_value("shop", "ad_gap", ad_gap)
+	cfg.set_value("shop", "play_since_ad", play_since_ad)
+	cfg.set_value("shop", "ad_gap_seconds", ad_gap_seconds)
+	cfg.set_value("survival", "best_time", survival_best_time)
+	cfg.set_value("survival", "best_score", survival_best_score)
+	cfg.set_value("survival", "runs", survival_runs)
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
 	cfg.set_value("daily", "best_streak", daily_best_streak)

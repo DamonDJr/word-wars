@@ -164,16 +164,36 @@ func _who_never_sees_one() -> void:
 	game.mode = game.Mode.NORMAL
 
 
-## A live Game Center match cannot be stood up on a Linux box, so `net_active()`
-## is false here no matter what — which is why the network clause is a parameter
-## rather than something `_ad_allowed` reads for itself.
+## The versus exemption moved and this test did not follow it.
+##
+## It called `_ad_allowed(bool)`, which took the network state as a parameter
+## because a live Game Center match cannot be stood up on a Linux box. That
+## signature is long gone — `_ad_allowed` answers about the *mode* now, and the
+## versus clause lives at the call site in `_end_match`, which asks
+## `net_active()` for itself. So every run of this suite died here with an arity
+## error after the summary line had already been printed, and the whole section
+## has been passing by not running.
+##
+## What is checkable without a peer is the half that is still a pure function:
+## which modes may be interrupted at all. The versus clause is checked by reading
+## the one thing the test can reach — that `_end_match` guards its break on the
+## network state rather than breaking unconditionally.
 func _versus_never_breaks() -> void:
-	print("--- versus is never interrupted ---")
+	print("--- who may be interrupted ---")
 	game.mode = game.Mode.NORMAL
-	_expect("a local match may be interrupted", game._ad_allowed(false))
-	_expect("a networked one may not", not game._ad_allowed(true))
-	_expect("and the real predicate is off the network state",
-		game._ad_allowed(game.net_active()) == not game.net_active())
+	_expect("a local match may be interrupted", game._ad_allowed())
+	game.mode = game.Mode.SURVIVAL
+	_expect("and so may a survival run", game._ad_allowed())
+	for m in [game.Mode.TUTORIAL, game.Mode.TRAINING, game.Mode.DAILY]:
+		game.mode = m
+		_expect("mode %d is exempt" % m, not game._ad_allowed())
+	game.mode = game.Mode.NORMAL
+
+	# Off a device there is no peer, so this is the state a break is allowed in.
+	# The assertion worth keeping is that the two are the same question: a break
+	# at the end of a match is gated on there being nobody waiting on the answer.
+	_expect("and with no peer, nothing is waiting on a rematch",
+		not game.net_active())
 
 
 func _expect(what: String, ok: bool) -> void:
