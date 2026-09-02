@@ -35,6 +35,12 @@ const RIVAL_TOP := 196.0
 const RIVAL_X := [0.0, 662.0, 854.0, 1046.0]
 const CHIP_W := 82.0
 const CHIP_H := 34.0
+## The same chip in a phone's gutter, where it is read out of the corner of an
+## eye rather than looked at. Taller than the landscape one so the prefix can be
+## set at a size that survives that — see `_draw_rail`. A phone board leaves room
+## for thirteen down each side, and no queue that long has ever been survivable,
+## so the height comes out of slack nobody was using.
+const RAIL_CHIP_H := 42.0
 const CHIP_GAP := 6.0
 
 const MIN_WORD_LEN := 3
@@ -60,7 +66,16 @@ const KEY_BAND_PAD := 10.0
 ## matched against a key. Deliberately far smaller than a key: it is a nudge
 ## against a bias that runs one direction, not a correction that can move a hit
 ## from one row into another on its own.
-const TOUCH_LIFT := 6.0
+##
+## Was 6, which is 0.6mm on a phone — smaller than the gap between two keys, and
+## so small it could not have been correcting anything. The offset between where
+## a thumb is aimed and where its contact patch is reported runs a couple of
+## millimetres. 14 is about 1.4mm: still well under a fifth of a key's height, so
+## a tap in the middle of a key cannot be walked off it, but now the same order
+## of magnitude as the thing it exists to cancel. Wants a real device and real
+## thumbs to settle properly — it is the one number here that is a judgement
+## rather than a measurement.
+const TOUCH_LIFT := 14.0
 const DEBUG_TOUCH_HITBOXES := false
 ## Block shapes by tier. Which one you send is decided by your chain and by how
 ## long the word was — see `_length_tier`.
@@ -997,7 +1012,7 @@ func _portrait_rival_cards(size: Vector2) -> Array:
 	for i in rivals.size():
 		out.append({"side": rivals[i], "rect": Rect2(
 			size.x * 0.5 - span * 0.5 + float(i) * (cw + 8.0),
-			safe_top + 100.0, cw, 62.0)})
+			safe_top + 112.0, cw, 84.0)})
 	return out
 
 
@@ -1057,35 +1072,47 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	var daily: bool = mode == Mode.DAILY
 	var clock: float = daily_left() if daily else match_time
 	var kick := score_kick * score_kick
-	_text_pair(_font_bold, _font_bold, Vector2(cx, top + 34.0),
+	_text_pair(_font_bold, _font_bold, Vector2(cx, top + 32.0),
 		_daily_clock(clock) if daily else "%d:%02d" % [int(clock) / 60, int(clock) % 60],
-		_commas(int(round(score_shown))), 26, int(26 + 8.0 * kick),
+		_commas(int(round(score_shown))), 34, int(34 + 10.0 * kick),
 		Color("#ff6b6b") if (daily and clock <= DAILY_ALARM) else Color("#e6ecff"),
-		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 34.0)
-	_text_centered(_font, Vector2(cx, top + 62.0),
-		"pressure in %ds" % int(ceil(pressure_timer)), 16, Color("#5d6a92"))
+		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 40.0)
+	# The countdown to the next row of pressure is the reading this whole header
+	# exists for — it is the only thing up here that changes what you do next —
+	# and it was set at 16, under nine points on the device. Dimmed rather than
+	# small now, so it is legible without competing with the clock above it.
+	_text_centered(_font, Vector2(cx, top + 72.0),
+		"pressure in %ds" % int(ceil(pressure_timer)), 26, Color("#7787b5"))
 
-	# Your lives, as the same pips the landscape header uses.
+	# Your lives, as the same pips the landscape header uses. Everything from here
+	# to the board top is packing four rows into 208 units, so the gaps are as
+	# tight as they can be and still read as separate things — the rival card
+	# starts eight below these, which at a glance is the difference between your
+	# lives and theirs.
 	for i in LIVES:
 		var lit: bool = i < player.lives
-		draw_rect(Rect2(cx - 30.0 + i * 22.0, top + 76.0, 15.0, 9.0),
+		draw_rect(Rect2(cx - 40.0 + i * 29.0, top + 92.0, 21.0, 12.0),
 			player.accent if lit else Color("#2a3355"), true)
 
 	for card: Dictionary in _portrait_rival_cards(size):
 		var s2: SideState = card["side"]
 		var r: Rect2 = card["rect"]
 		var aimed: bool = player.target == s2.slot
-		_panel(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
+		_panel_here(r, Color("#141b33"), Color(s2.accent, 0.9 if aimed else 0.25), 8.0,
 			2.0 if aimed else 1.0)
-		_text_fit(_font_bold, Vector2(r.get_center().x, r.position.y + 17.0),
-			_show(s2.label), 14, r.size.x - 12.0,
+		_text_fit(_font_bold, Vector2(r.get_center().x, r.position.y + 21.0),
+			_show(s2.label), 22, r.size.x - 12.0,
 			s2.accent if s2.alive else Color("#4d5878"))
 		for k in LIVES:
-			draw_rect(Rect2(r.get_center().x - 20.0 + k * 14.0, r.position.y + 28.0,
-				9.0, 6.0), s2.accent if k < s2.lives else Color("#2a3355"), true)
+			draw_rect(Rect2(r.get_center().x - 26.0 + k * 19.0, r.position.y + 42.0,
+				14.0, 10.0), s2.accent if k < s2.lives else Color("#2a3355"), true)
+		# "3 incoming" is a warning about a board you may be about to lose the
+		# race against. At 10 it was five and a half points — smaller than the
+		# copyright line on a cereal box, in the one place the game tells you a
+		# rival is in trouble.
 		var inbound := s2.pending_cells()
-		_text_centered(_font, Vector2(r.get_center().x, r.end.y - 12.0),
-			("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 10,
+		_text_centered(_font, Vector2(r.get_center().x, r.end.y - 18.0),
+			("%d incoming" % inbound) if inbound > 0 else _commas(s2.score), 20,
 			Color("#ffd166") if inbound > 0 else Color("#7c88ad"))
 
 	# Everything below the board: what is falling on you, the run you are on,
@@ -1151,7 +1178,6 @@ func _draw_portrait_rails() -> void:
 	if gutter < 54.0:
 		return
 	var cw: float = minf(150.0, gutter - 12.0)
-	var ch := 34.0
 
 	_draw_rail(Rect2(r.position.x - 10.0 - cw, r.position.y, cw, r.size.y),
 		player.pending, "INCOMING", Color("#ff6b6b"), _typing_of(player), true)
@@ -1168,8 +1194,13 @@ func _draw_portrait_rails() -> void:
 ## height so a long queue cannot run off into the keyboard.
 func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 		aiming: String, incoming: bool) -> void:
-	_text_centered(_font_bold, Vector2(box.get_center().x, box.position.y - 12.0),
-		label, 9, Color(tint, 0.55 if queue.is_empty() else 0.95))
+	# 9 was four and a half points — a smudge, not a word, and the two rails are
+	# mirror images of each other so the one thing telling you which is which was
+	# the one thing nobody could read. There is nothing to compete with out here:
+	# the gutters are empty and the label sits clear of both the board and the
+	# rival card, so it can simply be the size a label should be.
+	_text_centered(_font_bold, Vector2(box.get_center().x, box.position.y - 14.0),
+		label, 22, Color(tint, 0.55 if queue.is_empty() else 0.95))
 	if queue.is_empty():
 		return
 
@@ -1182,13 +1213,13 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 
 	var y := box.position.y
 	for p: Pending in queue:
-		if y + CHIP_H > box.end.y:
+		if y + RAIL_CHIP_H > box.end.y:
 			# Whatever did not fit, said as a number rather than not said at all.
-			_text_centered(_font, Vector2(box.get_center().x, y + 10.0),
-				"+%d more" % (queue.size() - int((y - box.position.y) / (CHIP_H + CHIP_GAP))),
-				10, Color(tint, 0.8))
+			_text_centered(_font, Vector2(box.get_center().x, y + 12.0),
+				"+%d more" % (queue.size() - int((y - box.position.y) / (RAIL_CHIP_H + CHIP_GAP))),
+				20, Color(tint, 0.8))
 			return
-		var rect := Rect2(box.position.x, y, box.size.x, CHIP_H)
+		var rect := Rect2(box.position.x, y, box.size.x, RAIL_CHIP_H)
 		var locked: bool = budget > 0 and p.prefix != "" and aiming.begins_with(p.prefix)
 		if locked:
 			budget -= 1
@@ -1198,9 +1229,15 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 		_chip_sb.set_border_width_all(3 if locked else 1)
 		draw_style_box(_chip_sb, rect)
 
+		# The prefix is the single most important string on the screen — it is the
+		# question the whole game is asking you — and it was being drawn at nine
+		# points on a chip you are reading out of the corner of your eye while
+		# typing. `min_size` was 8, low enough that a long prefix could shrink
+		# itself back into illegibility rather than admit it did not fit; the chip
+		# is taller now, so it does not have to.
 		_text_fit(_font_bold, Vector2(rect.position.x + rect.size.x * 0.38,
-			rect.get_center().y - 2.0), p.prefix.to_upper(), 16,
-			rect.size.x * 0.6, Color("#0b1020"), 8)
+			rect.get_center().y - 3.0), p.prefix.to_upper(), 22,
+			rect.size.x * 0.6, Color("#0b1020"), 14)
 		_draw_shape_pip(Vector2(rect.end.x - 20.0, rect.get_center().y - 2.0), p.tier)
 
 		# The fuse is the only part of a chip that is worth watching second to
@@ -1209,7 +1246,7 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 		draw_rect(Rect2(rect.position.x + 4.0, rect.end.y - 7.0,
 			(rect.size.x - 8.0) * fuse, 3.0), Color("#0b1020"), true)
 
-		y += CHIP_H + CHIP_GAP
+		y += RAIL_CHIP_H + CHIP_GAP
 
 
 ## Where the board has to stop, so the typed line and the keyboard both fit.
@@ -1217,7 +1254,8 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 ## one line of commentary under it. 92 was cut for that line set at 12; the line
 ## is 17 now, and without the extra it would be drawn over the top row of keys.
 func _portrait_board_bottom() -> float:
-	return _keyboard_bottom() - Keyboard.height() - 104.0
+	var size := get_viewport_rect().size
+	return _keyboard_bottom() - Keyboard.height(size) - 104.0 * Keyboard.ui_scale(size)
 
 
 ## Where the board starts, below the status header and whatever the phone has
@@ -4212,8 +4250,9 @@ func _emote_rects(size: Vector2) -> Array:
 ## The emote under a finger, or -1. Generous horizontally on purpose: the column
 ## is one tile wide and a thumb dragging straight up does not travel straight.
 func _emote_at(p: Vector2) -> int:
-	var at := p - Vector2(0.0, TOUCH_LIFT)
-	var rects := _emote_rects(get_viewport_rect().size)
+	var size := get_viewport_rect().size
+	var at := p - Vector2(0.0, _touch_lift(size))
+	var rects := _emote_rects(size)
 	for i in rects.size():
 		var r: Rect2 = rects[i]
 		if at.y >= r.position.y - EMOTE_TILE_GAP * 0.5 \
@@ -4551,8 +4590,28 @@ func _keyboard() -> Array:
 	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom())
 
 
+## The letters on the keycaps, and the words on the three action keys.
+##
+## The keys themselves are as wide as the iOS keyboard's and taller. The letters
+## printed on them were not: at 26 an A drew 17 units wide inside a 64-unit key,
+## a bit over a quarter of it, where iOS fills about half. So the keyboard
+## measured fine and *read* as tiny, and "the keys are too small" turns out to
+## have been a complaint about the type rather than about the targets. At 44 an A
+## is 30 units — iOS's proportion, on a key that was already the right size.
+##
+## FIRE was the worst of them, and it is the one key on the screen that is not
+## competing with a neighbour for space: a four-letter word at 19 inside a
+## 700-unit button, because it shared its size with CLR and DEL, which do have
+## neighbours. It gets its own number now.
+const CAP_SIZE := 44
+const ACTION_SIZE := 32
+const FIRE_SIZE := 42
+
+
 func _draw_keyboard() -> void:
 	var held := _keys_down.values()
+	# Type is a physical size like the keys are, so it travels with them.
+	var s := Keyboard.ui_scale(get_viewport_rect().size)
 	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
 		var id: String = k["id"]
@@ -4580,8 +4639,12 @@ func _draw_keyboard() -> void:
 		if down:
 			bg = bg.lightened(0.12)
 		_panel(r, bg, edge, 9.0, 2.0)
-		_otext(_font_bold, r.get_center(), String(k["label"]),
-			26 if id.length() == 1 else 19, ink)
+		var cap: int = CAP_SIZE
+		if id == "fire":
+			cap = FIRE_SIZE
+		elif id.length() > 1:
+			cap = ACTION_SIZE
+		_otext(_font_bold, r.get_center(), String(k["label"]), int(float(cap) * s), ink)
 
 ## The emote key, and the fan when it is open.
 ##
@@ -4692,7 +4755,7 @@ func _draw_keyboard_hitboxes() -> void:
 		return
 
 	var size := get_viewport_rect().size
-	var top: float = _keyboard_bottom() - Keyboard.height() - KEY_BAND_PAD
+	var top: float = _key_band_top(size)
 	draw_rect(Rect2(0.0, top, size.x, size.y - top), Color(0.2, 0.8, 1.0, 0.08), true)
 	draw_line(Vector2(0.0, top), Vector2(size.x, top), Color(1.0, 0.5, 0.2, 0.6), 2.0)
 	for k: Dictionary in _keyboard():
@@ -4730,6 +4793,21 @@ func _hide_keyboard() -> void:
 		DisplayServer.virtual_keyboard_hide()
 
 
+## The line above which the keyboard stops claiming taps. Scaled with everything
+## else, so the band keeps the same physical reach on a phone whose units are
+## smaller than the design space's.
+func _key_band_top(size: Vector2) -> float:
+	return _keyboard_bottom() - Keyboard.height(size) \
+		- KEY_BAND_PAD * Keyboard.ui_scale(size)
+
+
+## `TOUCH_LIFT` against this screen. A correction for where a finger sits is a
+## physical distance, not a number of design units, so it travels with the same
+## scale the keys do.
+func _touch_lift(size: Vector2) -> float:
+	return TOUCH_LIFT * Keyboard.ui_scale(size)
+
+
 ## Which key is under a point, or "" if the point is not on the keyboard at all.
 ##
 ## Not a hit test. Padding every key by a few pixels — which is what this used to
@@ -4746,8 +4824,9 @@ func _hide_keyboard() -> void:
 ## letter still types the wrong letter. It only stops the misses that were never
 ## really aimed at anything else from being thrown away.
 func _key_at(p: Vector2) -> String:
-	var at := p - Vector2(0.0, TOUCH_LIFT)
-	if at.y < _keyboard_bottom() - Keyboard.height() - KEY_BAND_PAD:
+	var size := get_viewport_rect().size
+	var at := p - Vector2(0.0, _touch_lift(size))
+	if at.y < _key_band_top(size):
 		return ""
 
 	var keys := _keyboard()
@@ -8562,6 +8641,29 @@ func _draw_menu_button(b: Dictionary) -> void:
 
 
 func _panel(r: Rect2, bg: Color, border: Color, radius: float, width: float = 2.0) -> void:
+	_panel_style(bg, border, radius, width)
+	_overlay.draw_style_box(_ui_sb, r)
+
+
+## The same plate, drawn in *this* node's pass instead of on `_overlay`.
+##
+## The rival card in the portrait header called `_panel` and so was never drawn
+## at all. `_draw_portrait_hud` runs in this node's draw pass; `_panel` paints on
+## `_overlay`; a `draw_*` aimed at another canvas item from outside its own pass
+## is refused outright — which is the exact trap `_draw_portrait_emotes` has a
+## paragraph warning about, sprung thirty lines away from the warning. The plate
+## carries the accent border that says which rival you are aiming at, so losing
+## it took the targeting indicator with it and left the name and lives floating
+## on the background.
+func _panel_here(r: Rect2, bg: Color, border: Color, radius: float,
+		width: float = 2.0) -> void:
+	_panel_style(bg, border, radius, width)
+	draw_style_box(_ui_sb, r)
+
+
+## Set the shared style box up for a plate. Split from the drawing so the two
+## canvas items above cannot drift apart in how a panel looks.
+func _panel_style(bg: Color, border: Color, radius: float, width: float) -> void:
 	_ui_sb.bg_color = bg
 	_ui_sb.set_corner_radius_all(int(radius))
 	_ui_sb.set_border_width_all(int(width))
@@ -8569,7 +8671,6 @@ func _panel(r: Rect2, bg: Color, border: Color, radius: float, width: float = 2.
 	_ui_sb.shadow_size = 7
 	_ui_sb.shadow_color = Color(0, 0, 0, 0.35)
 	_ui_sb.shadow_offset = Vector2(0, 3)
-	_overlay.draw_style_box(_ui_sb, r)
 
 
 ## A block drawn the way the playfield draws them, for use inside the menus.
@@ -8678,10 +8779,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		var et := event as InputEventScreenTouch
 		_touch_input = true
+		var vp := get_viewport_rect().size
 		if et.pressed and _emote_touch == -2 and _emotes_live() \
-				and Keyboard.emote_rect(get_viewport_rect().size,
-					_keyboard_bottom()).grow(8.0).has_point(
-						et.position - Vector2(0.0, TOUCH_LIFT)):
+				and Keyboard.emote_rect(vp, _keyboard_bottom()).grow(8.0).has_point(
+						et.position - Vector2(0.0, _touch_lift(vp))):
 			_emote_begin(et.index)
 			return
 		if not et.pressed and et.index == _emote_touch:
