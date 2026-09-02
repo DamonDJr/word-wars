@@ -239,6 +239,11 @@ func _describe(error) -> String:
 ## Chatty on purpose. Every failure this feature can have is invisible from
 ## inside the game, and the whole of what went wrong in 0.42.0 would have been
 ## one line on a console.
+##
+## `print` rather than `push_warning`, everywhere, including for failures.
+## Warnings go to stderr, which does not reach the iOS device console — so a
+## warning is a diagnostic that cannot be read on the only platform this feature
+## runs on. They are still raised alongside, for the editor.
 func _log(text: String) -> void:
 	print("[Cloud] %s" % text)
 
@@ -298,6 +303,8 @@ func pull() -> void:
 	_busy = true
 	_since_pull = 0.0
 	_set_state(State.SYNCING, "checking your cloud save")
+	_log("asking iCloud (this device: level %d, %d matches)" % [
+		Profile.level(), Profile.matches])
 	MultiplayerManager.local_player.fetch_saved_games(_on_fetched)
 
 
@@ -391,16 +398,35 @@ func _fold(data: PackedByteArray) -> void:
 		# Corrupt, truncated, or written by something that is not this game.
 		# Ignored rather than acted on — and emphatically not treated as "the
 		# cloud is empty", which would push over it.
+		#
+		# Logged rather than only warned. `push_warning` goes to stderr, which
+		# does not reach the device console at all — so on the one build where
+		# this mattered, a download that failed to parse and a download that
+		# simply had nothing new in it produced byte-for-byte identical logs.
+		# Two very different problems, one indistinguishable symptom.
 		push_warning("Cloud: a saved game did not parse; leaving it alone")
+		_log("a saved game did NOT parse (%d bytes); leaving it alone" % data.size())
 		them.free()
 		return
+
+	# What each side is holding, before anything is decided. This is the line
+	# that answers "why did nothing come back" — either the cloud copy is behind
+	# the local one, in which case nothing *should* come back, or it is ahead and
+	# something is wrong with the merge.
+	_log("cloud has level %d, %d matches, %d words · this device has level %d, %d matches, %d words"
+		% [them.level(), them.matches, them.words,
+			Profile.level(), Profile.matches, Profile.words])
+
 	if Profile.merge_from(them):
 		_gained = true
+	else:
+		_log("nothing in the cloud copy that this device did not already have")
 	# Now that the local profile holds the union, asking the same question the
 	# other way round answers "is the copy in the cloud missing anything" — which
 	# is exactly the test for whether an upload is worth making.
 	if them.merge_from(Profile):
 		_cloud_behind = true
+		_log("this device is ahead; the cloud copy needs updating")
 	them.free()
 
 
@@ -440,7 +466,8 @@ func _finish_absorb() -> void:
 func _on_resolved(_games, error) -> void:
 	_busy = false
 	if error != null:
-		push_warning("Cloud: could not settle the conflict — %s" % str(error))
+		push_warning("Cloud: could not settle the conflict — %s" % _describe(error))
+		_log("could not settle the conflict: %s" % _describe(error))
 		_set_state(State.FAILED, "iCloud could not settle two saves")
 		return
 	# Resolving writes `Profile.to_bytes()` as the agreed version, so this did
