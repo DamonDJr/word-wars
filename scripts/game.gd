@@ -76,6 +76,12 @@ const KEY_BAND_PAD := 10.0
 ## thumbs to settle properly — it is the one number here that is a judgement
 ## rather than a measurement.
 const TOUCH_LIFT := 14.0
+## How far a letter that can still finish the word may pull the boundary with a
+## neighbour that cannot — see `_key_at`. The gap between two keys is 7 of this,
+## so the boundary itself moves about 15: a quarter of a key's width sideways,
+## and a sixth of its height up or down, since keys are taller than they are
+## wide and the same number buys proportionally less of it.
+const KEY_LEAN := 22.0
 const DEBUG_TOUCH_HITBOXES := false
 ## Block shapes by tier. Which one you send is decided by your chain and by how
 ## long the word was — see `_length_tier`.
@@ -704,6 +710,17 @@ var _music_hold := 0.0
 var _font: Font
 var _font_bold: Font
 var _font_title: Font
+## The face on the keycaps.
+##
+## Its own font because the keyboard is the one place where the size and the
+## weight have to be argued about separately. Everything else in the game that
+## wants a letter to carry sets it bold and is right to — but a keycap is already
+## the largest, highest-contrast glyph on the screen, sitting alone on a plate
+## with nothing to compete with, and emboldening it on top of that reads as
+## cheap rather than as emphatic. Thinner than the body face, not merely
+## un-bolded: at this size the strokes can afford it, and iOS sets its own
+## keycaps lighter than its body text for the same reason.
+var _font_key: Font
 var _splash: Texture2D
 var _splash_tall: Texture2D
 var _overlay: Node2D
@@ -725,6 +742,11 @@ func _ready() -> void:
 	fv.base_font = _font
 	fv.variation_embolden = 0.6
 	_font_bold = fv
+
+	var kv := FontVariation.new()
+	kv.base_font = _font
+	kv.variation_embolden = KEY_WEIGHT
+	_font_key = kv
 
 	# The wordmark gets its own face; everything else stays on the plain one,
 	# which is what keeps a display font from becoming a headache to read. Both
@@ -4606,6 +4628,8 @@ func _keyboard() -> Array:
 const CAP_SIZE := 44
 const ACTION_SIZE := 32
 const FIRE_SIZE := 42
+## Stroke weight for `_font_key`. Negative thins; 0.6 is what `_font_bold` uses.
+const KEY_WEIGHT := -0.2
 
 
 func _draw_keyboard() -> void:
@@ -4639,12 +4663,17 @@ func _draw_keyboard() -> void:
 		if down:
 			bg = bg.lightened(0.12)
 		_panel(r, bg, edge, 9.0, 2.0)
+		# FIRE keeps the bold face. It is a button with a word on it rather than a
+		# keycap with a letter on it, and it is the one thing on the keyboard that
+		# is supposed to shout.
 		var cap: int = CAP_SIZE
+		var face: Font = _font_key
 		if id == "fire":
 			cap = FIRE_SIZE
+			face = _font_bold
 		elif id.length() > 1:
 			cap = ACTION_SIZE
-		_otext(_font_bold, r.get_center(), String(k["label"]), int(float(cap) * s), ink)
+		_otext(face, r.get_center(), String(k["label"]), int(float(cap) * s), ink)
 
 ## The emote key, and the fan when it is open.
 ##
@@ -4818,34 +4847,85 @@ func _touch_lift(size: Vector2) -> float:
 ## grain, and a typist cannot learn their way around that.
 ##
 ## So the keyboard owns a band of the screen outright, and inside it there is no
-## such thing as a gap: an exact hit wins, and anything else goes to whichever
-## key it is closest to the edge of. Nothing about what you are typing is
-## consulted — this is geometry, and a tap that lands squarely on the wrong
-## letter still types the wrong letter. It only stops the misses that were never
-## really aimed at anything else from being thrown away.
+## such thing as a gap: every point belongs to whichever key it is nearest the
+## edge of, and the boundaries are the midlines between neighbours.
+##
+## That is the best a keyboard can do while it refuses to know what you are
+## typing, and it is not enough. The reported misses are sideways — the letter
+## next door in the same row — and a sideways miss lands *inside* the wrong key,
+## not in the gap, so no amount of nearest-edge generosity can catch it. Midlines
+## are only the right answer if every neighbour is equally likely, and after two
+## or three letters they are nowhere near equally likely: most of the alphabet
+## cannot continue the word at all.
+##
+## So the midline is allowed to move, by `KEY_LEAN` and no further. A letter that
+## can still begin a word pulls the boundary that much towards its neighbour that
+## cannot. Three things keep this from becoming the unlearnable grain above:
+##
+##   - The shift is bounded and small. `KEY_LEAN` less the gap is about a quarter
+##     of a key's width, so the middle half of every key types itself whatever
+##     the dictionary thinks, and the letter you are aiming at is never the one
+##     that moves.
+##   - It is legality, not likelihood. A letter either can continue the word or
+##     cannot; rare letters are not discounted for being rare. Q and Z score ten
+##     apiece, so a keyboard that quietly shrank the improbable would be shrinking
+##     exactly the plays worth making.
+##   - It only ever settles an argument between two letters. Land inside CLR, DEL
+##     or FIRE and you get it, full stop — losing a whole typed word to a boosted
+##     Z is a far worse trade than the mistyped letter this is fixing.
+##
+## When the dictionary has no opinion — an empty line, where all 26 letters begin
+## words, or a line already misspelt, where none of them do — every pull is equal
+## and this is exactly the geometry it was before.
 func _key_at(p: Vector2) -> String:
 	var size := get_viewport_rect().size
 	var at := p - Vector2(0.0, _touch_lift(size))
 	if at.y < _key_band_top(size):
 		return ""
 
-	var keys := _keyboard()
+	var lean: float = KEY_LEAN * Keyboard.ui_scale(size)
 	var best := ""
-	var best_d := INF
-	for k: Dictionary in keys:
+	var best_score := INF
+	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
-		if r.has_point(at):
-			return String(k["id"])
+		var id: String = k["id"]
 		# Distance to the rectangle rather than to its centre, because the keys
 		# are not all the same size — measuring to centres would let FIRE, being
 		# the widest thing on the screen, pull taps off the letters beside it.
 		var dx := maxf(maxf(r.position.x - at.x, at.x - r.end.x), 0.0)
 		var dy := maxf(maxf(r.position.y - at.y, at.y - r.end.y), 0.0)
-		var d := dx * dx + dy * dy
-		if d < best_d:
-			best_d = d
-			best = String(k["id"])
+		var d := sqrt(dx * dx + dy * dy)
+		# Inside an action key is the end of the discussion.
+		if d == 0.0 and id.length() > 1:
+			return id
+		var score := d
+		if id.length() == 1 and _letter_lives(id):
+			score -= lean
+		if score < best_score:
+			best_score = score
+			best = id
 	return best
+
+
+## The `typed` that `_lean_set` was built against. Starts as something no line
+## can ever equal, so the first lookup always builds.
+var _lean_for := "￿"
+var _lean_set := {}
+
+
+## Could `typed + ch` still turn into a word?
+##
+## The whole alphabet is swept once per change to the line and reused across the
+## keys, rather than asked per key per tap. Two binary searches over a sorted
+## 350k list is cheap, fifty-two of them on every finger-down is a waste.
+func _letter_lives(ch: String) -> bool:
+	if _lean_for != typed:
+		_lean_for = typed
+		_lean_set = {}
+		for c in "abcdefghijklmnopqrstuvwxyz":
+			if WordBank.valid_prefix_count(typed + c) > 0:
+				_lean_set[c] = true
+	return _lean_set.has(ch)
 
 
 ## A tap on a key does exactly what the matching physical key does, so there is
