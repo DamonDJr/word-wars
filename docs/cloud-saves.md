@@ -66,8 +66,50 @@ happened and syncs on demand. The device log carries the rest: every failure in
 
 To test a restore properly you have to actually delete the app — a reinstall
 over the top keeps `user://profile.cfg` and proves nothing. Play a few matches,
-watch the row say it saved, delete the app, reinstall, and the record screen
+watch the row say it backed up, delete the app, reinstall, and the record screen
 should come back on first launch.
+
+Give it a moment before deleting. `saveGameData` completes when the write is
+accepted locally; the upload to iCloud happens after that. The row waits for
+Apple to confirm the save is readable back off the account before it says
+"backed up", which is the honest moment, but the container still has to finish
+its own sync.
+
+**The row tells you which of the three things happened**, and this distinction
+is the whole point of it:
+
+- `restored from your Apple ID at 09:14` — something came down.
+- `backed up at 09:14 · 3 KB on iCloud` — something went up, and Apple has been
+  asked afterwards and confirms it is there.
+- anything else — a failure, named. `turn on iCloud Drive…` is `GKError 21` and
+  is not a bug; the player is signed into Game Center but not iCloud Drive.
+
+## When it does not work
+
+Filter the device console to `[Cloud]`. Every step says what it did:
+
+```
+[Cloud] on, waiting for Game Center
+[Cloud] reading 2 saved game(s)
+[Cloud] read 2914 bytes
+[Cloud] restored: level 12, 84 matches
+[Cloud] in sync (2 saved game(s) on the account)
+```
+
+The lines that mean something is wrong:
+
+| Line | What it means |
+| --- | --- |
+| `fetch refused: … (GKError 21)` | Not signed in to iCloud Drive. |
+| `fetch refused: … (GKError 23)` | iCloud unavailable on the device. |
+| `gave up after 30s with N load(s) outstanding` | A download stalled. |
+| `a saved game came back empty` | Something wrote a nothing up there. |
+| `upload accepted but nothing is on the account` | The write went into a void — the container is not really working. |
+
+Nothing uploads until a download has succeeded, so `still no answer from iCloud;
+asking again` once a minute means this device is not backing anything up yet.
+That is deliberate: it is the guard that stops a blank profile from landing on
+top of a real one.
 
 ## Two things worth knowing before changing any of this
 

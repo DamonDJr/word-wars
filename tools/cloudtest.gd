@@ -36,6 +36,8 @@ func _init() -> void:
 	_the_upload_refuses_until_it_has_downloaded()
 	_a_sync_that_never_answers_gives_up()
 	_a_download_does_not_swallow_a_pending_upload()
+	_a_download_holds_on_to_what_it_is_downloading()
+	_it_only_claims_a_backup_it_has_confirmed()
 
 	print("--- %s ---" % ("cloud saves behave" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -385,6 +387,81 @@ func _a_download_does_not_swallow_a_pending_upload() -> void:
 	_expect("and an upload clears it", not c._dirty)
 	_expect("both record when it happened", c.last_sync > 0)
 	c.free()
+
+
+## The bug that shipped in 0.42.0, pinned.
+##
+## `fetch_saved_games` hands back reference-counted `GKSavedGame` objects and
+## `load_data` on them is asynchronous. Starting the loads and then letting the
+## array go out of scope frees them mid-flight, the completion handlers never
+## arrive, and the restore hangs until the watchdog kills it — silently, and only
+## on installs where there was something to restore, which is why it survived
+## testing on the install that had nothing.
+##
+## Exercised with stand-ins rather than the real class, which cannot be built off
+## a device. What is being checked is ours: that the array is still referenced
+## after `_absorb` returns, and released once the loads are done.
+func _a_download_holds_on_to_what_it_is_downloading() -> void:
+	print("--- a download keeps hold of what it is downloading ---")
+	var c: Node = load(CLOUD).new()
+	var saves := [_FakeSave.new(), _FakeSave.new()]
+	c._absorb(saves)
+	_expect("both loads were started",
+		saves[0].asked and saves[1].asked)
+	_expect("and it is still waiting for two", c._loading == 2)
+	# The whole of it: if this array were dropped here, the only remaining
+	# references on a device would be Apple's, and there are none.
+	_expect("the saves are still referenced after the call returns",
+		c._fetched.size() == 2)
+
+	# And they are let go once there is nothing left to wait for, rather than
+	# held for the life of the session.
+	c._on_loaded(PackedByteArray(), null)
+	_expect("still held while one load is outstanding", c._fetched.size() == 2)
+	c._on_loaded(PackedByteArray(), null)
+	_expect("released once every load is in", c._fetched.is_empty())
+	_expect("and the session counts as having read the cloud", c._pulled)
+	c.free()
+
+
+## The second half of what went wrong: the row said "saved to your Apple ID at
+## 00:58" after a round trip that moved nothing. A backup that reports success it
+## has not verified is worse than no backup, because it is the reason somebody
+## stops making their own.
+func _it_only_claims_a_backup_it_has_confirmed() -> void:
+	print("--- it only claims a backup it has confirmed ---")
+	var c: Node = load(CLOUD).new()
+	_expect("a session with nothing confirmed claims nothing", c.last_sync == 0)
+	_expect("and does not read as success", not c.note().contains("backed up"))
+
+	# Apple accepting the write is not the claim. Being able to see it afterwards
+	# is — so an upload that verifies to an empty account is a failure, not a
+	# "saved at 00:58".
+	c._on_verified([], null)
+	_expect("an upload that vanishes is a failure", c.state == c.State.FAILED)
+	_expect("with nothing claimed", c.last_sync == 0)
+	_expect("and it says so plainly", c.note().contains("not keeping"))
+
+	c._on_verified([_FakeSave.new()], null)
+	_expect("an upload Apple can see is a backup", c.state == c.State.READY)
+	_expect("and now there is a time to show", c.last_sync > 0)
+	_expect("and it says what it did", c.note().contains("backed up"))
+
+	# A restore says so instead, because that is the thing the player on a new
+	# phone is actually waiting to be told.
+	c.restored = true
+	_expect("a restore is reported as a restore", c.note().contains("restored"))
+	c.free()
+
+
+## Stands in for a `GKSavedGame`, which cannot be constructed off an Apple
+## device. Only the two things `_absorb` touches: it can be asked for its data,
+## and it notices being asked.
+class _FakeSave extends RefCounted:
+	var asked := false
+
+	func load_data(_done: Callable) -> void:
+		asked = true
 
 
 # ---------------------------------------------------------------------- helpers
