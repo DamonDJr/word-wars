@@ -5848,10 +5848,16 @@ func _draw_settings(size: Vector2) -> void:
 		# own factor on purpose: the row is a touch target and wants every unit
 		# it can get, while the text only has to stay in proportion to it.
 		var ts: float = clampf(_settings_fill() / 1.35, 1.0, 1.4)
-		_otext_left(_font_bold, Vector2(pad, r.get_center().y - 10.0 * ts),
+		# A row with nothing under the label centres the label instead of leaving
+		# it hanging above the gap where a note would have been. Fullscreen has
+		# always been one of these, and Cloud save is one whenever it is working.
+		var has_note: bool = String(row["note"]) != ""
+		_otext_left(_font_bold,
+			Vector2(pad, r.get_center().y - (10.0 * ts if has_note else 0.0)),
 			String(row["label"]), int(round(15.0 * ts)), Color("#e6ecff"))
-		_otext_left(_font, Vector2(pad, r.get_center().y + 13.0 * ts),
-			String(row["note"]), int(round(11.0 * ts)), Color("#5d6a92"))
+		if has_note:
+			_otext_left(_font, Vector2(pad, r.get_center().y + 13.0 * ts),
+				String(row["note"]), int(round(11.0 * ts)), Color("#5d6a92"))
 
 		# Sized for a thumb in portrait and a cursor otherwise. The row has always
 		# been the hit area, so this is about the control looking like something
@@ -5991,12 +5997,17 @@ func _settings_defs() -> Array:
 		defs.append(["restore", "action", "Restore purchases",
 			"if you have bought it before, or on a new phone", true, "RESTORE"])
 
-	# The cloud save, which is the one piece of this game that runs entirely
-	# without being asked and therefore has nothing to show for itself. A player
-	# who is about to wipe their phone has no way to find out whether their
-	# hundred matches are anywhere but on it, and "trust me" is not an answer —
-	# so the row exists to say when it last worked, and the button is for the
-	# person who wants to watch it happen before they hit erase.
+	# The cloud save. A button and nothing else while it is working.
+	#
+	# The row used to report when it last synced and how much was up there. Both
+	# went: the size was a number nobody can act on, and the time was UTC, so it
+	# was confidently wrong for most of the people reading it. Reporting the
+	# wrong hour is worse for trust than reporting nothing, on the one feature
+	# whose entire job is to be trusted.
+	#
+	# `Cloud.note` still speaks when the button cannot work — not signed in, or
+	# failed — because a dead control with no reason beside it is the confusing
+	# version of this row.
 	if Cloud.available():
 		defs.append(["cloud", "action", "Cloud save", Cloud.note(), Cloud.can_sync(),
 			"SYNC" if Cloud.state != Cloud.State.SYNCING else "…"])

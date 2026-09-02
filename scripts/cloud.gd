@@ -109,16 +109,26 @@ var status := ""
 ## so a device that was quietly failing to back anything up reported the time of
 ## day and looked healthy. A backup that lies about being a backup is worse than
 ## no backup, because it is the reason somebody stops making their own.
+##
+## No longer shown anywhere: the Settings row used to print it as a clock time
+## and got the hour wrong for anyone outside UTC. Kept because it is the fact
+## READY is defined against, and it still has to be a fact for that to mean
+## anything — but nothing reads it today.
 var last_sync := 0
 
-## How many saved games the last fetch found, and how big ours was. Reported on
-## the Settings row, because "backed up" with no number behind it is the claim
-## that turned out to be untrue.
+## How many saved games the last fetch found, and how big ours was.
+##
+## `cloud_saves` is load-bearing: an empty account is what `EMPTY_TRIES` retries
+## against, and it goes in the log. `cloud_bytes` has no reader since the size
+## came off the Settings row — a byte count is not a fact a player can act on.
 var cloud_saves := 0
 var cloud_bytes := 0
 
-## Whether this session actually brought something down. What a player on a new
-## phone is waiting to be told.
+## Whether this session actually brought something down.
+##
+## Nothing reads this now. It was the difference between "backed up" and
+## "restored from your Apple ID" on the Settings row, and that row no longer
+## claims either — it stays quiet unless it cannot work.
 var restored := false
 
 ## Whether this session has read the cloud. Nothing uploads until it has — see
@@ -215,32 +225,28 @@ func _signed_in() -> bool:
 	return MultiplayerManager.local_player != null
 
 
-## Everything a player can see about this, in one line. For the Settings row.
+## What a player needs to be told about this, in one line. For the Settings row.
 ##
-## Says what actually happened rather than that something did. The version this
-## replaces said "saved to your Apple ID at 00:58" whether it had uploaded a
-## profile, downloaded one, or completed a round trip that moved nothing at all
-## — and the third of those is the one that was happening.
+## Silent when it is working, and speaks only when it cannot. Everything this
+## used to say while healthy has been taken out:
+##
+## - **The time of the last backup was wrong for almost everybody.** It came from
+##   `Time.get_datetime_dict_from_unix_time`, which returns UTC — so a player
+##   outside it read a confident timestamp that was hours off, about the one
+##   feature whose whole job is to be trusted.
+## - **The size meant nothing.** "14 KB on iCloud" is not a fact anybody can act
+##   on; it is a number that invites the question "is that enough?".
+## - **"checking…" and "nothing to back up yet" were noise on a row that works.**
+##   The button says SYNC and syncing is what it does.
+##
+## What is left is the two cases where saying nothing would leave a control that
+## refuses to work and will not say why: not signed in, and outright failure. A
+## greyed button with no reason beside it is the confusing version of this row,
+## not the quiet one.
 func note() -> String:
 	match state:
-		State.READY:
-			if last_sync == 0:
-				# A new player with nothing to back up yet. Honest rather than
-				# reassuring: there is no copy of anything, because there is
-				# nothing to copy.
-				if not _worth_uploading():
-					return "nothing to back up yet — play a match"
-				# Signed in, nothing confirmed yet. Should be a blink; if it
-				# sticks, something is wrong and this must not read as success.
-				return "checking…"
-			var t := Time.get_datetime_dict_from_unix_time(last_sync)
-			var when := "%02d:%02d" % [int(t["hour"]), int(t["minute"])]
-			if restored:
-				return "restored from your Apple ID at %s" % when
-			return "backed up at %s · %d KB on iCloud" % [when,
-				maxi(1, cloud_bytes / 1024)]
-		State.SYNCING:
-			return status
+		State.READY, State.SYNCING:
+			return ""
 		State.WAITING:
 			return "sign in to Game Center to back up your progress"
 		State.FAILED:
