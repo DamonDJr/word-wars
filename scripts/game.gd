@@ -4424,6 +4424,11 @@ const PORTRAIT_DOOR_H := 92.0
 ## Breathing room down each side of every card grid.
 const GRID_MARGIN := 36.0
 
+## Room kept under the last settings row for the hint line beneath it. Named
+## because `_settings_fill` sizes the rows against it and would otherwise grow
+## them straight over the top of it.
+const SETTINGS_FOOT := 150.0
+
 
 ## How much bigger a menu's rows can afford to be.
 ##
@@ -5833,33 +5838,66 @@ func _draw_settings(size: Vector2) -> void:
 		var hot: bool = String(_hover_action).begins_with(String(row["action"]))
 		_panel(r, Color("#141b33"), Color(PLAYER_ACCENT, 0.3 if hot else 0.14), 10.0,
 			2.0 if hot else 1.0)
-		_otext(_font_bold, Vector2(r.position.x + 150.0, r.get_center().y),
-			String(row["label"]), 15, Color("#e6ecff"))
-		_otext(_font, Vector2(r.position.x + 150.0, r.get_center().y + 20.0),
-			String(row["note"]), 11, Color("#5d6a92"))
+		# Left-aligned off the row's own edge rather than centred on a fixed 150px
+		# inset. Centring a label inside the left half is a desktop habit: on a
+		# phone it floats in the middle of nothing, and the longer notes had to
+		# fight the control for the same pixels.
+		var pad := r.position.x + 24.0
+		# Type grows with the row, or a 15px label sits marooned in the middle of
+		# a row two and a half times its natural height. Gentler than the row's
+		# own factor on purpose: the row is a touch target and wants every unit
+		# it can get, while the text only has to stay in proportion to it.
+		var ts: float = clampf(_settings_fill() / 1.35, 1.0, 1.4)
+		_otext_left(_font_bold, Vector2(pad, r.get_center().y - 10.0 * ts),
+			String(row["label"]), int(round(15.0 * ts)), Color("#e6ecff"))
+		_otext_left(_font, Vector2(pad, r.get_center().y + 13.0 * ts),
+			String(row["note"]), int(round(11.0 * ts)), Color("#5d6a92"))
+
+		# Sized for a thumb in portrait and a cursor otherwise. The row has always
+		# been the hit area, so this is about the control looking like something
+		# worth aiming at rather than about whether it can be hit.
+		var touch := portrait
 
 		match String(row["kind"]):
 			"slider":
 				var track := _settings_track(r)
-				_panel(track, Color("#0e142a"), Color(PLAYER_ACCENT, 0.2), 4.0, 1.0)
+				_panel(track, Color("#0e142a"), Color(PLAYER_ACCENT, 0.2),
+					track.size.y * 0.5, 1.0)
 				var v: float = float(row["value"])
 				_overlay.draw_rect(Rect2(track.position + Vector2(2, 2),
 					Vector2((track.size.x - 4.0) * v, track.size.y - 4.0)),
 					Color(PLAYER_ACCENT), true)
 				_overlay.draw_circle(
 					Vector2(track.position.x + 2.0 + (track.size.x - 4.0) * v,
-						track.get_center().y), 7.0, Color("#e6ecff"))
+						track.get_center().y), (13.0 * ts) if touch else 7.0,
+					Color("#e6ecff"))
 				_otext(_font_bold, Vector2(r.end.x - 44.0, r.get_center().y),
-					"%d%%" % int(round(v * 100.0)), 14, Color("#8d99bd"))
+					"%d%%" % int(round(v * 100.0)), int(round(14.0 * ts)),
+					Color("#8d99bd"))
 			"toggle":
 				var on: bool = bool(row["value"])
-				var sw := Rect2(r.end.x - 132.0, r.get_center().y - 14.0, 92.0, 28.0)
+				# Scaled with the row for the same reason the type is: a switch at
+				# its natural size looks stranded in a row two and a half times
+				# taller than the one it was drawn for.
+				var sh: float = (40.0 * ts) if touch else 28.0
+				var swid: float = (104.0 * ts) if touch else 92.0
+				var sw := Rect2(r.end.x - swid - 40.0, r.get_center().y - sh * 0.5,
+					swid, sh)
 				_panel(sw, Color("#1f8a70") if on else Color("#2a3355"),
-					Color(PLAYER_ACCENT if on else Color("#4d5878"), 0.8), 14.0, 1.0)
-				_overlay.draw_circle(Vector2(sw.position.x + (68.0 if on else 24.0),
-					sw.get_center().y), 10.0, Color("#e6ecff"))
-				_otext(_font_bold, Vector2(sw.position.x + (26.0 if on else 66.0),
-					sw.get_center().y), "ON" if on else "OFF", 11,
+					Color(PLAYER_ACCENT if on else Color("#4d5878"), 0.8),
+					sh * 0.5, 1.0)
+				# Knob and word are derived from the pill rather than written out,
+				# so the two sizes cannot drift apart the way three hardcoded
+				# offsets did.
+				var knob := sh * 0.5 - 6.0
+				_overlay.draw_circle(Vector2(
+					sw.end.x - knob - 6.0 if on else sw.position.x + knob + 6.0,
+					sw.get_center().y), knob, Color("#e6ecff"))
+				var lane := (swid - knob * 2.0 - 12.0) * 0.5
+				_otext(_font_bold, Vector2(
+					sw.position.x + lane + 6.0 if on else sw.end.x - lane - 6.0,
+					sw.get_center().y), "ON" if on else "OFF",
+					int(round(11.0 * ts)),
 					Color("#e6ecff") if on else Color("#7c88ad"))
 			"action":
 				# A button rather than a switch, because these do something once
@@ -5890,11 +5928,17 @@ func _draw_settings(size: Vector2) -> void:
 	# without anyone having to guess at Godot's user directory. Loud and red if
 	# something is wrong with it, because the one thing worse than losing a
 	# profile is not being told until it is too late to rescue.
+	#
+	# The path is desktop-only. On a phone it globalizes to a sandbox container —
+	# an unreadable UUID under /var/mobile that the player cannot open, copy or
+	# do anything else with — so it was a line of noise under the last row on the
+	# one platform where screen space is scarce. The failure warning stays on
+	# both: losing a profile in silence is worth shouting about anywhere.
 	if Profile.read_failed:
 		_text_fit_overlay(_font_bold, Vector2(cx, sfoot + 20.0),
 			"YOUR PROFILE COULD NOT BE READ — NOTHING IS BEING SAVED THIS SESSION",
 			13, size.x - GRID_MARGIN * 2.0, Color("#ff6b6b"), 10)
-	else:
+	elif not portrait:
 		_text_fit_overlay(_font, Vector2(cx, sfoot + 20.0),
 			ProjectSettings.globalize_path(Profile.save_path), 11, size.x - 80.0,
 			Color("#3d4666"), 9)
@@ -6013,8 +6057,33 @@ func _settings_rows() -> Array:
 
 
 ## Settings is a plain list, so it scales and scrolls like one.
+##
+## The factor is measured against the screen rather than fixed, which is the one
+## place this screen should differ from `_menu_fill`. That returns a flat 1.3
+## because the screens using it can overflow and scroll, so growing rows to fit
+## would size them for the window instead of for a thumb. Settings cannot
+## overflow — six rows on a 1440-tall phone is the whole of it, ever — so there
+## is a known amount of room and no reason to leave it empty.
+##
+## A flat 1.35 left the list ending around 55% down the screen with a band of
+## nothing under it, and made each row 73 units tall. At the 720-unit portrait
+## design width that is about 39pt on a 390pt phone, under Apple's 44pt floor.
+## Filling the space fixes both at once.
 func _settings_fill() -> float:
-	return 1.35 if portrait else 1.0
+	if not portrait:
+		return 1.0
+	var n := float(_settings_defs().size())
+	if n <= 0.0:
+		return 1.35
+	# Measured from where the rows actually start, not from `_menu_offset`'s
+	# notion of a top — this screen puts its title at 78 and its first row at
+	# 124, and the two have never agreed.
+	var avail: float = get_viewport_rect().size.y - safe_bottom \
+		- (124.0 + safe_top) - SETTINGS_FOOT
+	# The floor is what it used to be, so nothing can come out smaller than it
+	# was. The cap stops a two-row list from becoming two slabs the size of a
+	# hand, which is the failure `_menu_fill` was written to avoid.
+	return clampf(avail / ((n - 1.0) * 66.0 + 54.0), 1.35, 2.6)
 
 
 func _settings_laid() -> float:
@@ -6025,8 +6094,14 @@ func _settings_laid() -> float:
 ## sets the value have to agree about where it starts and how long it is — and
 ## it is no longer a constant now that the row width follows the screen.
 func _settings_track(r: Rect2) -> Rect2:
-	var x := r.position.x + 300.0
-	return Rect2(x, r.get_center().y - 4.0, maxf(120.0, r.end.x - 100.0 - x), 8.0)
+	# The label column is a proportion of the row now rather than a flat 300px.
+	# Fixed, it ate most of a narrow phone row and pushed the track onto its
+	# 120px floor, which is a slider you cannot set accurately with a thumb.
+	var x := r.position.x + minf(300.0, r.size.x * 0.44)
+	# Thickens with the row, matching the thumb and the type.
+	var h: float = (12.0 * clampf(_settings_fill() / 1.35, 1.0, 1.4)) \
+		if portrait else 8.0
+	return Rect2(x, r.get_center().y - h * 0.5, maxf(120.0, r.end.x - 100.0 - x), h)
 
 
 ## A click on a settings row. Sliders take their new value from where along the
@@ -6071,6 +6146,17 @@ func _change_setting(key: String) -> void:
 			continue
 		var track := _settings_track(row["rect"])
 		var at := get_viewport().get_mouse_position().x
+		# Only a press on the track moves a slider.
+		#
+		# The whole row is the hit area, and the value was clamped from wherever
+		# the press landed — so a tap on the word "Music", which is most of the
+		# left half of the row on a phone, resolved to zero and silently muted
+		# the game. There was no way to tell that from the slider simply not
+		# working. Missing the track now does nothing at all, which is what every
+		# other settings list on the platform does.
+		var grab := 28.0 if portrait else 12.0
+		if at < track.position.x - grab or at > track.end.x + grab:
+			return
 		var v := clampf((at - track.position.x - 2.0) / maxf(1.0, track.size.x - 4.0),
 			0.0, 1.0)
 		Profile.set_pref(key, v)
@@ -6683,10 +6769,17 @@ func _draw_mastery(size: Vector2) -> void:
 	for i in stats.size():
 		var r: Rect2 = strip[i]
 		_panel(r, Color("#141b33"), Color(PLAYER_ACCENT, 0.16), 8.0, 1.0)
-		_otext(_font, Vector2(r.get_center().x, r.position.y + 18.0), stats[i][0], 10,
-			Color("#7c88ad"))
-		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + 41.0),
-			stats[i][1], 18, r.size.x - 20.0, Color("#e6ecff"))
+		# Proportional in portrait, where the tile is half again as tall and two
+		# fixed offsets left the label and value huddled against the top edge
+		# with a third of the tile empty under them. Desktop keeps the constants
+		# it was drawn with rather than being re-tuned by proportion.
+		var mts: float = 1.45 if portrait else 1.0
+		var ly: float = (r.size.y * 0.32) if portrait else 18.0
+		var vy: float = (r.size.y * 0.66) if portrait else 41.0
+		_otext(_font, Vector2(r.get_center().x, r.position.y + ly), stats[i][0],
+			int(round(10.0 * mts)), Color("#7c88ad"))
+		_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.position.y + vy),
+			stats[i][1], int(round(18.0 * mts)), r.size.x - 20.0, Color("#e6ecff"))
 
 	# Power words earned, which is the one part of the record that says how you
 	# play rather than how much. It had nowhere to live before.
@@ -6956,15 +7049,32 @@ func _mastery_laid() -> float:
 	# was shorter, and thirteen tiles at four columns is four rows — so the
 	# screen reported a height a row short of itself and the last of the record
 	# sat below where anything could scroll to.
-	var rows := float(_grid_rows(_mastery_stats().size(), 8, 8.0, 140.0))
+	var rows := float(_grid_rows(_mastery_stats().size(), 8, 8.0,
+		_mastery_stat_min_w()))
 	var prows := float(_grid_rows(POWER_ORDER.size(), 4, 10.0, 120.0))
 	return rows * 56.0 * f + maxf(0.0, rows - 1.0) * 8.0 * sp + 62.0 + 22.0 \
 		+ prows * 52.0 * f + 120.0
 
 
+## The narrowest a record tile may be before `_grid_rects` drops a column.
+##
+## 140 on a desktop, where eight across is the point of the strip. On a phone
+## that same floor settles on four columns about 156 units wide — roughly 84pt —
+## and a tile that narrow cannot hold "MULTI-CLEARS" stacked over a five-figure
+## number, never mind the longest word played. Two columns is the readable
+## answer in portrait and 300 is the floor that forces it.
+##
+## One definition because `_mastery_stat_rects` and `_mastery_laid` have to
+## settle on the same column count. The note on `_mastery_laid` is about the
+## last time those two disagreed and the bottom of the record became unreachable.
+func _mastery_stat_min_w() -> float:
+	return 300.0 if portrait else 140.0
+
+
 func _mastery_stat_rects(count: int) -> Array:
 	return _grid_rects(count, 166.0 + safe_top + _menu_offset(_mastery_laid()), 8,
-		138.0, 56.0 * _mastery_fill(), 8.0, 140.0, 8.0 * _mastery_spread())
+		138.0, 56.0 * _mastery_fill(), 8.0, _mastery_stat_min_w(),
+		8.0 * _mastery_spread())
 
 
 ## The bottom of the record screen — the stat grid, then the power tallies. The

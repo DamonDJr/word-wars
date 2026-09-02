@@ -98,7 +98,13 @@ func _init() -> void:
 			where, game._mastery_stats_foot(), bottom],
 			game._mastery_stats_foot() >= bottom)
 		# The rows the height is built from have to be the rows the grid gives.
-		var rows: int = game._grid_rows(n, 8, 8.0, 140.0)
+		#
+		# The minimum width is asked for rather than typed. It was 140 here and
+		# 140 in two places in `game.gd`, which is three copies of one number and
+		# exactly the shape of the bug this block was written to catch — portrait
+		# now drops the stat grid to two columns, and a hardcoded floor here would
+		# have failed while the screen was correct.
+		var rows: int = game._grid_rows(n, 8, 8.0, game._mastery_stat_min_w())
 		var real := {}
 		for r2: Rect2 in strip:
 			real[r2.position.y] = true
