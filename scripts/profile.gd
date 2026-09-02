@@ -630,11 +630,7 @@ func record_daily(key: String, score: int, wpm: int, words: int, chain: int) -> 
 	# the live count can never be two different opinions.
 	daily_best_streak = maxi(daily_best_streak, daily_streak(key))
 	# Trim, or a year of play turns the profile into a log file.
-	if daily.size() > DAILY_KEPT:
-		var keys: Array = daily.keys()
-		keys.sort()
-		while keys.size() > DAILY_KEPT:
-			daily.erase(keys.pop_front())
+	_trim_daily()
 	save()
 	changed.emit()
 
@@ -778,6 +774,32 @@ func _read(path: String) -> Error:
 	var err := cfg.load(path)
 	if err != OK:
 		return err
+	return _apply(cfg)
+
+
+## The same bytes a save writes, for handing to somewhere that is not a disk.
+##
+## Deliberately the file format rather than a second, cloud-shaped encoding of
+## the same numbers: two serialisers for one object is two places to forget a
+## field, and the one that would get forgotten is the one nobody can see.
+func to_bytes() -> PackedByteArray:
+	return _encode().encode_to_text().to_utf8_buffer()
+
+
+## Parse bytes written by `to_bytes` into this object, replacing everything.
+##
+## Meant for a *scratch* instance of this script rather than for the autoload —
+## `Cloud` reads a downloaded save into one of these and merges it in, so the
+## live profile is never overwritten by something that arrived over a network.
+func from_bytes(data: PackedByteArray) -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.parse(data.get_string_from_utf8()) != OK:
+		return false
+	return _apply(cfg) == OK
+
+
+## Everything an already-parsed profile has to say, folded into this object.
+func _apply(cfg: ConfigFile) -> Error:
 	# Parsing is not the same as being a profile. ConfigFile shrugs at lines it
 	# does not recognise, so a file full of rubbish loads "successfully" and then
 	# every field falls back to its default — which is the silent reset again,
@@ -874,6 +896,27 @@ func save() -> void:
 	if read_failed:
 		return
 
+	var cfg := _encode()
+
+	# Written whole, somewhere else, before anything existing is touched.
+	var tmp := save_path + ".tmp"
+	if cfg.save(tmp) != OK:
+		push_error("Profile: could not write %s — leaving the old save alone" % tmp)
+		return
+
+	var dir := DirAccess.open(save_path.get_base_dir())
+	if dir == null:
+		return
+	var main := save_path.get_file()
+	var back := backup_path().get_file()
+	if dir.file_exists(main):
+		dir.remove(back)
+		dir.rename(main, back)
+	dir.rename(tmp.get_file(), main)
+
+
+## This object as a `ConfigFile`. What `save` writes and what `to_bytes` sends.
+func _encode() -> ConfigFile:
 	var cfg := ConfigFile.new()
 	cfg.set_value("meta", "schema", SCHEMA)
 	cfg.set_value("record", "matches", matches)
@@ -902,22 +945,161 @@ func save() -> void:
 	cfg.set_value("daily", "best_streak", daily_best_streak)
 	cfg.set_value("worn", "equipped", equipped)
 	cfg.set_value("worn", "prefs", prefs)
+	return cfg
 
-	# Written whole, somewhere else, before anything existing is touched.
-	var tmp := save_path + ".tmp"
-	if cfg.save(tmp) != OK:
-		push_error("Profile: could not write %s — leaving the old save alone" % tmp)
-		return
 
-	var dir := DirAccess.open(save_path.get_base_dir())
-	if dir == null:
+# ------------------------------------------------------------------- merging
+#
+# Folding one profile into another, which is what a cloud save actually is once
+# a player owns two devices.
+#
+# ## Why the totals are maxed rather than added
+#
+# Adding is the obvious answer and it is wrong. The two profiles are not two
+# disjoint histories, they are two views of the *same* history that have
+# diverged: nearly every match in the cloud copy is also in the local one, so
+# adding them counts almost everything twice, and the number climbs every time
+# the game is opened. A player who plays on one device would watch their match
+# count double each launch.
+#
+# Max is the conservative alternative and it has one real cost: play forty
+# matches on the phone while the tablet plays ten, and the merge keeps forty
+# rather than fifty. Ten matches of credit is a genuine loss. It is also the
+# *only* loss, it is bounded by how far the two ran apart, and it never invents
+# progress that did not happen. Every other option either double-counts or needs
+# per-device bookkeeping this game has no reason to carry.
+#
+# So the rule everywhere below is: nothing here can ever move a number down.
+# A merge only adds.
+
+## Lifetime counters. Not "how many times has this happened on this device", so
+## the larger of the two is the better answer.
+const MERGE_MAX_INT := ["matches", "wins", "flawless", "words", "chars",
+	"salvos", "multi_clears", "best_chain", "best_combo", "best_score",
+	"survival_runs", "survival_best_score", "daily_best", "daily_best_streak"]
+
+const MERGE_MAX_FLOAT := ["best_wpm", "survival_best_time"]
+
+
+## Fold `other` into this profile, and say whether anything was gained.
+##
+## Does not save, and does not emit `changed`. `Cloud` folds in several copies at
+## once when a conflict has stacked up, and a save between each would write the
+## file three times and repaint the screen off a half-merged record. Call
+## `commit_merge` after the last one.
+##
+## Deliberately not symmetric in what it *keeps*, only in what it takes: run it
+## the other way round afterwards and the return value tells you whether the
+## other copy is behind and worth writing to.
+func merge_from(other: Node) -> bool:
+	var gained := false
+
+	for f: String in MERGE_MAX_INT:
+		var theirs := int(other.get(f))
+		if theirs > int(get(f)):
+			set(f, theirs)
+			gained = true
+	for f: String in MERGE_MAX_FLOAT:
+		var theirs := float(other.get(f))
+		if theirs > float(get(f)):
+			set(f, theirs)
+			gained = true
+
+	# Longest by letters, not alphabetically. A tie keeps ours: two words of the
+	# same length are the same claim, and rewriting it is a change for nothing.
+	if String(other.longest_word).length() > longest_word.length():
+		longest_word = String(other.longest_word)
+		gained = true
+
+	# Per power word, for the same reason as the totals above.
+	for key: String in other.powers:
+		var theirs := int(other.powers[key])
+		if theirs > int(powers.get(key, 0)):
+			powers[key] = theirs
+			gained = true
+
+	# Purchases are a union. A pack is owned forever and on every device, so
+	# there is no case where the right answer is to drop one — and Apple's own
+	# entitlement check will hand it back anyway.
+	for pack: String in other.owned:
+		if bool(other.owned[pack]) and not owns(pack):
+			owned[pack] = true
+			gained = true
+
+	# One run per day is the rule, but two devices can each believe they are the
+	# one holding today's, so a day present on both keeps the better score.
+	var days_changed := false
+	for day: String in other.daily:
+		var theirs: Dictionary = other.daily[day]
+		if not daily.has(day):
+			daily[day] = theirs.duplicate()
+			days_changed = true
+		elif int(theirs.get("score", 0)) > int((daily[day] as Dictionary).get("score", 0)):
+			daily[day] = theirs.duplicate()
+			days_changed = true
+	if days_changed:
+		gained = true
+		# The union can run past the window, and the trim has to happen here as
+		# well as in `record_daily` or a merge is a way to grow the file forever.
+		_trim_daily()
+		# The best streak is proved out of the history, and the history just
+		# grew: two devices each holding half of a run of days is exactly the
+		# case where neither copy's stored number is the truth.
+		#
+		# Only when days actually arrived. Recomputing unconditionally would
+		# quietly *correct* a profile whose stored streak was behind its own
+		# history — which sounds like a favour, but it makes an otherwise
+		# empty merge report a gain, and a gain is what triggers an upload. The
+		# cost would be a network write on every launch, forever, for nothing.
+		for day: String in daily:
+			daily_best_streak = maxi(daily_best_streak, daily_streak(day))
+
+	# What is worn, filled in rather than overwritten.
+	#
+	# There is no clock in any of this on purpose — device clocks disagree, and a
+	# "newest wins" rule decided by an unset phone would silently undress
+	# somebody. Empty slots take the other copy's answer, which restores a whole
+	# loadout onto a fresh install, and a slot that already has something keeps
+	# it, so changing your hat is never undone by a sync.
+	for slot: String in SLOTS:
+		if String(equipped.get(slot, "")) == "" and String(other.equipped.get(slot, "")) != "":
+			equipped[slot] = other.equipped[slot]
+			gained = true
+
+	# Settings, same rule and the same reason. A fresh install picks the whole
+	# lot up — including `taught`, so the tutorial does not nag somebody who
+	# finished it on their old phone — and a setting deliberately changed here is
+	# never argued with by the other device.
+	for key: String in other.prefs:
+		if not prefs.has(key):
+			prefs[key] = other.prefs[key]
+			gained = true
+
+	# Not merged, on purpose: `since_ad`, `play_since_ad` and the two gaps.
+	#
+	# They are a cadence, not a record — how much play has happened since the
+	# last break — and maxing them would mean a sync could bring an ad break
+	# forward, which is the one thing in this file a player would notice and
+	# resent. A restored profile starts its cadence fresh, which errs towards
+	# fewer breaks, which is the right way to be wrong.
+
+	return gained
+
+
+## Land a merge: write it, and tell the screen. Separate from `merge_from` so
+## several copies can be folded in before either happens.
+func commit_merge() -> void:
+	save()
+	changed.emit()
+
+
+func _trim_daily() -> void:
+	if daily.size() <= DAILY_KEPT:
 		return
-	var main := save_path.get_file()
-	var back := backup_path().get_file()
-	if dir.file_exists(main):
-		dir.remove(back)
-		dir.rename(main, back)
-	dir.rename(tmp.get_file(), main)
+	var keys: Array = daily.keys()
+	keys.sort()
+	while keys.size() > DAILY_KEPT:
+		daily.erase(keys.pop_front())
 
 
 ## The name to show alongside yours, or "" if none is worn.

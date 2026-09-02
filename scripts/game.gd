@@ -5947,6 +5947,16 @@ func _settings_defs() -> Array:
 		defs.append(["restore", "action", "Restore purchases",
 			"if you have bought it before, or on a new phone", true, "RESTORE"])
 
+	# The cloud save, which is the one piece of this game that runs entirely
+	# without being asked and therefore has nothing to show for itself. A player
+	# who is about to wipe their phone has no way to find out whether their
+	# hundred matches are anywhere but on it, and "trust me" is not an answer —
+	# so the row exists to say when it last worked, and the button is for the
+	# person who wants to watch it happen before they hit erase.
+	if Cloud.available():
+		defs.append(["cloud", "action", "Cloud save", Cloud.note(), Cloud.can_sync(),
+			"SYNC" if Cloud.state != Cloud.State.SYNCING else "…"])
+
 	# The old test button is gone and stays gone:
 	#
 	# It cost more than it was worth the moment ads became real. One of the three
@@ -6037,6 +6047,13 @@ func _change_setting(key: String) -> void:
 	if key == "restore":
 		Store.restore()
 		Sfx.play("key", 1.2)
+		return
+	if key == "cloud":
+		if Cloud.can_sync():
+			Cloud.sync_now()
+			Sfx.play("key", 1.2)
+		else:
+			Sfx.play("reject", 1.2)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
 			or key == "haptics":

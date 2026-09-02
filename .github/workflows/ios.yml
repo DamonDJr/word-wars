@@ -214,7 +214,7 @@ jobs:
           cp build/export/*.ipa WordWars.ipa
 
           ls -lh WordWars.ipa
-      - name: Check Game Center entitlement
+      - name: Check Game Center and iCloud entitlements
         run: |
             set -euo pipefail
 
@@ -225,7 +225,7 @@ jobs:
             APP="$(find verify/Payload -maxdepth 1 -name "*.app" | head -1)"
 
             echo "=== Signed App Entitlements ==="
-            codesign -d --entitlements :- "$APP" 2>&1
+            codesign -d --entitlements :- "$APP" 2>&1 | tee verify/app.entitlements
 
             echo "=== Provisioning Profile Entitlements ==="
             security cms -D \
@@ -235,6 +235,19 @@ jobs:
             /usr/libexec/PlistBuddy \
             -c 'Print :Entitlements' \
             verify/profile.plist
+
+            # Cloud saves are the one feature whose absence is invisible: the app
+            # installs, runs, plays, and silently never backs anything up. The
+            # only symptom is a player months later saying they lost everything
+            # when they changed phones. So a build without the entitlement is a
+            # failed build rather than a shipped one.
+            if ! grep -q 'iCloud.com.damonj.wordwars' verify/app.entitlements; then
+              echo "FAILED: the signed app has no iCloud container, so cloud" >&2
+              echo "        saves would be dead on arrival. See docs/cloud-saves.md" >&2
+              echo "        — the App ID needs iCloud enabled and the distribution" >&2
+              echo "        profile regenerated." >&2
+              exit 1
+            fi
       - name: Verify signed IPA
         run: |
           set -euo pipefail
