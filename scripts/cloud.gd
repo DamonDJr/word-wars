@@ -66,6 +66,30 @@ const QUIET := 8.0
 ## one, and iOS sends that notification liberally.
 const PULL_EVERY := 60.0
 
+## How many times "there is nothing on this account" has to be said before it is
+## believed, and how long to leave between asking.
+##
+## This is the correction to the failure that ate a profile.
+##
+## On a fresh install the iCloud container has not downloaded yet, and
+## `fetchSavedGames` against a container that has not synced returns an empty
+## array — not an error, not a wait, just nought saved games, in about half a
+## second. That answer is indistinguishable from a genuinely empty account, and
+## the first version believed it: it concluded the cloud was empty, uploaded the
+## blank profile of a fresh install, and destroyed the very save it had been
+## installed to recover. The upload then verified successfully, because by then
+## there really was one saved game on the account — ours.
+##
+## So an empty answer is now a question rather than a fact. It is asked again,
+## several times, over a minute and a half, which is long enough for a container
+## to come down on any connection worth having. Only after it has been empty
+## every time is the account taken to be new.
+##
+## Costs a first-time player nothing: they have nothing to upload during that
+## window anyway — see `_worth_uploading`.
+const EMPTY_TRIES := 6
+const EMPTY_RETRY := 15.0
+
 ## OFF     — not an Apple device, or the plugin is missing. Resting state on
 ##           every desktop build, and not a fault.
 ## WAITING — signed out, or Game Center has not finished authenticating.
@@ -99,7 +123,13 @@ var restored := false
 
 ## Whether this session has read the cloud. Nothing uploads until it has — see
 ## the rules above; this is rule one.
+##
+## An empty answer does not count as having read it until it has been given
+## `EMPTY_TRIES` times, because a cold iCloud container gives that answer too.
 var _pulled := false
+
+## How many times running the account has come back with nothing on it.
+var _empty_fetches := 0
 
 ## Set when the profile changes, cleared when it has been sent.
 var _dirty := false
@@ -195,6 +225,11 @@ func note() -> String:
 	match state:
 		State.READY:
 			if last_sync == 0:
+				# A new player with nothing to back up yet. Honest rather than
+				# reassuring: there is no copy of anything, because there is
+				# nothing to copy.
+				if not _worth_uploading():
+					return "nothing to back up yet — play a match"
 				# Signed in, nothing confirmed yet. Should be a blink; if it
 				# sticks, something is wrong and this must not read as success.
 				return "checking…"
@@ -251,6 +286,23 @@ func _log(text: String) -> void:
 ## Whether the SYNC button should do anything.
 func can_sync() -> bool:
 	return available() and _signed_in() and not _busy
+
+
+## Whether the profile in memory is worth putting on the account.
+##
+## Anything that took playing to get. Deliberately *not* settings or what is
+## worn: those are real state, but a profile carrying nothing else is a fresh
+## install that has been to the options screen, and uploading it over somebody's
+## history is exactly the trade this whole file exists to refuse.
+##
+## Purchases count. A pack restored by StoreKit on a new phone before the first
+## match is genuinely worth writing down.
+func _worth_uploading() -> bool:
+	return Profile.matches > 0 \
+		or Profile.words > 0 \
+		or Profile.survival_runs > 0 \
+		or not Profile.daily.is_empty() \
+		or not Profile.owned.is_empty()
 
 
 ## A sync the player asked for. Does the full round trip rather than just an
@@ -329,14 +381,28 @@ func _on_fetched(games, error) -> void:
 	# round, so filtering on either is a coin toss against a doc comment.
 	cloud_saves = (games as Array).size()
 	if cloud_saves == 0:
-		# Nothing up there yet — a first run on a fresh account. The local
-		# profile, whatever it holds, is the best copy in existence.
 		_busy = false
+		_empty_fetches += 1
+		if _empty_fetches < EMPTY_TRIES:
+			# Not believed yet. See `EMPTY_TRIES`: a container that has not
+			# finished coming down answers exactly like an empty account, and
+			# acting on it is how a save gets overwritten by the install that
+			# came to collect it. `_pulled` deliberately stays false, so nothing
+			# can upload while the question is still open.
+			_log("iCloud says there is nothing there (%d/%d) — not believing it yet"
+				% [_empty_fetches, EMPTY_TRIES])
+			_set_state(State.SYNCING, "looking for your cloud save")
+			return
+		# Asked repeatedly over a minute and a half and told the same thing every
+		# time. This really is a new account.
 		_pulled = true
-		_log("iCloud has no saved game yet; uploading this device's profile")
+		_log("iCloud has had no saved game for %d tries; treating the account as new"
+			% EMPTY_TRIES)
 		push()
 		return
 
+	# A real answer. Anything the empty ones made us doubt is settled.
+	_empty_fetches = 0
 	_absorb(games)
 
 
@@ -501,6 +567,15 @@ func push() -> void:
 		return
 	if Profile.read_failed or not _pulled:
 		return
+	# A profile with no history in it is not a backup, and writing one can only
+	# ever destroy. This is belt to `_pulled`'s braces, and either one alone
+	# would have prevented the profile that was lost: an install that has played
+	# nothing has, by definition, nothing that is worth more than whatever is
+	# already on the account.
+	if not _worth_uploading():
+		_log("nothing worth uploading yet — not writing an empty profile over the account")
+		_set_state(State.READY, "")
+		return
 	_busy = true
 	_dirty = false
 	_quiet = 0.0
@@ -574,9 +649,13 @@ func _process(delta: float) -> void:
 	# session with no backup at all. One attempt a minute for as long as that
 	# remains true, which costs nothing on a working device because the first
 	# one succeeds and this never runs again.
-	if not _pulled and _signed_in() and _since_pull >= PULL_EVERY:
-		_log("still no answer from iCloud; asking again")
-		pull()
+	if not _pulled and _signed_in():
+		# Faster while the answer is "nothing there" and we are waiting for the
+		# container to come down, slower when the fetch is failing outright.
+		var wait := EMPTY_RETRY if _empty_fetches > 0 else PULL_EVERY
+		if _since_pull >= wait:
+			_log("asking iCloud again")
+			pull()
 		return
 	if _dirty:
 		_quiet += delta

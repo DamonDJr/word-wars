@@ -38,6 +38,8 @@ func _init() -> void:
 	_a_download_does_not_swallow_a_pending_upload()
 	_a_download_holds_on_to_what_it_is_downloading()
 	_it_only_claims_a_backup_it_has_confirmed()
+	_an_empty_answer_is_not_believed_the_first_time()
+	_a_profile_with_no_history_is_never_uploaded()
 
 	print("--- %s ---" % ("cloud saves behave" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -451,6 +453,93 @@ func _it_only_claims_a_backup_it_has_confirmed() -> void:
 	# phone is actually waiting to be told.
 	c.restored = true
 	_expect("a restore is reported as a restore", c.note().contains("restored"))
+	c.free()
+
+
+## The failure that actually destroyed a profile, pinned.
+##
+## A fresh install's iCloud container has not downloaded yet, and
+## `fetchSavedGames` against one that has not synced returns an empty array in
+## about half a second — no error, no wait. Taken as fact, that reads as "this
+## account is new", and the blank profile of the install that came to *recover*
+## the save is written over it instead.
+##
+## An empty answer therefore has to be asked again before it is believed, and
+## `_pulled` must stay false in the meantime, because `_pulled` is the flag that
+## permits uploading at all.
+func _an_empty_answer_is_not_believed_the_first_time() -> void:
+	print("--- an empty account is not believed the first time ---")
+	var c: Node = load(CLOUD).new()
+	c._on_fetched([], null)
+	_expect("one empty answer is not proof", not c._pulled)
+	_expect("and nothing is authorised to upload yet", not c._pulled)
+	_expect("it says it is still looking", c.state == c.State.SYNCING)
+
+	# Keep saying it and it eventually becomes true — a genuinely new account
+	# has to be able to get its first backup.
+	for _i in c.EMPTY_TRIES:
+		c._on_fetched([], null)
+	_expect("but %d of them is" % c.EMPTY_TRIES, c._pulled)
+
+	# And one real answer settles it immediately, clearing the doubt so a later
+	# empty reply starts the count again from scratch rather than tipping over.
+	var d: Node = load(CLOUD).new()
+	d._on_fetched([], null)
+	d._on_fetched([], null)
+	_expect("two empties leave it unconvinced", not d._pulled)
+	d._on_fetched([_FakeSave.new()], null)
+	_expect("a real answer resets the doubt", d._empty_fetches == 0)
+	c.free()
+	d.free()
+
+
+## The second guard, and either one alone would have saved the profile.
+##
+## An install that has played nothing has, by definition, nothing worth more
+## than whatever is already on the account. Uploading it cannot help and can
+## only destroy.
+func _a_profile_with_no_history_is_never_uploaded() -> void:
+	print("--- a profile with no history is never uploaded ---")
+	var c: Node = load(CLOUD).new()
+	# The live autoload, because that is what the guard actually reads. Reached
+	# through the tree rather than by name: a `--script` run compiles before the
+	# autoloads become global identifiers.
+	var p: Node = get_root().get_node("Profile")
+	var kept_matches: int = p.matches
+	var kept_words: int = p.words
+	var kept_runs: int = p.survival_runs
+	var kept_daily: Dictionary = p.daily.duplicate(true)
+	var kept_owned: Dictionary = p.owned.duplicate()
+
+	p.matches = 0
+	p.words = 0
+	p.survival_runs = 0
+	p.daily = {}
+	p.owned = {}
+	_expect("a fresh profile is not worth uploading", not c._worth_uploading())
+	# The state a new player sits in once the account has been read: signed in,
+	# nothing wrong, and nothing backed up because there is nothing to back up.
+	c.state = c.State.READY
+	_expect("and the row says so rather than claiming a backup",
+		c.note().contains("nothing to back up"))
+
+	# Anything that took playing to get flips it.
+	p.matches = 1
+	_expect("one match makes it worth uploading", c._worth_uploading())
+	p.matches = 0
+	p.words = 30
+	_expect("so do words typed in a mode that is not a match", c._worth_uploading())
+	p.words = 0
+	# A purchase counts even before the first match: a pack restored by StoreKit
+	# onto a new phone is real state worth writing down.
+	p.owned = {"premium": true}
+	_expect("and so does a purchase on its own", c._worth_uploading())
+
+	p.matches = kept_matches
+	p.words = kept_words
+	p.survival_runs = kept_runs
+	p.daily = kept_daily
+	p.owned = kept_owned
 	c.free()
 
 

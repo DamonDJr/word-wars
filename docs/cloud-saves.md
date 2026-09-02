@@ -105,6 +105,20 @@ The lines that mean something is wrong:
 | `gave up after 30s with N load(s) outstanding` | A download stalled. |
 | `a saved game came back empty` | Something wrote a nothing up there. |
 | `upload accepted but nothing is on the account` | The write went into a void — the container is not really working. |
+| `iCloud says there is nothing there (n/6)` | Normal on a fresh install for the first minute or so, while the container downloads. Only a problem if it reaches 6/6 on an account you know has a save. |
+| `nothing worth uploading yet` | Correct on a fresh install that has not played. It is refusing to write a blank over your history. |
+
+A healthy restore reads:
+
+```
+[Cloud] asking iCloud (this device: level 1, 0 matches)
+[Cloud] iCloud says there is nothing there (1/6) — not believing it yet
+[Cloud] asking iCloud again
+[Cloud] reading 1 saved game(s)
+[Cloud] read 2914 bytes
+[Cloud] cloud has level 12, 84 matches, 3210 words · this device has level 1, 0 matches, 0 words
+[Cloud] restored: level 12, 84 matches
+```
 
 Nothing uploads until a download has succeeded, so `still no answer from iCloud;
 asking again` once a minute means this device is not backing anything up yet.
@@ -122,8 +136,21 @@ across forty random pairs.
 
 **Nothing uploads before it has downloaded.** A fresh install has a blank
 profile, and pushing that first would overwrite the only copy of the record with
-nothing. `Cloud.push` refuses until a `pull` has completed in this session. That
-one line is the difference between this feature and a way to lose a save.
+nothing. `Cloud.push` refuses until a `pull` has completed in this session.
+
+**An empty answer from iCloud is not proof of an empty account.** This one cost
+a profile before it was understood. On a fresh install the iCloud container has
+not finished coming down, and `fetchSavedGames` against a container that has not
+synced returns an empty array in about half a second — no error, no wait, just
+nought saved games. Believed, that reads as "new account", and the blank profile
+of the install that came to *recover* the save gets written over it. So an empty
+answer is now re-asked `EMPTY_TRIES` times over a minute and a half before it is
+accepted, and `_pulled` stays false throughout.
+
+**A profile with no history is never uploaded.** Belt to that braces. An install
+that has played nothing has, by definition, nothing worth more than whatever is
+already on the account, so `_worth_uploading` refuses. Either guard alone would
+have prevented the loss.
 
 ```bash
 godot --headless --script tools/cloudtest.gd
