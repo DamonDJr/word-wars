@@ -255,7 +255,7 @@ const GRAIN := 0.05
 const VIGNETTE := 0.40
 
 enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
-	COUNTDOWN, PLAY, OVER, COSMETICS }
+	COUNTDOWN, PLAY, OVER, COSMETICS, BOARDS }
 
 ## What a match is for. A tutorial and a training run use the whole machine —
 ## real board, real typing, real rules — and differ only in what is switched off
@@ -532,7 +532,7 @@ func _scrollable() -> bool:
 		return false
 	match phase:
 		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
-				Phase.SETTINGS, Phase.LOBBY:
+				Phase.SETTINGS, Phase.LOBBY, Phase.BOARDS:
 			return true
 	return false
 
@@ -565,6 +565,8 @@ func _screen_laid() -> float:
 			return 124.0 + float(_settings_rows().size()) * 66.0 * _settings_fill() + 150.0
 		Phase.LOBBY:
 			return _lobby_laid()
+		Phase.BOARDS:
+			return _boards_laid()
 	return 0.0
 
 
@@ -1892,6 +1894,21 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_ESCAPE, KEY_C: _activate("title")
 		return
 
+	if phase == Phase.BOARDS:
+		# Left and right move between the two boards; up and down between the two
+		# crowds. Same shape as the cosmetics screen's slot arrows, and it means
+		# all four tabs are reachable without the mouse the way the buttons are.
+		match k.keycode:
+			KEY_LEFT, KEY_A: _activate("btab:0")
+			KEY_RIGHT, KEY_D: _activate("btab:1")
+			KEY_UP, KEY_W: _activate("bscope:%d" % Boards.GLOBAL)
+			KEY_DOWN, KEY_S: _activate("bscope:%d" % Boards.FRIENDS)
+			KEY_C: _activate("challenges")
+			KEY_G: _activate("gcboard")
+			KEY_R: _open_board_view()
+			KEY_ESCAPE, KEY_B: _activate("title")
+		return
+
 
 	# The summary is the payoff for the match you just played, and it used to
 	# share the title screen's keys — so 1, 2, 3, 4, 5, V, P and H all threw you
@@ -1950,9 +1967,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			# screen — and shuffling 3 through 7 under somebody who has learnt
 			# them costs more than the new door being last in the list.
 			KEY_8: _activate("survival")
+			# Nine for the same reason eight is eight: appended rather than
+			# renumbered, so nobody's fingers have to be retrained for a door
+			# that was added after they learnt the others.
+			KEY_9: _activate("boards")
 			KEY_V: _activate("versus")
 			KEY_S: _activate("survival")
 			KEY_P: _activate("mastery")
+			KEY_B: _activate("boards")
 			KEY_H:
 				show_rules = not show_rules
 				Sfx.play("back", 1.2)
@@ -4404,7 +4426,7 @@ func _back_action() -> String:
 		return "rules"
 	match phase:
 		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER, \
-				Phase.COSMETICS:
+				Phase.COSMETICS, Phase.BOARDS:
 			return "title"
 		Phase.LOBBY:
 			return "leave" if Link.connected else "title"
@@ -5520,6 +5542,8 @@ func _draw_overlay() -> void:
 			_draw_mastery(size)
 		elif phase == Phase.COSMETICS:
 			_draw_cosmetics(size)
+		elif phase == Phase.BOARDS:
+			_draw_boards(size)
 		elif phase == Phase.SETTINGS:
 			_draw_settings(size)
 		elif phase == Phase.COUNTDOWN:
@@ -7915,6 +7939,262 @@ func _draw_daily_board(size: Vector2, top: float, tint: Color) -> void:
 		"      ".join(bits), _over_size(12), tw, Color("#64dfdf"), 9)
 
 
+# --------------------------------------------------------- the board screen
+#
+# The daily summary's two Game Center rows say where you came. This screen is
+# the other half of that sentence: who else is there, and what they scored.
+#
+# It is the first thing in the game that draws other people's names, and it is
+# the first screen that can be *entirely* empty — no account, no network, a
+# board with nobody on it yet. So unlike the summary, which hides its Game
+# Center rows and still has a board underneath, this one has nothing to fall
+# back on and has to say what happened instead. Every one of those sentences is
+# in `_boards_message`, and there is a different one for each cause, because
+# "sign in to Game Center" and "nobody has played this yet" are not the same
+# problem and only one of them is the player's to fix.
+#
+# Two tabs by two tabs: which board, and which crowd. That is four requests and
+# the screen holds one at a time — `Boards.open_view` replaces whatever was
+# there, and a reply for a tab you have since left is dropped rather than drawn.
+
+## Which board and which crowd, held across a trip back to the title so
+## returning lands where you left rather than resetting to the daily.
+var board_tab := 0
+var board_scope := 0
+
+const BOARDS_ROW_H := 34.0
+const BOARDS_ROW_GAP := 5.0
+## Where the list starts, measured from the top of the header. Everything above
+## it — title, totals, the two rows of tabs — is fixed, so this is one number
+## rather than a running sum.
+const BOARDS_LIST_TOP := 232.0
+
+
+func _board_id() -> String:
+	return Boards.SURVIVAL_ID if board_tab == 1 else Boards.DAILY_ID
+
+
+## The daily is filtered to today because that is what the word means — every
+## run on it is one attempt at one shared board, and yesterday's is a different
+## contest. Survival is a lifetime best and its whole history *is* the ranking,
+## so it asks for all time; filtering it to today would show an empty board to
+## anybody who last played yesterday.
+func _board_time() -> int:
+	return Boards.ALL_TIME if board_tab == 1 else Boards.TODAY
+
+
+func _board_tint() -> Color:
+	return SURVIVAL_ACCENT if board_tab == 1 else Color("#ffd166")
+
+
+## Ask for whatever the tabs currently say. Every path onto this screen and
+## every tab press goes through here, so there is one place that can be wrong.
+func _open_board_view() -> void:
+	Boards.open_view(_board_id(), board_scope, _board_time())
+	Boards.refresh_challenges()
+
+
+## The header, offset by however far the screen has been dragged.
+func _boards_head() -> float:
+	return safe_top + _menu_offset(_boards_laid())
+
+
+## How tall the block of buttons under the list is.
+##
+## Counted from the same three conditions `_menu_buttons` builds them from, and
+## deliberately *not* by asking `_menu_buttons` — that calls `_boards_head`,
+## which calls `_boards_laid`, which is what wants this number. Two places that
+## have to agree, and the alternative is a stack overflow on a menu.
+func _boards_buttons_h() -> float:
+	var h := 0.0
+	if Boards.challenges_available():
+		h += 52.0
+	if Boards.available():
+		h += 48.0
+	if not portrait:
+		h += 40.0
+	return h
+
+
+## How many rows there is actually room for.
+##
+## Portrait scrolls, so the answer is all of them. Landscape does not —
+## `_scrollable` excludes it on every screen in the game — and twenty-five rows
+## is 975 units in a window 720 tall, so the list would run off the bottom and
+## take the buttons under it off-screen with it. There is nowhere to scroll to
+## reach them, so the list is cut instead. Same trade as `_daily_board_fit`.
+func _boards_fit() -> int:
+	var have := Boards.view_rows.size()
+	if _scrollable():
+		return have
+	var avail: float = get_viewport_rect().size.y - safe_top - safe_bottom \
+		- BOARDS_LIST_TOP - _boards_buttons_h() - 40.0
+	if not Boards.view_me.is_empty():
+		avail -= BOARDS_ROW_H + 14.0
+	return clampi(int(floor(avail / (BOARDS_ROW_H + BOARDS_ROW_GAP))), 0, have)
+
+
+## How tall the screen wants to be. Feeds the scroll limit, so it has to count
+## the message the list is replaced by when there are no rows — otherwise a
+## signed-out phone has a screen it cannot scroll to the buttons on.
+func _boards_laid() -> float:
+	return BOARDS_LIST_TOP + _boards_list_h() + _boards_buttons_h() + 60.0
+
+
+## The list itself, message included. One number, so the three places that need
+## it cannot drift.
+func _boards_list_h() -> float:
+	var rows := _boards_fit()
+	var h := float(rows) * (BOARDS_ROW_H + BOARDS_ROW_GAP)
+	if not Boards.view_me.is_empty():
+		h += BOARDS_ROW_H + 14.0
+	if rows == 0:
+		h += 64.0
+	return h
+
+
+## The bottom of the list, which is where the buttons start. Built out of
+## `_boards_list_h` for the same reason: a button that lands on the last row is
+## the failure this screen shares with every other one here.
+func _boards_foot() -> float:
+	return _boards_head() + BOARDS_LIST_TOP + _boards_list_h() + 20.0
+
+
+## Why the list is empty, in the player's terms. Empty string means there are
+## rows and nothing needs saying.
+##
+## The order matters: a signed-out device is also an empty board, and saying
+## "nobody has played this yet" to somebody who simply is not signed in sends
+## them looking for a problem in the wrong place.
+func _boards_message() -> String:
+	match Boards.view_state:
+		Boards.ViewState.OFF:
+			return "Leaderboards need an iPhone signed in to Game Center."
+		Boards.ViewState.LOADING:
+			return "Reading the leaderboard…"
+		Boards.ViewState.FAILED:
+			return Boards.view_status if Boards.view_status != "" \
+				else "Game Center would not answer."
+		Boards.ViewState.EMPTY:
+			if board_scope == Boards.FRIENDS:
+				return "None of your Game Center friends have posted a score here."
+			return "Nobody has posted a score here yet. Be the first."
+	return ""
+
+
+## What is under the title: the size of the field, or the streak, depending on
+## which board is up. Both are the reason to come back tomorrow, stated in the
+## terms of the board being looked at.
+func _boards_subtitle() -> String:
+	if Boards.view_total > 0:
+		var who := "friends" if board_scope == Boards.FRIENDS else "players"
+		var when := "today" if board_tab == 0 else "all time"
+		return "%s %s · %s" % [_commas(Boards.view_total), who, when]
+	if board_tab == 0:
+		var streak: int = Profile.daily_streak(daily_key())
+		if streak > 1:
+			return "%d days running" % streak
+	return ""
+
+
+func _draw_boards(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	var hy := _boards_head()
+	var tint := _board_tint()
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "LEADERBOARDS", 34, Color("#e6ecff"))
+	var sub := _boards_subtitle()
+	if sub != "":
+		_otext(_font, Vector2(cx, hy + 88.0), sub, 13, Color("#7c88ad"))
+
+	# The tabs are hit-tested out of `_menu_buttons` like everything else, but
+	# drawn here: a tab has a selected state and `_draw_menu_button` has no way
+	# to show one, so the two kinds of button are told apart by action prefix.
+	for b: Dictionary in _menu_buttons():
+		var act := String(b["action"])
+		if act.begins_with("btab:") or act.begins_with("bscope:"):
+			_draw_board_tab(b)
+		else:
+			_draw_menu_button(b)
+
+	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
+	var x0: float = cx - tw * 0.5
+	var y := hy + BOARDS_LIST_TOP
+
+	if Boards.view_rows.is_empty():
+		var msg := _boards_message()
+		if msg != "":
+			_text_fit_overlay(_font, Vector2(cx, y + 30.0), msg, 14, tw,
+				Color("#8d99bd"), 10)
+		return
+
+	for i in _boards_fit():
+		_draw_board_row(x0, y, tw, Boards.view_rows[i], tint)
+		y += BOARDS_ROW_H + BOARDS_ROW_GAP
+
+	# Your own row, when the page above does not already carry it. Detached by a
+	# gap rather than appended flush, because it is not rank 26 — it is wherever
+	# you actually came, and running it on would read as the list continuing.
+	if not Boards.view_me.is_empty():
+		y += 14.0
+		_draw_board_row(x0, y, tw, Boards.view_me, tint)
+
+
+## One row: rank on the left, score on the right, name in whatever is left
+## between them. Same panel language as the daily summary's board, because it is
+## the same kind of object and a player has already learned to read that one.
+func _draw_board_row(x0: float, y: float, tw: float, row: Dictionary,
+		tint: Color) -> void:
+	var mine: bool = bool(row.get("me", false))
+	var r := Rect2(x0, y, tw, BOARDS_ROW_H)
+	_panel(r, Color("#1b2444") if mine else Color("#121930"),
+		Color(tint if mine else Color("#2b3560"), 0.85 if mine else 0.5),
+		6.0, 2.0 if mine else 1.0)
+
+	var cy := r.get_center().y
+	var rank := int(row["rank"])
+	_otext_left(_font_bold, Vector2(x0 + 14.0, cy), "#%s" % _commas(rank), 14,
+		Color("#ffd166") if rank == 1 else Color("#7c88ad"))
+
+	var score := _commas(int(row["score"]))
+	var sm := _font_bold.get_string_size(score, HORIZONTAL_ALIGNMENT_LEFT, -1, 16)
+	_otext_left(_font_bold, Vector2(x0 + tw - sm.x - 14.0, cy), score, 16,
+		Color("#ffd166") if mine else Color("#e6ecff"))
+
+	# A Game Center display name is somebody else's free text — the one thing on
+	# this screen the game did not write — so it goes through the same filter as
+	# every other name the game repeats back.
+	var who := _show_name(String(row.get("name", "")))
+	if mine:
+		who = "YOU"
+	var nx := x0 + 84.0
+	var avail: float = (x0 + tw - sm.x - 26.0) - nx
+	if avail > 20.0:
+		_otext_left(_font_bold if mine else _font, Vector2(nx, cy), who,
+			_fitted_size(_font_bold if mine else _font, who, 14, avail, 10),
+			Color("#e6ecff") if mine else Color("#8d99bd"))
+
+
+## A tab. Selected is a lit border and a bright label; unselected is neither, so
+## the pair reads as one control with a current value rather than two buttons.
+func _draw_board_tab(b: Dictionary) -> void:
+	var r: Rect2 = b["rect"]
+	var on: bool = bool(b.get("on", false))
+	var hot: bool = _hover_action == String(b["action"])
+	var accent: Color = b["accent"]
+	_panel(r, Color("#1b2444") if (on or hot) else Color("#101733"),
+		Color(accent, 0.95 if on else (0.55 if hot else 0.18)), 8.0,
+		2.0 if on else 1.0)
+	var label := String(b["label"])
+	_otext(_font_bold, r.get_center(), label,
+		_fitted_size(_font_bold, label, 15, r.size.x - 16.0, 10),
+		Color("#e6ecff") if on else Color("#8d99bd"))
+
+
 ## What the match just did to your record. This is the hook — win or lose, the
 ## screen has something on it that went up — so it runs under both results, and
 ## a level-up gets announced rather than left to be noticed.
@@ -8344,6 +8624,68 @@ func _menu_buttons() -> Array:
 					"rect": Rect2(cx - 90.0, (joins[1] as Rect2).end.y + 16.0, 180.0, 44.0),
 					"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
 					"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.BOARDS:
+		var hy := _boards_head()
+		# Two rows of two, both centred on the same 304-wide block so the pair of
+		# controls reads as one stack rather than two unrelated toolbars.
+		var tabw: float = minf(148.0, (get_viewport_rect().size.x
+			- GRID_MARGIN * 2.0 - 8.0) * 0.5)
+		var tx: float = cx - tabw - 4.0
+		var boards_tabs: Array = [
+			[0, "DAILY", Color("#ffd166")],
+			[1, "SURVIVAL", SURVIVAL_ACCENT],
+		]
+		for i in boards_tabs.size():
+			var t: Array = boards_tabs[i]
+			out.append({
+				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 108.0, tabw, 40.0),
+				"key": "", "label": String(t[1]), "sub": "", "note": "", "rating": 0,
+				"on": board_tab == int(t[0]), "accent": t[2],
+				"action": "btab:%d" % int(t[0])})
+		var scopes: Array = [
+			[Boards.GLOBAL, "GLOBAL"],
+			[Boards.FRIENDS, "FRIENDS"],
+		]
+		for i in scopes.size():
+			var s: Array = scopes[i]
+			out.append({
+				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 156.0, tabw, 36.0),
+				"key": "", "label": String(s[1]), "sub": "", "note": "", "rating": 0,
+				"on": board_scope == int(s[0]), "accent": Color("#7bdff2"),
+				"action": "bscope:%d" % int(s[0])})
+
+		# Under the list. `_boards_foot` is measured off the same numbers the
+		# rows are drawn with, so these move down as the board fills up.
+		var bfoot := _boards_foot()
+		var bw: float = minf(360.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		# Only when there is somewhere to send them. Before a challenge is
+		# configured in App Store Connect this opens a dashboard with nothing in
+		# it, which is a worse answer than not offering the door.
+		if Boards.challenges_available():
+			var clabel := "Challenges"
+			if Boards.pending > 0:
+				clabel = "Challenges (%d)" % Boards.pending
+			out.append({
+				"rect": Rect2(cx - bw * 0.5, bfoot, bw, 44.0), "key": "C",
+				"label": clabel, "sub": "", "note": "", "rating": 0,
+				"accent": Color("#c77dff") if Boards.pending > 0
+					else Color("#8d99bd"),
+				"action": "challenges"})
+			bfoot += 52.0
+		# Out to Apple's version of this screen, which has the profiles, the
+		# avatars and the button that starts a challenge on it — all of which are
+		# Apple's to draw and none of which are worth rebuilding here.
+		if Boards.available():
+			out.append({
+				"rect": Rect2(cx - bw * 0.5, bfoot, bw, 40.0), "key": "G",
+				"label": "Open in Game Center", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#64dfdf"), "action": "gcboard"})
+			bfoot += 48.0
+		if not portrait:
+			out.append({
+				"rect": Rect2(cx - 90.0, bfoot + 4.0, 180.0, 36.0), "key": "ESC",
+				"label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.PRACTICE:
 		var doors2 := _practice_door_rects()
 		out.append({
@@ -8545,6 +8887,18 @@ func _survival_sub() -> String:
 		"" if Profile.survival_runs == 1 else "s"]
 
 
+## The line under the BOARDS door. A waiting challenge is the strongest reason
+## to go through it and gets said first; failing that, where today's daily run
+## actually put you, which is the number the door is offering to explain.
+func _boards_door_sub() -> String:
+	if Boards.pending > 0:
+		return "%d challenge%s waiting" % [Boards.pending,
+			"" if Boards.pending == 1 else "s"]
+	if Boards.rank > 0:
+		return "You are #%s on today's daily" % _commas(Boards.rank)
+	return "Where today's run puts you"
+
+
 func _title_modes() -> Array:
 	var fresh: bool = not bool(Profile.pref("taught"))
 	var dkey := daily_key()
@@ -8579,6 +8933,15 @@ func _title_modes() -> Array:
 		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 1],
 		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
 			Color("#f8961e"), 2],
+		# Next to MASTERY, and one band down from the modes, because it is the
+		# same kind of door: a record rather than a thing to play. Mastery is
+		# yours and this one is everybody's.
+		#
+		# Shown on every platform rather than only where Game Center answers.
+		# The screen behind it says why it is empty — see `_boards_message` — and
+		# a door that explains itself is worth more than a door that silently
+		# is not there on the machine the game is developed on.
+		["BOA", "BOARDS", _boards_door_sub(), "boards", Color("#5390d9"), 2],
 		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
 			Color("#64dfdf"), 2],
 	]
@@ -9334,6 +9697,35 @@ func _activate(action: String) -> void:
 		phase = Phase.MASTERY
 		_hover_action = ""
 		Sfx.play("count", 1.1)
+	elif action == "boards":
+		phase = Phase.BOARDS
+		_hover_action = ""
+		_scroll = 0.0
+		# Asked for on the way in rather than on a timer. The board is stale the
+		# moment it is drawn — somebody else is playing right now — and the one
+		# refresh that matters is the one that happens because you opened it.
+		_open_board_view()
+		Sfx.play("count", 1.1)
+	elif action.begins_with("btab:"):
+		var want := int(action.substr(5))
+		if want != board_tab:
+			board_tab = want
+			_scroll = 0.0
+			_open_board_view()
+		_hover_action = ""
+		Sfx.play("key", 1.2)
+	elif action.begins_with("bscope:"):
+		var scope := int(action.substr(7))
+		if scope != board_scope:
+			board_scope = scope
+			_scroll = 0.0
+			_open_board_view()
+		_hover_action = ""
+		Sfx.play("key", 1.2)
+	elif action == "challenges":
+		Boards.open_challenges()
+	elif action == "gcboard":
+		Boards.open_board(_board_id(), board_scope, _board_time())
 	elif action.begins_with("slot:"):
 		mastery_slot = posmod(mastery_slot + int(action.substr(5)), Profile.SLOTS.size())
 		_hover_action = ""

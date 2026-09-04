@@ -7,17 +7,31 @@ build, and Apple rejects a submission to an id that does not exist.
 Source of truth: `scripts/achievements.gd` (`AWARDS`, `PREFIX`) and
 `scripts/leaderboards.gd` (`DAILY_ID`, `SURVIVAL_ID`).
 
-Nothing here can break the game. Every failure path is silent and local — a
-missing leaderboard costs a rank row on the summary, a missing achievement is
-refused and logged. The game plays identically either way, which is also why
-none of this announces itself when it is wrong. See **Checking it worked**.
+**Challenges are the exception** and the only entry here that is not in the
+code. The game never names a challenge id — it opens Apple's challenge screen
+and counts what is waiting, and Apple matches challenges to scores by the
+*leaderboard* they hang off. So the two ids in section 2b can be anything, and
+have to match nothing; what they do have to be is the leaderboard's, which is
+the field directly under them.
+
+Nothing here can break the game. Every failure path is local — a missing
+leaderboard costs a rank row on the summary, a missing achievement is refused
+and logged. The game plays identically either way.
+
+One thing changed with the board screen: it is the first place a failure is
+*said out loud*. The summary hides its Game Center rows and still has a board
+underneath; the board screen has nothing to fall back on, so a missing
+leaderboard reads as **"this board is not set up yet"** on a screen the player
+opened on purpose. That sentence is the fastest signal in this document that
+something below is wrong. Everything else still has to be checked — see
+**Checking it worked**.
 
 ## Where it lives
 
 App Store Connect → **My Apps** → Word Wars → the **Game Center** section
 (under Services, or on the app's General page depending on the ASC revision).
-Leaderboards and Achievements are configured at the *app* level, not per
-version.
+Leaderboards, Challenges and Achievements are configured at the *app* level, not
+per version.
 
 New entries work in the **sandbox immediately** — a TestFlight or development
 build signed with your account will submit to them right away, so you can verify
@@ -38,8 +52,14 @@ all of this before shipping. They go public with the next released version.
 | Localisation | English, Display Name `Survival` |
 
 The game submits the score from a finished survival run, best-of held if you are
-signed out at the time (`Boards.submit_survival`). It never reads a rank back —
-no screen shows one yet — so a display name and the id are the whole of it.
+signed out at the time (`Boards.submit_survival`), and the board screen reads it
+back on the SURVIVAL tab — all time, not today, because a lifetime best that was
+set last week is still the best.
+
+The display name is still never shown inside the game — the tab is labelled
+`SURVIVAL` by `game.gd`, not by Apple — but it *is* what the player sees after
+tapping **Open in Game Center**, which the board screen now offers. Worth having
+right for that reason alone.
 
 ## 2. The daily leaderboard
 
@@ -60,6 +80,78 @@ score forever and GameKit filters it to `TODAY` for us, which is exactly the
 daily's ranking at no configuration cost. A recurring board would also work but
 its occurrences have to line up with local midnight, and the daily's midnight is
 the *player's* — there is no one schedule that matches.
+
+---
+
+## 2b. Challenges
+
+**This is the only thing in this document that brings players back on its own.**
+A challenge is a time-limited race between people who chose each other, and
+Apple sends the push notifications: when somebody takes your place, when your
+time is nearly up, when a challenge is issued to you. None of that is ours, none
+of it can be built in the game, and none of it needs a notification permission
+prompt from us.
+
+### It needs no code, and that is not an oversight
+
+Challenges sit *on top of* a leaderboard. `Boards.submit_daily` and
+`Boards.submit_survival` already feed every challenge running on those two
+boards, because Apple routes a submitted score into the challenges that score is
+eligible for. The game has been feeding challenges correctly since before any of
+this existed.
+
+What the game does have is `Boards.pending` — a count of challenges waiting for
+you — a badge for it on the BOARDS door, and a button that opens Apple's
+challenge screen. All of it is quiet and empty until the entries below exist.
+
+### The two entries
+
+Both must be **submitted for review** and approved before any player sees them,
+the same as an achievement. Up to 20 per app; two is plenty.
+
+| Field | Daily | Survival |
+| --- | --- | --- |
+| **Challenge ID** | `com.damonj.wordwars.ch.daily` | `com.damonj.wordwars.ch.survival` |
+| Reference Name | `Daily — Beat My Score` | `Survival — Beat My Score` |
+| Associated Leaderboard | `com.damonj.wordwars.daily` | `com.damonj.wordwars.survival` |
+| Title | `Daily Board` | `Survival` |
+| Duration options | 1 day, 3 days | 3 days, 1 week |
+| Repeatable | Yes | Yes |
+
+**The durations are the part worth thinking about.** A daily challenge longer
+than a few days is a race on a board that resets every midnight, so the
+scoreboard the challenge is judged on is not the one it started with — one and
+three days keep it inside a stretch of play somebody can actually remember
+starting. Survival has no clock and no reset, so it can afford the longer
+options, and wants them: a lifetime best does not move in an afternoon.
+
+`.ch.` is the segment that distinguishes these from the `.ach.` achievement ids,
+and — exactly like `.ach.` — it is the easiest thing to drop.
+
+### Minimum version
+
+Leave it unset for now. It exists so a challenge can be switched off for players
+on a build whose scoring differs, and Word Wars has not changed scoring since the
+boards went live. If scoring ever moves, set it that same day: a challenge is a
+direct comparison between two people, and it is the one place a scoring change
+is unfair rather than merely inconsistent.
+
+### Checking it worked
+
+Nothing in the game announces a challenge, so verify from the outside:
+
+1. With two Game Center accounts and a build on each, open **BOARDS → Open in
+   Game Center**, then challenge the other account from Apple's screen.
+2. The recipient's phone gets a notification from Game Center. That notification
+   is the entire retention feature — if it arrives, this works.
+3. On the recipient's build, **BOARDS** shows `Challenges (1)` and the door's
+   subtitle reads `1 challenge waiting`.
+4. Play the mode. The score submits through the path it always did, and Apple
+   scores the challenge from it — no extra call, and nothing in the log.
+
+If the badge never appears but the notification does, the count is the only
+broken part: `Boards.refresh_challenges` logs `[Boards] challenges refused: …`
+and everything else keeps working.
 
 ---
 
@@ -192,11 +284,29 @@ Then launch the game and play one match. What you are looking for:
 | `[Awards] report refused: …` | At least one id does not exist in ASC, or is misspelled. Apple refuses the whole batch, so one bad id hides the other sixteen. |
 | `Boards: no survival leaderboard com.damonj.wordwars.survival` | The leaderboard id is missing or misspelled. |
 | `[Boards] survival submit refused: …` | The board exists but Apple rejected the score. |
+| `[Boards] challenges refused: …` | The challenge *count* could not be read. The challenges themselves still work — this only costs the badge. |
+
+The board screen is faster than the log for the two leaderboards, because it is
+the one screen that says what went wrong in words. Open **BOARDS** and read it:
+
+| On screen | Meaning |
+| --- | --- |
+| A list of names and scores | That board is live and this is what it holds. |
+| `Nobody has posted a score here yet.` | The board exists and is empty — correct on the day it goes up. |
+| `this board is not set up yet` | The id is missing from ASC, or misspelled. Same cause as the `no … leaderboard` warning above, said out loud. |
+| `sign in to Game Center to see this board` | The device, not the configuration. |
+| `Leaderboards need an iPhone signed in to Game Center.` | A desktop build. Expected, and not a fault. |
+
+Check both tabs and both scopes — `SURVIVAL` and `FRIENDS` each reach a
+different combination, and the friends scope is a separate permission that can
+be refused on its own.
 
 `achievements.gd` clears its `_sent` cache on a refusal and retries on the next
 profile change, so fixing an id in ASC takes effect on the next match without a
 rebuild.
 
-To see them as a player does, open the Game Center dashboard from the OS — the
-game has no achievements screen of its own, by design. The mastery screen is the
-game's own record and does not need Apple to be reachable.
+To see the *achievements* as a player does, open the Game Center dashboard from
+the OS — the game still has no achievements screen of its own, by design. The
+mastery screen is the game's own record and does not need Apple to be reachable.
+The leaderboards are the one part that now has both: the game's own screen, and
+**Open in Game Center** on it for Apple's.

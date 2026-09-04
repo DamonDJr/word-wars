@@ -100,6 +100,19 @@ if ! grep -q "the Game Center API matches" <<<"$GC"; then
 	exit 1
 fi
 
+# The screen built on top of those boards. `_scrollable` is portrait-only across
+# the whole game, so a landscape list that overruns has nowhere to scroll to —
+# including past the button that leaves the screen. Checked here because the
+# rows only exist on a signed-in device and the layout does not.
+echo "==> Leaderboard screen check"
+BOARDS=$("$(command -v godot)" --headless --script tools/boardstest.gd 2>&1 || true)
+if ! grep -q "the board screen holds up" <<<"$BOARDS"; then
+	echo "FAILED: the leaderboard screen does not fit the window." >&2
+	grep -E "FAILED" <<<"$BOARDS" >&2 || true
+	echo "        Run: godot --headless --script tools/boardstest.gd" >&2
+	exit 1
+fi
+
 # You could win a match and finish second on points, because the two hardest
 # things in the game paid nothing. These bonuses are what tie the scoreboard back
 # to the result, and focus fire is invisible by construction — the only symptom

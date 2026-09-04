@@ -54,6 +54,14 @@ const CONNECTIONS := {
 	"GKLocalPlayer": {
 		"invite_accepted": "_on_invite_accepted",
 		"match_requested_with_other_players": "_on_match_requested",
+		# Challenges. All three go to one handler in `leaderboards.gd` because
+		# all three mean the same thing to it — the count is stale — but they do
+		# not all carry the same number of arguments: `challenge_received` sends
+		# two and the other two send three. The handler's parameters are all
+		# optional for exactly that reason, and this is what proves it still is.
+		"challenge_received": "_on_challenge_moved",
+		"challenge_completed": "_on_challenge_moved",
+		"challenge_other_player_completed": "_on_challenge_moved",
 	},
 	# Apple's own matchmaking screen, under test. Its `did_find_match` carries
 	# only the match — no error argument — which is exactly the arity trap that
@@ -112,6 +120,18 @@ const CALLS := {
 		"submit_score": 4,
 		"load_local_player_entries": 5,
 	},
+	# The board screen's way out to Apple's own screens. Both static.
+	"GKGameCenterViewController": {
+		"show_type": 1,
+		"show_leaderboard_time_period": 3,
+	},
+	# Static, and takes the callback. The count is what a received challenge
+	# is worth on a menu badge.
+	"GKChallenge": {"load_received_challenges": 1},
+	# iOS 26 only, and it takes a completion handler rather than nothing — which
+	# the documentation does not say and the registration does. Calling it with
+	# no arguments is a parse error, so this is pinned before it is a surprise.
+	"GKAccessPoint": {"trigger_for_challenges": 1},
 }
 
 ## class -> properties the manager reads or writes.
@@ -121,7 +141,9 @@ const PROPERTIES := {
 	# `expected_player_count` and is the one that says whether a broadcast has
 	# anywhere to go.
 	"GKMatch": ["expected_player_count", "players"],
-	"GKPlayer": ["game_player_id", "display_name"],
+	# `alias` is what the board screen falls back to when `display_name` is
+	# empty, which it is for a player who has never set one.
+	"GKPlayer": ["game_player_id", "display_name", "alias"],
 	"GKMatchRequest": ["min_players", "max_players", "invite_message", "recipients"],
 	# The mode picks which of Apple's three options the sheet offers. Default is
 	# the full screen, which is the one with Invite Friends on it.
@@ -134,7 +156,13 @@ const PROPERTIES := {
 	# The only thing the summary reads off an entry. A rank that silently stops
 	# arriving leaves the two Game Center rows off the board and looks exactly
 	# like a device that is not signed in.
-	"GKLeaderboardEntry": ["rank", "score"],
+	#
+	# `player` is the board screen's addition: a page of ranks and scores with
+	# nobody's name against them is not a leaderboard.
+	"GKLeaderboardEntry": ["rank", "score", "player"],
+	# What a received challenge is counted by. Only `state` is read — the rest
+	# of a challenge is drawn by Apple, on Apple's screen.
+	"GKChallenge": ["state"],
 }
 
 ## Callbacks Game Center invokes on us that are not signals, so nothing checks
@@ -157,10 +185,45 @@ const BOARD_CALLBACK_ARITY := {
 	# `invite_accepted` bug over again.
 	"_on_global": 4,
 	"_on_friends": 4,
+	# The board screen's, and these two are the ones with a trap in them: both
+	# are handed to Apple with `.bind()`, so what they must accept is what Apple
+	# sends *plus* what was bound. Godot appends bound arguments at the end, and
+	# a mismatch throws inside the completion handler exactly like every other
+	# entry in this table.
+	#
+	# `(Array boards, Variant error)` + `(board_id, seq)`.
+	"_on_view_board_loaded": 4,
+	# `(GKLeaderboardEntry local, Array entries, Variant range, Variant error)`
+	# + `(seq)`.
+	"_on_view_entries": 5,
+	# `(Array[GKChallenge] challenges, Variant error)`. Nothing bound.
+	"_on_challenges_loaded": 2,
+	# The access point's completion handler, which takes nothing.
+	"_on_dashboard_closed": 0,
 }
 
+## Handlers in `leaderboards.gd` that are connected to Apple's *signals* rather
+## than handed to Apple as Callables. They are checked by
+## `_signals_match_handlers` against the arity in `CONNECTIONS`, which is why
+## they carry no number here — but they still have to be loaded out of the
+## second file, or the check silently cannot find them and fails on every one.
+const BOARD_SIGNAL_HANDLERS := ["_on_challenge_moved"]
+
 ## Scope and time constants the daily board asks Apple for by name.
-const BOARD_CONSTANTS := ["GLOBAL", "FRIENDS_ONLY", "TODAY"]
+const BOARD_CONSTANTS := ["GLOBAL", "FRIENDS_ONLY", "TODAY", "ALL_TIME"]
+
+## `leaderboards.gd` copies Apple's scope and time values into its own constants
+## rather than naming `GKLeaderboard` — `game.gd` picks a scope and `game.gd`
+## runs on Linux, where that class is a stub. Copied numbers are the kind that
+## are right until the day they are not, so they are checked against the
+## registration here: our name -> Apple's name.
+const BOARD_CONSTANT_VALUES := {
+	"GLOBAL": "GLOBAL",
+	"FRIENDS": "FRIENDS_ONLY",
+	"TODAY": "TODAY",
+	"WEEK": "WEEK",
+	"ALL_TIME": "ALL_TIME",
+}
 
 var fails := 0
 var handlers := {}
@@ -183,7 +246,8 @@ func _init() -> void:
 	# silent overwrite.
 	var boards: GDScript = load(BOARDS)
 	for m in boards.get_script_method_list():
-		if not BOARD_CALLBACK_ARITY.has(m.name):
+		if not BOARD_CALLBACK_ARITY.has(m.name) \
+				and not BOARD_SIGNAL_HANDLERS.has(m.name):
 			continue
 		if handlers.has(m.name):
 			_expect("%s is not a handler in both files" % m.name, false)
@@ -212,7 +276,8 @@ func _classes_exist() -> void:
 	print("--- the plugin is installed ---")
 	var names := ["GameCenterManager", "GKLocalPlayer", "GKPlayer", "GKMatch",
 		"GKMatchmaker", "GKMatchRequest", "GKInvite", "GKLeaderboard",
-		"GKLeaderboardEntry",
+		"GKLeaderboardEntry", "GKGameCenterViewController", "GKChallenge",
+		"GKAccessPoint",
 		"StoreKitManager", "StoreProduct", "StoreTransaction"]
 	for n in names:
 		_expect("%s is registered" % n, ClassDB.class_exists(n))
@@ -300,6 +365,33 @@ func _callbacks_take_what_apple_sends() -> void:
 	for name in BOARD_CONSTANTS:
 		_expect("GKLeaderboard.%s exists" % name,
 			ClassDB.class_has_integer_constant("GKLeaderboard", name))
+
+	print("--- and the scopes we copied still say what Apple says ---")
+	var boards_script: GDScript = load(BOARDS)
+	var ours: Dictionary = boards_script.get_script_constant_map()
+	for mine in BOARD_CONSTANT_VALUES:
+		var theirs: String = BOARD_CONSTANT_VALUES[mine]
+		if not ours.has(mine):
+			_expect("Boards.%s exists" % mine, false)
+			continue
+		if not ClassDB.class_has_integer_constant("GKLeaderboard", theirs):
+			_expect("GKLeaderboard.%s exists" % theirs, false)
+			continue
+		_expect("Boards.%s == GKLeaderboard.%s" % [mine, theirs],
+			int(ours[mine]) == ClassDB.class_get_integer_constant(
+				"GKLeaderboard", theirs))
+
+	# The one number in `leaderboards.gd` that cannot be checked this way.
+	#
+	# (See `BOARD_SIGNAL_HANDLERS` for the other half of what this file pins in
+	# `leaderboards.gd` — the handlers connected to Apple's signals rather than
+	# handed to it as Callables.)
+	# `GKChallenge` documents a `ChallengeState` enum and registers no integer
+	# constants at all, so `CHALLENGE_PENDING` is Apple's published value typed
+	# out by hand. If the plugin ever binds the enum, this fails and the constant
+	# should be deleted in favour of the real one.
+	_expect("GKChallenge still binds no constants",
+		ClassDB.class_get_integer_constant_list("GKChallenge", true).is_empty())
 
 
 func _game_takes_what_the_manager_sends() -> void:
