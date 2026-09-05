@@ -742,7 +742,19 @@ func _ready() -> void:
 	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
 	Ads.finished.connect(_on_ad_finished)
-	
+	# Re-queue the reminders from what is true now.
+	#
+	# On every launch, not only after a daily run. These are local notifications
+	# sitting on the device with a delay on them, so the queue is a snapshot of
+	# what was true when it was written — and without this the only thing that
+	# ever rewrote it was finishing a daily. Somebody who played yesterday, opened
+	# the game today and did not play would keep a stale reminder and never get
+	# the one about the streak they are in the middle of dropping.
+	#
+	# `refresh` cancels before it schedules, so launching ten times does not
+	# leave ten copies, and it is a no-op with no plugin behind it.
+	Notify.refresh()
+
 	randomize()
 	_font = ThemeDB.fallback_font
 	var fv := FontVariation.new()
@@ -3628,6 +3640,18 @@ func _finish_daily() -> void:
 	Sfx.play("win" if survived else "lose")
 	Haptics.fire("win" if survived else "life")
 	WordBank.free_run()
+	# The first moment a reminder has anything true to say. The player has now
+	# seen the board, knows there is one a day, and — after this run is banked —
+	# may have a streak worth defending. Asked here rather than at launch because
+	# iOS offers the permission dialog once per install and never again, and a
+	# dialog put up before any of that is a dialog about nothing. `offer_after_daily`
+	# is a no-op on every call after the first.
+	Notify.offer_after_daily()
+	Notify.refresh()
+	# Finishing today's board with a streak going is one of the three good moments
+	# in this game. See `review.gd` for why the bar is this high.
+	if survived and Profile.daily_streak(daily_key()) >= 3:
+		Reviews.maybe_ask("a %d-day daily streak" % Profile.daily_streak(daily_key()))
 
 
 ## Hand the ad budget whatever this run has played since it was last asked.
@@ -3694,6 +3718,13 @@ func _finish_survival() -> void:
 	winner = "YOU" if beat else ""
 	Sfx.play("win" if beat else "lose")
 	Haptics.fire("win" if beat else "life")
+	# A record that just fell is the best moment this mode has to offer, and
+	# every survival run otherwise ends in death — so this is the only version
+	# of "something good happened" survival can produce. All that is decided
+	# here is that it was a high point; the budget and the how-often live in
+	# `review.gd`.
+	if beat:
+		Reviews.maybe_ask("a survival record")
 
 	# Whatever the last life cost, before the break that follows it is decided:
 	# the seconds a player has just spent are the ones that should be paying for
@@ -3947,6 +3978,16 @@ func _record_mastery() -> void:
 	})
 
 	earned = _earned_since(was_xp, was_level, was_unlocked)
+
+	# The best moment the game has: beating another person. Rare enough at this
+	# population to be worth one of three yearly slots on its own, and the one
+	# result nobody can put down to an easy bot.
+	#
+	# Only a real opponent, and only a win. A CPU match is not the same feeling
+	# and there are unlimited numbers of them; a loss is not a moment to ask
+	# anybody anything.
+	if winner == "YOU" and net_active() and difficulty == "Versus":
+		Reviews.maybe_ask("beating a person in versus")
 
 
 ## What banking a run just bought, for the summary's mastery strip.
@@ -6066,6 +6107,17 @@ func _settings_defs() -> Array:
 	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))])
+	# Only where there is something to switch. On a build with no notification
+	# plugin this row could not do anything either way, and a dead switch in
+	# settings is worse than a setting that is not offered.
+	#
+	# The note says what will actually arrive, because "Reminders" on its own is
+	# a promise of unknown size and the honest answer — two, both about the daily
+	# board — is a better argument for leaving it on than anything vaguer.
+	if Notify.available():
+		defs.append(["notify", "toggle", "Daily reminders",
+			"the new board, and a streak about to lapse",
+			Notify.enabled()])
 	# There was a name field here, labelled "shown to other players". It was not
 	# shown to anybody. It belonged to the netfox lobby, where a typed name was
 	# sent in the handshake; the Game Center path never sends it and never did —
@@ -6235,6 +6287,15 @@ func _change_setting(key: String) -> void:
 			Sfx.play("key", 1.2)
 		else:
 			Sfx.play("reject", 1.2)
+		return
+	if key == "notify":
+		# Not a plain pref flip. Switching this on for the first time is what
+		# raises the iOS permission dialog, and the row must read off until that
+		# comes back granted — `Notify.enabled()` wants both our switch and the
+		# system's, so a player who says "Don't Allow" sees the toggle stay off
+		# rather than a switch that claims to be on and sends nothing.
+		Notify.set_enabled(not Notify.enabled())
+		Sfx.play("count", 1.3 if Notify.enabled() else 0.9)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
 			or key == "haptics":
