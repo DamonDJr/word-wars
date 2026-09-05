@@ -128,6 +128,31 @@ options, and wants them: a lifetime best does not move in an afternoon.
 `.ch.` is the segment that distinguishes these from the `.ach.` achievement ids,
 and — exactly like `.ach.` — it is the easiest thing to drop.
 
+### The default image, which is not an icon
+
+Every challenge needs one, and **it is nothing like the achievement art**:
+
+> .jpeg, .jpg or .png · **3840 x 2160** · at least 72 ppi · **no transparency**
+> · RGB
+
+Sixteen-by-nine, in 4K, landscape. An achievement is a 1024 square. Reaching
+for one of the seventeen icons here does not work — it is the wrong shape by a
+mile, and there is no daily or survival icon among them anyway.
+
+Both are made and sitting in Nextcloud under `ChallengeImages/`, built from the
+game's own furniture rather than drawn fresh: the block-and-stamp treatment the
+title screen names its modes with (`DAI`, `SUR`), the wordmark set in
+`RubikGlitch`, the `TIER_COLORS` ramp on the blocks, and the drifting decor from
+behind the menus. Gold for the daily and `SURVIVAL_ACCENT` red for survival, the
+same two colours those modes wear everywhere else.
+
+The composition is centred inside the middle 80% of the frame. Apple has not
+published what it crops or overlays on this image, so nothing load-bearing is
+near an edge.
+
+A **localised** image can be set per language and falls back to the default when
+it is not. There is only English here, so the default is the whole of it.
+
 ### Minimum version
 
 Leave it unset for now. It exists so a challenge can be switched off for players
