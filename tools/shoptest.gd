@@ -110,6 +110,18 @@ func _ads_stop() -> void:
 	P.owned = {}
 	P.since_ad = 0
 	P.ad_gap = 0
+	# The clock budget, zeroed too. `ad_due` is an `or` of two budgets — matches
+	# played and seconds played — and this block is only asking about the first
+	# one, so leaving the second alone does not neutralise it, it lets it answer.
+	#
+	# The autoload has already loaded the real `profile.cfg` by the time
+	# `save_path` is redirected here, so `play_since_ad` arrives holding however
+	# long whoever owns this machine has played since their last break. Anything
+	# over a rolled five-to-eight minutes makes the very first assertion fail on
+	# a developer who plays the game and pass on one who does not — which is
+	# exactly the kind of failure that gets blamed on the last thing committed.
+	P.play_since_ad = 0.0
+	P.ad_gap_seconds = 0.0
 	# The gap is rolled, so the test cannot name the match it lands on — only the
 	# window it has to land inside. One short of the minimum is never due; the
 	# maximum always is.

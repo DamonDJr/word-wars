@@ -52,8 +52,54 @@ const TOPOUT_BONUS := 400
 ## And taking the match. Flat, plus what is left of your own boards — a win with
 ## all three lives intact is a different win from one that came down to the wire,
 ## and the score should be able to say which it was.
-const WIN_BONUS := 900
-const LIFE_BONUS := 250
+##
+## Raised from 900 and 250, and measured rather than guessed. Bot against bot
+## over thirty-two matches, the side that *lost* finished ahead on points in six
+## of eighteen losses, by as much as thirteen thousand. The old pair topped out
+## at 8,250 and could not cover that.
+##
+## Raised again for the case bots cannot produce: a person narrowly beating
+## Wordsmith. From a real match — 67,974 in play against its 97,192, won with
+## one life left — the win has to be worth nearly thirty thousand to put the
+## winner top of the table, and the old bonus paid 5,750.
+const WIN_BONUS := 2000
+const LIFE_BONUS := 400
+
+## And what the winning offence was worth, per cell of block delivered.
+##
+## The flat bonuses above say "you won" and "you won comfortably". Neither says
+## anything about the match being hard, so a grinding win over somebody good
+## paid exactly what a walkover paid — and it is the grinding wins against a
+## high-scoring opponent that the scoreboard was getting wrong.
+##
+## **Winning doubles what your offence was worth.** That is the whole rule, and
+## it is why this number is what it is: `game.gd` pays `STRIKE_PAY` — 80 — for
+## every cell delivered during the match, and 16 through `flat()` is 16 x SCALE,
+## which is 80 again. Win and every block you threw pays twice.
+##
+## A rule rather than a tuned constant on purpose. The first attempt at this was
+## 4 a cell, picked to cover the worst deficit a bot could produce, and it was
+## nowhere near enough for the one a person produced — bots do not narrowly beat
+## Wordsmith, so the sample never contained the case that mattered. A number
+## chosen to satisfy a measurement is only ever right for the measurement;
+## "winning doubles your offence" stays right when the bots change.
+##
+## Cells, because a cell of block is the unit of damage everywhere else in this
+## file. A close match runs to three or four hundred of them, so this is worth
+## twenty-five to thirty thousand to the winner — deliberately large, because
+## the deficits it exists to close are.
+##
+## Paid only to the winner, and deliberately not to everyone. Damage is already
+## paid to whoever dealt it, in real time, at `STRIKE_PAY` a cell — this is a
+## second look at the same number from the other end of the match, and its job
+## is to separate the winner from a loser who out-typed them. Paying it to both
+## sides would move both scores and settle nothing.
+##
+## Note that damage does *not* decide the match on its own: in those thirty-two
+## matches the losing side had dealt more of it about half the time. Somebody
+## can out-damage you and still drown. That is why this tops up the win rather
+## than replacing it.
+const WIN_DAMAGE_STEP := 16
 
 
 ## Every flat bonus is quoted above in the same raw units a word's letters are

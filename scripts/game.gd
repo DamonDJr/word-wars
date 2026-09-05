@@ -476,6 +476,11 @@ class SideState extends RefCounted:
 	var life_flash := 0.0
 	var salvos := 0
 	var salvo_flash := 0.0
+	## Cells of block this side has delivered, all match. The one honest measure
+	## of offence in the game: a match is won by burying somebody, and this is
+	## how much burying was done. Counted in cells rather than attacks so a 4x3
+	## is worth twelve times a 1x1, which is what it costs to answer.
+	var dealt := 0
 	## Owed by a COMBO to the NEXT attack, and spent there.
 	## Power word name -> times earned this match, and the longest word played.
 	var power_tally: Dictionary = {}
@@ -1438,6 +1443,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 		s.life_flash = 0.0
 		s.salvos = 0
 		s.salvo_flash = 0.0
+		s.dealt = 0
 		s.tier_bonus = 0
 		s.slowdown = 0.0
 		s.powers_fired = 0
@@ -2214,7 +2220,9 @@ func _strike(attacker: SideState, defender: SideState, word: String, tier: int,
 	if not solo_run():
 		_send_block(defender, word, tier, delay, attacker)
 		_throw(attacker, defender, tier, text)
-	var pay := _cells(tier) * STRIKE_PAY
+	var cells := _cells(tier)
+	attacker.dealt += cells
+	var pay := cells * STRIKE_PAY
 	attacker.score += pay
 	if attacker == player:
 		_pop_score("+%s" % _commas(pay), _tier_name(tier), pay)
@@ -3795,6 +3803,27 @@ func _lose_life(side: SideState) -> void:
 		side.label, side.lives, "life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
 
 
+## Which side actually won, as an object rather than as the label `winner` holds.
+##
+## Decided the same way `_draw_scoreboard` decides which row to put the winner's
+## stripe on, and deliberately so: the row that is marked as having won and the
+## row that gets paid for winning have to be the same row, and two pieces of
+## code answering that question separately is how they stop being.
+##
+## Null is a real answer. `_end_match` can set `winner` to the literal "CPU"
+## when a match ends with nobody standing — a simultaneous topout — and no side
+## is called that. Nobody is paid in that case, which is what happened before
+## any of this existed, so it degrades to the old behaviour rather than to a
+## crash.
+func _champion() -> SideState:
+	for s: SideState in sides:
+		if not s.in_match:
+			continue
+		if (s == player) if winner == "YOU" else (s.label == winner):
+			return s
+	return null
+
+
 func _end_match(loser: SideState) -> void:
 	phase = Phase.OVER
 	over_age = 0.0
@@ -3814,17 +3843,33 @@ func _end_match(loser: SideState) -> void:
 	# Taking the match is worth points, and how comfortably you took it is worth
 	# more. Without this a win and a loss scored the same, which is why the
 	# scoreboard could crown somebody who had just lost.
+	#
+	# Paid to whoever won, which is newer than it sounds. It used to be gated on
+	# `winner == "YOU"`, so the bonus existed only for the player and every other
+	# board on the scoreboard was quoted without one. That is not a scoreboard —
+	# it is two different scoring systems printed in one table, and it is why a
+	# player could lose and still be top of it. Measured before it was changed:
+	# the loser finished ahead on points in six of eighteen losses.
+	#
+	# The winning side is found the same way `_draw_scoreboard` decides which row
+	# to mark, so the row with the winner's stripe on it is always the row that
+	# got paid.
 	win_spoils = 0
-	if mode == Mode.NORMAL and winner == "YOU" and player.alive:
-		var lives_left: int = maxi(0, player.lives)
+	var champion := _champion()
+	if mode == Mode.NORMAL and champion != null and champion.alive:
+		var lives_left: int = maxi(0, champion.lives)
 		var spoils: int = Scoring.flat(
-			Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS)
-		player.score += spoils
-		win_spoils = spoils
-		_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
-		score_kick = 1.0
-		_log("victory — +%s (%d %s left)" % [_commas(spoils), lives_left,
-			"life" if lives_left == 1 else "lives"], Color("#ffd166"))
+			Scoring.WIN_BONUS + lives_left * Scoring.LIFE_BONUS
+			+ champion.dealt * Scoring.WIN_DAMAGE_STEP)
+		champion.score += spoils
+		if champion == player:
+			win_spoils = spoils
+			_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
+			score_kick = 1.0
+		_log("%s wins — +%s (%d %s left, %d cells dealt)" % [
+			champion.label if champion != player else "you", _commas(spoils),
+			lives_left, "life" if lives_left == 1 else "lives", champion.dealt],
+			Color("#ffd166"))
 
 	Sfx.play("win" if winner == "YOU" else "lose")
 	Haptics.fire("win" if winner == "YOU" else "lose")
@@ -7424,14 +7469,59 @@ func _rules_extra() -> float:
 	return 12.0 + 16.0 + float(_read_size(15)) + 9.0 + float(POWER_ORDER.size()) * per
 
 
+## The flourish a win gets when no victory effect has been equipped.
+##
+## All four in `Cosmetics` are bought or unlocked, so the *default* state of the
+## game — somebody winning their first match — was a gold word on the same dark
+## screen they had spent the match losing on. That is the one moment the game
+## most needs to react, and it was the one moment nothing happened.
+##
+## Deliberately less than the paid four: a single shockwave on arrival and a
+## slow bloom that stays. It reads as the screen responding rather than as an
+## effect playing, so `confetti` and `supernova` still have somewhere to go.
+func _draw_default_victory(size: Vector2, at: Vector2, tint: Color) -> void:
+	var reach: float = maxf(size.x, size.y)
+	# One pass outward, easing to a stop, over about a second. Driven by
+	# `over_age` rather than the wall clock so it fires on arrival and then is
+	# done — a loop would turn it into wallpaper.
+	var t: float = clampf(over_age / 1.15, 0.0, 1.0)
+	if t < 1.0:
+		var e: float = 1.0 - pow(1.0 - t, 3.0)
+		for i in 3:
+			var lag: float = clampf(e - float(i) * 0.07, 0.0, 1.0)
+			if lag <= 0.0:
+				continue
+			_overlay.draw_arc(at, reach * 0.62 * lag, 0.0, TAU, 48,
+				Color(tint, (1.0 - lag) * 0.28), 3.0 - float(i), true)
+	# And a bloom that stays, so the screen keeps the colour of the result
+	# instead of going back to the dark it had while the match was still in
+	# doubt. Very low alpha, stacked — the same trick the playfield's theme glow
+	# uses, and for the same reason: it works on the compatibility renderer.
+	# Eight steps rather than five, and the alpha taken all the way to zero at
+	# the outside. Five left the last circle still faintly visible where it
+	# stopped, which drew a hard rim across the screen — a glow with an edge on
+	# it reads as a shape, and the shape was a circle nobody asked for.
+	var pulse: float = 0.5 + 0.5 * sin(over_age * 2.0)
+	for i in 8:
+		var f := float(i) / 7.0
+		_overlay.draw_circle(at, reach * (0.10 + f * 0.55),
+			Color(tint, 0.030 * (1.0 - f) * (0.7 + 0.3 * pulse)))
+
+
 func _draw_gameover(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	# Nearly opaque. The boards used to show faintly through, which was pleasant
-	# until the summary grew a score of its own — the live one underneath sits in
+	# Opaque. The boards used to show faintly through, which was pleasant until
+	# the summary grew a score of its own — the live one underneath sits in
 	# almost the same place, and two different numbers ghosting through each
 	# other reads as a rendering fault.
+	#
+	# 0.985 was the first attempt at that and it did not finish the job: at
+	# 1.5% the HUD's clock and score were still legible, and once the headline
+	# moved down the phone they were sitting on empty background at the top of
+	# the screen with nothing over them. There is nothing behind this worth
+	# seeing, so none of it is let through.
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.985), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), bg_top, true)
 
 	var win := winner == "YOU"
 	var tint := Color("#ffd166") if win else Color("#ff6b6b")
@@ -7447,15 +7537,25 @@ func _draw_gameover(size: Vector2) -> void:
 	# way is not a celebration.
 	if win:
 		var t := Time.get_ticks_msec() / 1000.0
+		# Centred on the headline, which has moved a long way down on a phone —
+		# the two effects that take a point were pinned at 150 and fired off the
+		# top of the screen above it.
+		var burst := Vector2(cx, 150.0 * _over_lead())
 		match Profile.worn("victory"):
 			"confetti":
 				Cosmetics.victory_confetti(_overlay, size, t, tint)
 			"rays":
-				Cosmetics.victory_rays(_overlay, Vector2(cx, 150.0), t, tint)
+				Cosmetics.victory_rays(_overlay, burst, t, tint)
 			"shatter":
-				Cosmetics.victory_shatter(_overlay, Vector2(cx, 150.0), t, tint)
+				Cosmetics.victory_shatter(_overlay, burst, t, tint)
 			"supernova":
-				Cosmetics.victory_supernova(_overlay, size, Vector2(cx, 200.0), t, tint)
+				Cosmetics.victory_supernova(_overlay, size,
+					Vector2(cx, 200.0 * _over_lead()), t, tint)
+			_:
+				# Nothing equipped, which is every new player and was therefore
+				# the default experience of winning: a gold word on the same dark
+				# screen you had been losing on. See `_draw_default_victory`.
+				_draw_default_victory(size, burst, tint)
 
 	# A sprint has nothing to win. "YOU WIN" over a solo run against a clock is
 	# the summary claiming a rival was beaten, which is the same lie the LESSON
@@ -7473,29 +7573,69 @@ func _draw_gameover(size: Vector2) -> void:
 	# Sized down past the eight characters the slot was cut for, so the longest
 	# of them is no wider on screen than the shortest — 68 was measured against
 	# "YOU LOSE" and a phone has no margin to spare.
-	var hsize := 68 if headline.length() <= 8 else 52
-	_otext(_font_bold, Vector2(cx, 132), headline, hsize, tint)
+	var lead := _over_lead()
+	# Fitted rather than stepped between two sizes. The headline is the biggest
+	# thing on the screen and a phone is 720 wide, so "TOPPED OUT" at a fixed 68
+	# ran into both margins; this lets the long ones shrink and leaves the short
+	# ones — the ones worth shouting — as large as the width allows.
+	var hsize := _fitted_size(_font_bold, headline, _over_size(68),
+		size.x - GRID_MARGIN * 2.0, 34)
+	_otext(_font_bold, Vector2(cx, 132.0 * lead), headline, hsize, tint)
 	var wm := _font_bold.get_string_size(headline, HORIZONTAL_ALIGNMENT_LEFT, -1, hsize)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170, wm.x, 3), Color(tint, 0.45), true)
+	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170.0 * lead, wm.x,
+		3.0 * _over_fill()), Color(tint, 0.45), true)
 
 	# The score is the headline, above the tiles rather than inside one. Winning
 	# is binary and says nothing about how well you played; this is the number
 	# worth arguing over afterwards.
-	_otext(_font, Vector2(cx, 204), "SCORE", _over_size(15), Color("#7c88ad"))
-	_otext(_font_bold, Vector2(cx, 248), _commas(player.score),
+	_otext(_font, Vector2(cx, 204.0 * lead), "SCORE", _over_size(15),
+		Color("#7c88ad"))
+	# Counted up rather than printed. The number is the same either way and the
+	# difference is entirely in how it lands: a total that arrives already
+	# finished is a receipt, and one that runs up to itself is a payout. Eased
+	# so it decelerates into the real figure rather than stopping dead, and it
+	# settles inside a second so it is never in the way of reading it.
+	var tally := player.score
+	if over_age < SCORE_TALLY:
+		var e: float = over_age / SCORE_TALLY
+		tally = int(round(float(player.score) * (1.0 - pow(1.0 - e, 3.0))))
+	_otext(_font_bold, Vector2(cx, 248.0 * lead), _commas(tally),
 		_over_size(62), Color("#ffd166"))
-	var line_y := 288.0
+	var line_y := 288.0 * lead
+
+	# How close it was, on a loss, in the loss colour and directly under the
+	# score it is a comment on. This is the line the Rematch button is arguing
+	# with, so it sits above everything else that could dilute it.
+	var margin := _over_margin()
+	if margin != "":
+		# Set larger than the lines under it and therefore needing more room
+		# above: at the shared offset it sat in the score's descenders, and a
+		# comma touching the sentence below it reads as a layout fault.
+		line_y += 8.0 * _over_fill()
+		_text_fit_overlay(_font_bold, Vector2(cx, line_y), margin,
+			_over_size(18), size.x - GRID_MARGIN * 2.0, tint, 12)
+		line_y += 30.0 * _over_fill()
 	# The headline jumps at the end of a won match and the reason was on screen
 	# for one second, as a pop that has faded by the time anybody reads the
 	# total. Two numbers that do not add up look like a bug in the scoring, so
 	# the summary shows its working: this is the only place the win bonus is
 	# still legible when you are actually looking at the score it changed.
 	if win_spoils > 0:
-		_text_fit_overlay(_font, Vector2(cx, line_y),
-			"%s in play  +  %s for the win" % [
-				_commas(player.score - win_spoils), _commas(win_spoils)],
+		# Split into what the win was worth and what the damage was worth, once
+		# the damage half is big enough to be most of it. One number that large
+		# next to "for the win" reads as the game handing it to you; naming the
+		# cells says it was paid for, and says what to do more of next time.
+		var damage_cut: int = Scoring.flat(player.dealt * Scoring.WIN_DAMAGE_STEP)
+		var line := "%s in play  +  %s for the win" % [
+			_commas(player.score - win_spoils), _commas(win_spoils)]
+		if damage_cut > 0:
+			line = "%s in play  ·  +%s won  ·  +%s for %s cells dealt" % [
+				_commas(player.score - win_spoils),
+				_commas(win_spoils - damage_cut), _commas(damage_cut),
+				_commas(player.dealt)]
+		_text_fit_overlay(_font, Vector2(cx, line_y), line,
 			_over_size(15), size.x - GRID_MARGIN * 2.0, Color("#90be6d"), 11)
-		line_y += 26.0
+		line_y += 26.0 * _over_fill()
 	if player.best_word != "":
 		_text_fit_overlay(_font, Vector2(cx, line_y),
 			"best word — %s for %s" % [_show(player.best_word.to_upper()),
@@ -7580,6 +7720,11 @@ var win_spoils := 0
 const SCORE_ROW_H := 34.0
 const SCORE_HEAD_H := 22.0
 
+## How long the summary's headline score takes to run up to itself. Shorter than
+## `OVER_LOCKOUT`, so it has always finished by the time the screen will accept
+## a press — nobody ever sees a half-counted number and a live button together.
+const SCORE_TALLY := 0.85
+
 
 ## The summary was laid out in the 720-tall landscape design space and then
 ## handed a phone twice that height, where it kept the same 34px rows and 10px
@@ -7591,6 +7736,43 @@ func _over_fill() -> float:
 
 func _over_size(base: int) -> int:
 	return int(round(float(base) * (1.25 if portrait else 1.0)))
+
+
+## The rows and their type scaled; where they *sit* did not.
+##
+## Everything above the table — the headline, its rule, the word SCORE, the
+## number, and the lines under it — is at a literal Y written for a 720-tall
+## landscape window. Handed a phone twice that height they stayed exactly where
+## they were, which is why the whole result of a match arrived in the top third
+## of the screen with a band of nothing under the buttons. Every Y above the
+## table is multiplied by this, and `_scoreboard_top` carries it down to
+## everything below.
+##
+## Chosen so the stack lands the buttons in the bottom third, which is where a
+## thumb already is. Landscape is 1.0 and is not touched.
+func _over_lead() -> float:
+	return 1.9 if portrait else 1.0
+
+
+## How the match was actually decided, in points. Only on a loss, and only in a
+## mode where somebody else was playing.
+##
+## "YOU LOSE" is a verdict, and it says the same thing whether you were beaten
+## by forty points or by forty thousand. The margin is the part that decides
+## whether Rematch gets pressed: it is the difference between "I nearly had
+## that" and "I know what I am up against", and both send you back in. Neither
+## is legible from the table without doing the subtraction yourself.
+func _over_margin() -> String:
+	if winner == "YOU" or mode == Mode.DAILY or mode == Mode.SURVIVAL:
+		return ""
+	var best := 0
+	for s: SideState in _scoreboard_sides():
+		if s != player:
+			best = maxi(best, s.score)
+	var gap := best - player.score
+	if gap <= 0:
+		return ""
+	return "%s points short" % _commas(gap)
 
 
 ## Prose, at a size a phone can actually be read at.
@@ -7615,8 +7797,11 @@ func _score_row_h() -> float:
 
 func _scoreboard_top() -> float:
 	# The win line only exists on a won match, so the table starts lower only
-	# when there is something above it to make room for.
-	return 342.0 + safe_top + (26.0 if win_spoils > 0 else 0.0)
+	# when there is something above it to make room for. The margin line on a
+	# loss takes the same row, so the two never both claim it.
+	var extra := 26.0 * _over_fill() if (win_spoils > 0 or _over_margin() != "") \
+		else 0.0
+	return 342.0 * _over_lead() + safe_top + extra
 
 
 ## Which columns the table carries. Powers and salvos are the first to go on a
@@ -7750,6 +7935,31 @@ func _over_table_foot() -> float:
 ## The bottom of everything the buttons and the mastery strip hang off.
 func _over_foot() -> float:
 	return _over_table_foot() + _daily_board_h()
+
+
+## Where the summary's doors go, in order of how much you want them.
+##
+## Landscape keeps the side-by-side pair it was drawn with — it has 1280 across
+## and 720 down, so a row is the shape that fits. Portrait stacks them and gives
+## the first one the full width and half again the height, because on a phone
+## the thing you almost always want next is not one of two equal choices at the
+## bottom of a report. It is the button, and the way out is the small one under
+## it.
+func _over_button_rects(count: int) -> Array:
+	var top := _over_foot() + 54.0
+	if not portrait:
+		if count < 2:
+			return _grid_rects(1, top, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
+		return _grid_rects(2, top, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
+	var cx: float = get_viewport_rect().size.x * 0.5
+	var w: float = minf(654.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+	var out: Array = []
+	var y := top
+	for i in count:
+		var h: float = 118.0 if i == 0 else 82.0
+		out.append(Rect2(cx - w * 0.5, y, w, h))
+		y += h + 14.0
+	return out
 
 
 # ------------------------------------------------------------- the daily board
@@ -7970,6 +8180,57 @@ const BOARDS_ROW_GAP := 5.0
 const BOARDS_LIST_TOP := 232.0
 
 
+## The same trick every other menu here plays, and this screen shipped without
+## it: a layout drawn in the 720-tall landscape design space, handed a phone
+## twice that height, keeping its 34-unit rows and 14-point type. It measured
+## fine and read as a spreadsheet — small text in the top third with a band of
+## nothing under it.
+##
+## 1.5 rather than the 1.35 the summary uses. A leaderboard row is one line of
+## three short things with no second line under it, so it can afford to be
+## bigger than a table row, and this is the screen where a name being easy to
+## read *is* the content.
+func _boards_fill() -> float:
+	return 1.5 if portrait else 1.0
+
+
+## Type on this screen, at a size the phone it is on can be read at.
+func _boards_size(base: int) -> int:
+	return int(round(float(base) * (1.35 if portrait else 1.0)))
+
+
+func _boards_row_h() -> float:
+	return BOARDS_ROW_H * _boards_fill()
+
+
+func _boards_row_gap() -> float:
+	return BOARDS_ROW_GAP * _boards_fill()
+
+
+## The top three are drawn taller than the rest.
+##
+## A leaderboard whose rows are all identical is a table, and a table is a thing
+## you read rather than a thing you want to be on. The podium is the only part
+## of this screen that says the top is a different place from the middle — so it
+## is where the extra height goes, and it is why the ramp below stops at three
+## rather than shading the whole list.
+func _boards_rank_h(rank: int) -> float:
+	if rank > 3:
+		return _boards_row_h()
+	return _boards_row_h() * (1.30 if rank == 1 else 1.15)
+
+
+## Gold, silver, bronze — then the ordinary row colour. Read straight out of the
+## palette the rest of the game already uses rather than invented here: the gold
+## is the same gold DAILY and every "new best" is set in.
+func _boards_rank_tint(rank: int) -> Color:
+	match rank:
+		1: return Color("#ffd166")
+		2: return Color("#c8d2e8")
+		3: return Color("#e08b4c")
+	return Color("#7c88ad")
+
+
 func _board_id() -> String:
 	return Boards.SURVIVAL_ID if board_tab == 1 else Boards.DAILY_ID
 
@@ -7999,55 +8260,98 @@ func _boards_head() -> float:
 	return safe_top + _menu_offset(_boards_laid())
 
 
+## One button under the list. Door-sized in portrait, because at full width
+## `_draw_menu_button` draws these as plates — the same object the title screen
+## is built from — and a plate needs the height to carry a stamp and a sub line.
+func _boards_button_h() -> float:
+	return 76.0 if portrait else 44.0
+
+
+func _boards_button_gap() -> float:
+	return 10.0 if portrait else 8.0
+
+
 ## How tall the block of buttons under the list is.
 ##
-## Counted from the same three conditions `_menu_buttons` builds them from, and
+## Counted from the same conditions `_menu_buttons` builds them from, and
 ## deliberately *not* by asking `_menu_buttons` — that calls `_boards_head`,
 ## which calls `_boards_laid`, which is what wants this number. Two places that
 ## have to agree, and the alternative is a stack overflow on a menu.
 func _boards_buttons_h() -> float:
 	var h := 0.0
+	var step := _boards_button_h() + _boards_button_gap()
 	if Boards.challenges_available():
-		h += 52.0
+		h += step
 	if Boards.available():
-		h += 48.0
+		h += step
 	if not portrait:
 		h += 40.0
+	return h
+
+
+## Where the list starts, scaled. Everything above it — the title, the totals
+## and the two rows of tabs — grows with the phone too, so the number the list
+## hangs off has to grow with them or the tabs land on the first row.
+func _boards_list_top() -> float:
+	return BOARDS_LIST_TOP * (1.22 if portrait else 1.0)
+
+
+## How tall the first `n` rows are, podium included. The rows are no longer all
+## the same height, so every place that used to multiply by one row height has
+## to walk them instead.
+func _boards_rows_h(n: int) -> float:
+	var h := 0.0
+	for i in mini(n, Boards.view_rows.size()):
+		h += _boards_rank_h(int((Boards.view_rows[i] as Dictionary)["rank"])) \
+			+ _boards_row_gap()
 	return h
 
 
 ## How many rows there is actually room for.
 ##
 ## Portrait scrolls, so the answer is all of them. Landscape does not —
-## `_scrollable` excludes it on every screen in the game — and twenty-five rows
-## is 975 units in a window 720 tall, so the list would run off the bottom and
-## take the buttons under it off-screen with it. There is nowhere to scroll to
-## reach them, so the list is cut instead. Same trade as `_daily_board_fit`.
+## `_scrollable` excludes it on every screen in the game — so the list would run
+## off the bottom and take the buttons under it off-screen with it. There is
+## nowhere to scroll to reach them, so the list is cut instead. Same trade as
+## `_daily_board_fit`.
 func _boards_fit() -> int:
 	var have := Boards.view_rows.size()
 	if _scrollable():
 		return have
 	var avail: float = get_viewport_rect().size.y - safe_top - safe_bottom \
-		- BOARDS_LIST_TOP - _boards_buttons_h() - 40.0
+		- _boards_list_top() - _boards_buttons_h() - 40.0
 	if not Boards.view_me.is_empty():
-		avail -= BOARDS_ROW_H + 14.0
-	return clampi(int(floor(avail / (BOARDS_ROW_H + BOARDS_ROW_GAP))), 0, have)
+		avail -= _boards_row_h() + 14.0
+	var used := 0.0
+	var n := 0
+	while n < have:
+		var next: float = _boards_rank_h(int((Boards.view_rows[n] as Dictionary)["rank"])) \
+			+ _boards_row_gap()
+		if used + next > avail:
+			break
+		used += next
+		n += 1
+	return n
 
 
 ## How tall the screen wants to be. Feeds the scroll limit, so it has to count
 ## the message the list is replaced by when there are no rows — otherwise a
 ## signed-out phone has a screen it cannot scroll to the buttons on.
 func _boards_laid() -> float:
-	return BOARDS_LIST_TOP + _boards_list_h() + _boards_buttons_h() + 60.0
+	return _boards_list_top() + _boards_list_h() + _boards_buttons_h() + 60.0
 
 
 ## The list itself, message included. One number, so the three places that need
 ## it cannot drift.
 func _boards_list_h() -> float:
 	var rows := _boards_fit()
-	var h := float(rows) * (BOARDS_ROW_H + BOARDS_ROW_GAP)
+	var h := _boards_rows_h(rows)
 	if not Boards.view_me.is_empty():
-		h += BOARDS_ROW_H + 14.0
+		# The gap that detaches your row from the list, and the row.
+		h += _boards_row_h() + 14.0
+	# The climb line hangs under whichever of the two your row turned out to be.
+	if _boards_climb() != "":
+		h += 26.0 * _boards_fill()
 	if rows == 0:
 		h += 64.0
 	return h
@@ -8057,7 +8361,7 @@ func _boards_list_h() -> float:
 ## `_boards_list_h` for the same reason: a button that lands on the last row is
 ## the failure this screen shares with every other one here.
 func _boards_foot() -> float:
-	return _boards_head() + BOARDS_LIST_TOP + _boards_list_h() + 20.0
+	return _boards_head() + _boards_list_top() + _boards_list_h() + 20.0
 
 
 ## Why the list is empty, in the player's terms. Empty string means there are
@@ -8097,6 +8401,54 @@ func _boards_subtitle() -> String:
 	return ""
 
 
+## What it would take to move up one place, in points.
+##
+## This is the line that makes a leaderboard something other than a list of
+## strangers. A rank on its own is a verdict — #412 of 9,120, nothing to be
+## done about it. The *gap* is a target, and on this board it is almost always
+## a small one, because scores cluster: the difference between 412th and 411th
+## is usually a single good word.
+##
+## Only ever computed against rows Apple actually sent. It gives us the page and
+## the local entry and nothing in between, so there are two honest answers and
+## the good one is only available when you are already on the board.
+func _boards_climb() -> String:
+	if Boards.view_rows.is_empty():
+		return ""
+	# Your row is either appended below the page or sitting in it.
+	var me: Dictionary = Boards.view_me
+	if me.is_empty():
+		for r: Dictionary in Boards.view_rows:
+			if bool(r.get("me", false)):
+				me = r
+				break
+	if me.is_empty():
+		return ""
+
+	var my_rank := int(me.get("rank", 0))
+	var mine := int(me.get("score", 0))
+	if my_rank == 1:
+		return "nobody above you"
+
+	# On the page, so the row directly above is a real player with a real score
+	# and the gap is usually one good word. This is the version worth printing.
+	for r: Dictionary in Boards.view_rows:
+		if int(r["rank"]) == my_rank - 1:
+			var gap := int(r["score"]) - mine
+			if gap <= 0:
+				return ""
+			return "%s to take #%s" % [_commas(gap), _commas(my_rank - 1)]
+
+	# Off the page. The bottom of it is the nearest score we were given, so the
+	# target is the page itself rather than a rank — "break into the top 25" is
+	# a thing to aim at where "reach #25" is a number with no meaning attached.
+	var last: Dictionary = Boards.view_rows[Boards.view_rows.size() - 1]
+	var far := int(last.get("score", 0)) - mine
+	if far <= 0:
+		return ""
+	return "%s to break into the top %d" % [_commas(far), Boards.view_rows.size()]
+
+
 func _draw_boards(size: Vector2) -> void:
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
@@ -8106,10 +8458,13 @@ func _draw_boards(size: Vector2) -> void:
 
 	var hy := _boards_head()
 	var tint := _board_tint()
-	_otext(_font_bold, Vector2(cx, hy + 58.0), "LEADERBOARDS", 34, Color("#e6ecff"))
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "LEADERBOARDS",
+		_boards_size(34), Color("#e6ecff"))
 	var sub := _boards_subtitle()
 	if sub != "":
-		_otext(_font, Vector2(cx, hy + 88.0), sub, 13, Color("#7c88ad"))
+		_text_fit_overlay(_font, Vector2(cx, hy + 92.0 * _boards_fill() * 0.72),
+			sub, _boards_size(13), size.x - GRID_MARGIN * 2.0,
+			Color("#7c88ad"), 10)
 
 	# The tabs are hit-tested out of `_menu_buttons` like everything else, but
 	# drawn here: a tab has a selected state and `_draw_menu_button` has no way
@@ -8123,47 +8478,82 @@ func _draw_boards(size: Vector2) -> void:
 
 	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
 	var x0: float = cx - tw * 0.5
-	var y := hy + BOARDS_LIST_TOP
+	var y := hy + _boards_list_top()
 
 	if Boards.view_rows.is_empty():
 		var msg := _boards_message()
 		if msg != "":
-			_text_fit_overlay(_font, Vector2(cx, y + 30.0), msg, 14, tw,
-				Color("#8d99bd"), 10)
+			_text_fit_overlay(_font, Vector2(cx, y + 30.0), msg,
+				_boards_size(14), tw, Color("#8d99bd"), 10)
 		return
 
 	for i in _boards_fit():
-		_draw_board_row(x0, y, tw, Boards.view_rows[i], tint)
-		y += BOARDS_ROW_H + BOARDS_ROW_GAP
+		var row: Dictionary = Boards.view_rows[i]
+		var rh := _boards_rank_h(int(row["rank"]))
+		_draw_board_row(x0, y, tw, rh, row, tint)
+		y += rh + _boards_row_gap()
 
 	# Your own row, when the page above does not already carry it. Detached by a
 	# gap rather than appended flush, because it is not rank 26 — it is wherever
 	# you actually came, and running it on would read as the list continuing.
 	if not Boards.view_me.is_empty():
 		y += 14.0
-		_draw_board_row(x0, y, tw, Boards.view_me, tint)
+		_draw_board_row(x0, y, tw, _boards_row_h(), Boards.view_me, tint)
+		y += _boards_row_h()
+
+	# The whole point of drawing your row at all: what it would take to move up.
+	# Hangs under the list whether your row was appended below it or was in it.
+	var climb := _boards_climb()
+	if climb != "":
+		_text_fit_overlay(_font_bold, Vector2(cx, y + 15.0 * _boards_fill()),
+			climb, _boards_size(12), tw, Color("#64dfdf"), 9)
 
 
 ## One row: rank on the left, score on the right, name in whatever is left
 ## between them. Same panel language as the daily summary's board, because it is
 ## the same kind of object and a player has already learned to read that one.
-func _draw_board_row(x0: float, y: float, tw: float, row: Dictionary,
-		tint: Color) -> void:
+##
+## The top three are taller, lit in their own colour and set in bigger type. The
+## height arrives as an argument rather than being worked out here, because the
+## caller has to walk the same ramp to know where the next row goes.
+func _draw_board_row(x0: float, y: float, tw: float, rh: float,
+		row: Dictionary, tint: Color) -> void:
 	var mine: bool = bool(row.get("me", false))
-	var r := Rect2(x0, y, tw, BOARDS_ROW_H)
-	_panel(r, Color("#1b2444") if mine else Color("#121930"),
-		Color(tint if mine else Color("#2b3560"), 0.85 if mine else 0.5),
-		6.0, 2.0 if mine else 1.0)
+	var rank := int(row["rank"])
+	var podium: bool = rank <= 3
+	var medal := _boards_rank_tint(rank)
+	var fill := _boards_fill()
+
+	# Your own row wins the border even on the podium — being third is worth
+	# less to you than knowing which row is yours.
+	var edge: Color = tint if mine else (medal if podium else Color("#2b3560"))
+	var width: float = 2.0 if (mine or rank == 1) else (1.5 if podium else 1.0)
+	var r := Rect2(x0, y, tw, rh)
+	_panel(r, Color("#1b2444") if mine else
+		(Color("#161f3d") if podium else Color("#121930")),
+		Color(edge, 0.85 if (mine or podium) else 0.5), 6.0, width)
 
 	var cy := r.get_center().y
-	var rank := int(row["rank"])
-	_otext_left(_font_bold, Vector2(x0 + 14.0, cy), "#%s" % _commas(rank), 14,
-		Color("#ffd166") if rank == 1 else Color("#7c88ad"))
+	# The podium's rank sits in a filled badge rather than being typed like the
+	# rest. It is the one element on the screen that has to read as a place
+	# rather than a number, and colour alone was not doing it at a glance.
+	var rank_text := "#%s" % _commas(rank)
+	if podium:
+		var bw: float = 44.0 * fill
+		var bh: float = 26.0 * fill
+		var badge := Rect2(x0 + 10.0, cy - bh * 0.5, bw, bh)
+		_panel(badge, Color(medal, 0.16), Color(medal, 0.9), 5.0, 1.0)
+		_otext(_font_bold, badge.get_center(), str(rank),
+			_boards_size(17 if rank == 1 else 15), medal)
+	else:
+		_otext_left(_font_bold, Vector2(x0 + 14.0, cy), rank_text,
+			_boards_size(14), Color("#ffd166") if mine else Color("#7c88ad"))
 
+	var ssize := _boards_size(19 if rank == 1 else (17 if podium else 16))
 	var score := _commas(int(row["score"]))
-	var sm := _font_bold.get_string_size(score, HORIZONTAL_ALIGNMENT_LEFT, -1, 16)
-	_otext_left(_font_bold, Vector2(x0 + tw - sm.x - 14.0, cy), score, 16,
-		Color("#ffd166") if mine else Color("#e6ecff"))
+	var sm := _font_bold.get_string_size(score, HORIZONTAL_ALIGNMENT_LEFT, -1, ssize)
+	_otext_left(_font_bold, Vector2(x0 + tw - sm.x - 14.0, cy), score, ssize,
+		Color("#ffd166") if mine else (medal if podium else Color("#e6ecff")))
 
 	# A Game Center display name is somebody else's free text — the one thing on
 	# this screen the game did not write — so it goes through the same filter as
@@ -8171,12 +8561,14 @@ func _draw_board_row(x0: float, y: float, tw: float, row: Dictionary,
 	var who := _show_name(String(row.get("name", "")))
 	if mine:
 		who = "YOU"
-	var nx := x0 + 84.0
+	var nx: float = x0 + (68.0 * fill if podium else 84.0)
 	var avail: float = (x0 + tw - sm.x - 26.0) - nx
 	if avail > 20.0:
-		_otext_left(_font_bold if mine else _font, Vector2(nx, cy), who,
-			_fitted_size(_font_bold if mine else _font, who, 14, avail, 10),
-			Color("#e6ecff") if mine else Color("#8d99bd"))
+		var nfont: Font = _font_bold if (mine or podium) else _font
+		var nsize := _boards_size(16 if podium else 14)
+		_otext_left(nfont, Vector2(nx, cy), who,
+			_fitted_size(nfont, who, nsize, avail, 10),
+			Color("#e6ecff") if (mine or podium) else Color("#8d99bd"))
 
 
 ## A tab. Selected is a lit border and a bright label; unselected is neither, so
@@ -8628,7 +9020,8 @@ func _menu_buttons() -> Array:
 		var hy := _boards_head()
 		# Two rows of two, both centred on the same 304-wide block so the pair of
 		# controls reads as one stack rather than two unrelated toolbars.
-		var tabw: float = minf(148.0, (get_viewport_rect().size.x
+		var bfill := _boards_fill()
+		var tabw: float = minf(148.0 * bfill, (get_viewport_rect().size.x
 			- GRID_MARGIN * 2.0 - 8.0) * 0.5)
 		var tx: float = cx - tabw - 4.0
 		var boards_tabs: Array = [
@@ -8638,7 +9031,8 @@ func _menu_buttons() -> Array:
 		for i in boards_tabs.size():
 			var t: Array = boards_tabs[i]
 			out.append({
-				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 108.0, tabw, 40.0),
+				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 112.0 * bfill * 0.86,
+					tabw, 40.0 * bfill),
 				"key": "", "label": String(t[1]), "sub": "", "note": "", "rating": 0,
 				"on": board_tab == int(t[0]), "accent": t[2],
 				"action": "btab:%d" % int(t[0])})
@@ -8649,7 +9043,8 @@ func _menu_buttons() -> Array:
 		for i in scopes.size():
 			var s: Array = scopes[i]
 			out.append({
-				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 156.0, tabw, 36.0),
+				"rect": Rect2(tx + float(i) * (tabw + 8.0), hy + 164.0 * bfill * 0.86,
+					tabw, 36.0 * bfill),
 				"key": "", "label": String(s[1]), "sub": "", "note": "", "rating": 0,
 				"on": board_scope == int(s[0]), "accent": Color("#7bdff2"),
 				"action": "bscope:%d" % int(s[0])})
@@ -8657,30 +9052,40 @@ func _menu_buttons() -> Array:
 		# Under the list. `_boards_foot` is measured off the same numbers the
 		# rows are drawn with, so these move down as the board fills up.
 		var bfoot := _boards_foot()
-		var bw: float = minf(360.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		# Full width in portrait rather than a 360-wide slab centred in a 720
+		# screen. These are the two things you can do from here and they are the
+		# lowest things on it, which is where a thumb already is.
+		var bw: float = minf(654.0 if portrait else 360.0,
+			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 		# Only when there is somewhere to send them. Before a challenge is
 		# configured in App Store Connect this opens a dashboard with nothing in
 		# it, which is a worse answer than not offering the door.
+		var bh := _boards_button_h()
+		var bstep := bh + _boards_button_gap()
 		if Boards.challenges_available():
-			var clabel := "Challenges"
+			# Waiting challenges are the reason to press it, so they are the sub
+			# line rather than a count in brackets after the word.
+			var csub := "race a friend on this board"
 			if Boards.pending > 0:
-				clabel = "Challenges (%d)" % Boards.pending
+				csub = "%d waiting for you" % Boards.pending
 			out.append({
-				"rect": Rect2(cx - bw * 0.5, bfoot, bw, 44.0), "key": "C",
-				"label": clabel, "sub": "", "note": "", "rating": 0,
+				"rect": Rect2(cx - bw * 0.5, bfoot, bw, bh), "key": "C",
+				"stamp": "CHA", "label": "Challenges", "sub": csub, "note": "",
+				"rating": 0,
 				"accent": Color("#c77dff") if Boards.pending > 0
 					else Color("#8d99bd"),
 				"action": "challenges"})
-			bfoot += 52.0
+			bfoot += bstep
 		# Out to Apple's version of this screen, which has the profiles, the
 		# avatars and the button that starts a challenge on it — all of which are
 		# Apple's to draw and none of which are worth rebuilding here.
 		if Boards.available():
 			out.append({
-				"rect": Rect2(cx - bw * 0.5, bfoot, bw, 40.0), "key": "G",
-				"label": "Open in Game Center", "sub": "", "note": "", "rating": 0,
+				"rect": Rect2(cx - bw * 0.5, bfoot, bw, bh), "key": "G",
+				"stamp": "GAME", "label": "Game Center", "sub": "profiles, and who to challenge",
+				"note": "", "rating": 0,
 				"accent": Color("#64dfdf"), "action": "gcboard"})
-			bfoot += 48.0
+			bfoot += bstep
 		if not portrait:
 			out.append({
 				"rect": Rect2(cx - 90.0, bfoot + 4.0, 180.0, 36.0), "key": "ESC",
@@ -8765,7 +9170,7 @@ func _menu_buttons() -> Array:
 		# The daily has no rematch. That is the entire shape of it — offering a
 		# button that would refuse itself is worse than not offering one.
 		if mode == Mode.DAILY:
-			var only := _grid_rects(1, _over_foot() + 54.0, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
+			var only := _over_button_rects(1)
 			out.append({
 				"rect": only[0], "key": "ESC",
 				"label": "Title", "sub": "a new board at midnight", "note": "",
@@ -8776,8 +9181,7 @@ func _menu_buttons() -> Array:
 		# It is not a Rematch — there was nobody to play — and it must not route
 		# through the one that is, which would deal a CPU match instead.
 		if mode == Mode.SURVIVAL:
-			var again := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0,
-				280.0, 14.0)
+			var again := _over_button_rects(2)
 			out.append({
 				"rect": again[0], "key": "",
 				"label": "Again", "sub": "a fresh board", "note": "", "rating": 0,
@@ -8791,14 +9195,13 @@ func _menu_buttons() -> Array:
 		# button cannot do anything but fail, so the screen drops to the one door
 		# that still works rather than leaving a dead one on it.
 		if not _rematch_possible():
-			var alone := _grid_rects(1, _over_foot() + 54.0, 1, 300.0, 96.0, 20.0,
-				280.0, 14.0)
+			var alone := _over_button_rects(1)
 			out.append({
 				"rect": alone[0], "key": "ESC",
 				"label": "Title", "sub": "they left the match", "note": "",
 				"rating": 0, "accent": Color("#8d99bd"), "action": "title"})
 			return out
-		var over := _grid_rects(2, _over_foot() + 54.0, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
+		var over := _over_button_rects(2)
 		out.append({
 			"rect": over[0], "key": "",
 			"label": "Rematch", "sub": _rematch_sub(), "note": "", "rating": 0,

@@ -55,6 +55,8 @@ func _init() -> void:
 	await process_frame
 	game.phase = game.Phase.BOARDS
 
+	_the_top_is_a_different_place()
+	_it_says_what_the_climb_costs()
 	_the_list_fits_the_window()
 	_nothing_lands_on_the_list()
 	_the_tabs_ask_for_the_right_board()
@@ -65,6 +67,75 @@ func _init() -> void:
 	print("--- %s ---" % ("the board screen holds up" if fails == 0
 		else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
+
+
+## A leaderboard whose rows are all the same is a table, and a table is a thing
+## you read rather than a thing you want to be on.
+func _the_top_is_a_different_place() -> void:
+	print("--- the top three are drawn as the top three ---")
+	_orient(true)
+	var ordinary: float = game._boards_rank_h(9)
+	_expect("first is the tallest row (%.0f > %.0f)" % [
+		game._boards_rank_h(1), game._boards_rank_h(2)],
+		game._boards_rank_h(1) > game._boards_rank_h(2))
+	_expect("second and third are still above the rest",
+		game._boards_rank_h(3) > ordinary)
+	_expect("and the fourth is an ordinary row",
+		is_equal_approx(game._boards_rank_h(4), ordinary))
+
+	var tints := {}
+	for rank in [1, 2, 3, 4]:
+		tints[game._boards_rank_tint(rank)] = true
+	_expect("gold, silver and bronze are three distinct colours",
+		tints.size() == 4)
+
+	# The phone scale is the whole reason this screen was rebuilt: it shipped at
+	# landscape sizes and read as a spreadsheet.
+	_orient(false)
+	var land: float = game._boards_row_h()
+	var land_type: int = game._boards_size(14)
+	_orient(true)
+	_expect("rows are taller in portrait (%.0f -> %.0f)" % [
+		land, game._boards_row_h()], game._boards_row_h() > land)
+	_expect("and the type grows with them (%d -> %d)" % [
+		land_type, game._boards_size(14)], game._boards_size(14) > land_type)
+
+
+## The line that turns a verdict into a target.
+func _it_says_what_the_climb_costs() -> void:
+	print("--- and it says what the next place would cost ---")
+	_orient(true)
+	_fill(10)
+
+	# Off the page: the bottom of it is the nearest score Apple actually sent,
+	# so the honest target is the page rather than a rank.
+	boards.view_me = {"rank": 412, "name": "you", "score": 100, "me": true}
+	var far: String = game._boards_climb()
+	_expect("off the page it aims at the page — %s" % far,
+		far.contains("top 10"))
+
+	# On the page: the row directly above is a real player with a real score,
+	# and that gap is usually one good word. This is the version worth having.
+	boards.view_me = {}
+	var rows: Array = boards.view_rows
+	(rows[4] as Dictionary)["me"] = true
+	var near: String = game._boards_climb()
+	var gap: int = int((rows[3] as Dictionary)["score"]) \
+		- int((rows[4] as Dictionary)["score"])
+	_expect("on the page it aims at the row above — %s" % near,
+		near.contains("#4") and near.contains(str(gap)))
+
+	# Top of the board has nothing above it, and must not print a gap of zero.
+	(rows[4] as Dictionary)["me"] = false
+	(rows[0] as Dictionary)["me"] = true
+	var top: String = game._boards_climb()
+	_expect("the leader is told so instead — %s" % top,
+		top != "" and not top.contains("#0"))
+	(rows[0] as Dictionary)["me"] = false
+
+	# And with nobody's row on screen at all there is nothing to say.
+	boards.view_me = {}
+	_expect("a board you are not on says nothing", game._boards_climb() == "")
 
 
 func _the_list_fits_the_window() -> void:
