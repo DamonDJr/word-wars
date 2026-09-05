@@ -8164,7 +8164,11 @@ func _over_button_rects(count: int) -> Array:
 	if not portrait:
 		if count < 2:
 			return _grid_rects(1, top, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
-		return _grid_rects(2, top, 2, 264.0, 96.0, 20.0, 280.0, 14.0)
+		# Counted, not fixed at two. The summary grew a Share door, and a
+		# hardcoded 2 here handed back two rectangles for three buttons — the
+		# third read past the end of the array. `_grid_rects` drops a column of
+		# its own accord if three will not fit the width.
+		return _grid_rects(count, top, count, 264.0, 96.0, 20.0, 280.0, 14.0)
 	var cx: float = get_viewport_rect().size.x * 0.5
 	var w: float = minf(654.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
 	var out: Array = []
@@ -8174,6 +8178,158 @@ func _over_button_rects(count: int) -> Array:
 		out.append(Rect2(cx - w * 0.5, y, w, h))
 		y += h + 14.0
 	return out
+
+
+# ------------------------------------------------------------------- sharing
+#
+# The summary is the one screen in this game worth showing somebody, because it
+# is the only one carrying a number that took effort to get. So it is the one
+# that grows a Share door.
+#
+# What goes out is a composed 1080x1920 card rather than a screenshot — see
+# `share_card.gd` for why — with a line of text beside it. The text is written
+# per mode, because "I scored 12,400" is a different sentence from "I lasted
+# 4:12" and neither is "I beat Duelist".
+#
+# The door only exists where a sheet exists to open. `Sharing.available()` is
+# false on desktop and false in an export that left the addon out, and a door
+# that cannot work is worse than no door at all.
+
+## Whether the Share door is worth drawing.
+func _share_possible() -> bool:
+	return Sharing.available()
+
+
+func _share_sub() -> String:
+	if mode == Mode.SURVIVAL:
+		return "post your run"
+	if mode == Mode.DAILY:
+		return "post today's board"
+	return "post the result"
+
+
+## Whoever was in the other seat. Found by walking the seats rather than kept in
+## a variable, so it is right for a bot, a person, and the daily's empty chair.
+func _share_rival() -> SideState:
+	for s: SideState in sides:
+		if s != player and s.in_match:
+			return s
+	return null
+
+
+## What to call whoever you played, to somebody who was not there.
+##
+## In a two-seat match the rival's label is the bare word "CPU" — the summary has
+## the roster on screen and does not need to repeat the name. A share leaves the
+## game, where "CPU beat me" says nothing at all and "BERSERKER beat me" is a
+## character somebody might want to go and meet. `difficulty` is the bot that was
+## actually dealt, and is the word "Versus" only when the rival is a person.
+func _share_rival_name() -> String:
+	var rival := _share_rival()
+	if difficulty != "Versus" and difficulty != "":
+		return difficulty.to_upper()
+	return _show_name(rival.label) if rival != null else "the CPU"
+
+
+## The sentence beside the picture.
+##
+## Written to be worth reading by somebody who has never heard of this game,
+## which rules out the shorthand the summary itself can use — nobody outside
+## knows what a stamp is or who Duelist is supposed to be.
+func _share_text() -> String:
+	# The link is appended once, here, rather than written into four sentences —
+	# it is the half of the share that does any work, and the way to ship three
+	# of these with a link and the fourth without is to write it out four times.
+	return "%s\n%s" % [_share_line(), Sharing.STORE_URL]
+
+
+## The sentence, without the link.
+func _share_line() -> String:
+	var me := _commas(player.score)
+	if mode == Mode.SURVIVAL:
+		return "I lasted %s in Word Wars Survival — %s points." % [
+			_survival_clock(match_time), me]
+	if mode == Mode.DAILY:
+		var streak: int = Profile.daily_streak(daily_key())
+		var line := "I scored %s on today's Word Wars daily board." % me
+		if streak > 1:
+			line += " %d days running." % streak
+		return line
+	var rival := _share_rival()
+	var them := _share_rival_name()
+	var theirs: String = _commas(rival.score) if rival != null else "0"
+	if winner == "YOU":
+		return "I beat %s %s to %s at Word Wars." % [them, me, theirs]
+	return "%s beat me %s to %s at Word Wars. Somebody go and take them down." % [
+		them, theirs, me]
+
+
+## What the picture says. The headline is whichever number the mode is actually
+## about — which is the clock in survival and the score everywhere else.
+func _share_card_data() -> ShareCard.Card:
+	var c := ShareCard.Card.new()
+	var win := winner == "YOU"
+
+	if mode == Mode.SURVIVAL:
+		c.mode = "Survival"
+		c.accent = SURVIVAL_ACCENT
+		c.headline = _survival_clock(match_time)
+		c.headline_note = "survived"
+		c.rows = [
+			["Score", _commas(player.score)],
+			["Best run", _survival_clock(Profile.survival_best_time)],
+			["Runs played", str(Profile.survival_runs)]]
+		return c
+
+	if mode == Mode.DAILY:
+		c.mode = "Daily Board"
+		c.accent = Color("#ffd166")
+		c.headline = _commas(player.score)
+		c.headline_note = "on today's board"
+		var streak: int = Profile.daily_streak(daily_key())
+		c.rows = [["Date", daily_key()]]
+		if streak > 1:
+			c.rows.append(["Streak", "%d days" % streak])
+		c.footer = "everybody gets the same board"
+		return c
+
+	var rival := _share_rival()
+	c.mode = "Versus" if difficulty == "Versus" else "Solo"
+	c.accent = Color("#c77dff") if difficulty == "Versus" else Color("#7bdff2")
+	c.verdict = "WON" if win else "LOST"
+	c.headline = _commas(player.score)
+	c.headline_note = "points"
+	if rival != null:
+		c.rows = [
+			[_share_rival_name(), _commas(rival.score)],
+			["Margin", _commas(absi(player.score - rival.score))]]
+	return c
+
+
+## Draw the card, then hand it and the text to the sheet.
+##
+## Async because the card is rendered in a viewport and a viewport does not draw
+## on the frame you fill it. The scoreboard stays up throughout — nothing here
+## changes the phase — so a slow render looks like a button that took a moment
+## rather than a screen that went away.
+func _do_share() -> void:
+	if not _share_possible():
+		Sfx.play("reject", 1.2)
+		return
+	Sfx.play("count", 1.2)
+	var card := ShareCard.new(_font, _font_bold)
+	add_child(card)
+	var path: String = Sharing.card_path()
+	var drew: bool = await card.render(_share_card_data(), path)
+	card.queue_free()
+
+	var text := _share_text()
+	# The picture is the better share by a distance, but a card that failed to
+	# draw is not a reason to offer nothing — the text still carries the result.
+	var sent: bool = Sharing.share_image(path, "Word Wars", "Word Wars", text) \
+		if drew else Sharing.share_text("Word Wars", "Word Wars", text)
+	if not sent:
+		Sfx.play("reject", 1.2)
 
 
 # ------------------------------------------------------------- the daily board
@@ -9336,50 +9492,63 @@ func _menu_buttons() -> Array:
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.OVER:
-		# The daily has no rematch. That is the entire shape of it — offering a
-		# button that would refuse itself is worse than not offering one.
+		# Built as a list and laid out once at the end, rather than four branches
+		# each calling `_over_button_rects` with a number it worked out for
+		# itself. Share had to appear on all four summaries, and the old shape
+		# meant adding it in four places and getting the count right in four
+		# places — which is the arrangement that puts a button on three screens
+		# and forgets the fourth.
+		var specs: Array = []
 		if mode == Mode.DAILY:
-			var only := _over_button_rects(1)
-			out.append({
-				"rect": only[0], "key": "ESC",
-				"label": "Title", "sub": "a new board at midnight", "note": "",
-				"rating": 0, "accent": Color("#ffd166"), "action": "title"})
-			return out
-		# Survival is the opposite case: there is nothing to wait for and no
-		# opponent to ask, so the door straight back in is the one that matters.
-		# It is not a Rematch — there was nobody to play — and it must not route
-		# through the one that is, which would deal a CPU match instead.
-		if mode == Mode.SURVIVAL:
-			var again := _over_button_rects(2)
-			out.append({
-				"rect": again[0], "key": "",
-				"label": "Again", "sub": "a fresh board", "note": "", "rating": 0,
+			# The daily has no rematch. That is the entire shape of it —
+			# offering a button that would refuse itself is worse than none.
+			specs.append({"key": "ESC", "label": "Title",
+				"sub": "a new board at midnight",
+				"accent": Color("#ffd166"), "action": "title"})
+		elif mode == Mode.SURVIVAL:
+			# Survival is the opposite case: there is nothing to wait for and
+			# nobody to ask, so the door straight back in is the one that
+			# matters. It is not a Rematch — there was nobody to play — and it
+			# must not route through the one that is, which would deal a CPU
+			# match instead.
+			specs.append({"key": "", "label": "Again", "sub": "a fresh board",
 				"accent": SURVIVAL_ACCENT, "action": "survival"})
-			out.append({
-				"rect": again[1], "key": "ESC",
-				"label": "Title", "sub": "", "note": "", "rating": 0,
+			specs.append({"key": "ESC", "label": "Title", "sub": "",
 				"accent": Color("#8d99bd"), "action": "title"})
-			return out
-		# The opponent has to still be there to be asked. Once they have gone the
-		# button cannot do anything but fail, so the screen drops to the one door
-		# that still works rather than leaving a dead one on it.
-		if not _rematch_possible():
-			var alone := _over_button_rects(1)
-			out.append({
-				"rect": alone[0], "key": "ESC",
-				"label": "Title", "sub": "they left the match", "note": "",
-				"rating": 0, "accent": Color("#8d99bd"), "action": "title"})
-			return out
-		var over := _over_button_rects(2)
-		out.append({
-			"rect": over[0], "key": "",
-			"label": "Rematch", "sub": _rematch_sub(), "note": "", "rating": 0,
-			"accent": Color("#ffd166") if rematch_asked else PLAYER_ACCENT,
-			"action": "rematch", "on": rematch_offered})
-		out.append({
-			"rect": over[1], "key": "ESC",
-			"label": "Title", "sub": "pick a new opponent", "note": "", "rating": 0,
-			"accent": Color("#8d99bd"), "action": "title"})
+		elif not _rematch_possible():
+			# The opponent has to still be there to be asked. Once they have
+			# gone the button cannot do anything but fail, so the screen drops
+			# to the doors that still work rather than leaving a dead one on it.
+			specs.append({"key": "ESC", "label": "Title",
+				"sub": "they left the match",
+				"accent": Color("#8d99bd"), "action": "title"})
+		else:
+			specs.append({"key": "", "label": "Rematch", "sub": _rematch_sub(),
+				"accent": Color("#ffd166") if rematch_asked else PLAYER_ACCENT,
+				"action": "rematch", "on": rematch_offered})
+			specs.append({"key": "ESC", "label": "Title",
+				"sub": "pick a new opponent",
+				"accent": Color("#8d99bd"), "action": "title"})
+
+		# Last, and only where there is a sheet to open it with. A door that
+		# cannot work is worse than no door — and on a desktop build, or a phone
+		# whose export left the addon out, `Sharing.available()` is false and
+		# this is simply not drawn.
+		# No key badge, and deliberately no letter shortcut. This screen removed
+		# R for Rematch because a match ends with a word half typed and the rest
+		# of it lands here — and opening a share sheet by accident is the same
+		# class of mistake as starting a match by accident.
+		if _share_possible():
+			specs.append({"key": "", "label": "Share", "sub": _share_sub(),
+				"accent": Color("#64dfdf"), "action": "share"})
+
+		var rects := _over_button_rects(specs.size())
+		for i in specs.size():
+			var s2: Dictionary = (specs[i] as Dictionary).duplicate()
+			s2["rect"] = rects[i]
+			s2["note"] = ""
+			s2["rating"] = 0
+			out.append(s2)
 	return out
 
 
@@ -10153,6 +10322,12 @@ func _activate(action: String) -> void:
 			_lobby_bot = AiOpponent.ROSTER.pick_random()
 		phase = Phase.LOBBY
 		Sfx.play("count", 1.2)
+	elif action == "share":
+		# Not awaited. `_activate` is called from the input handler and the card
+		# takes a frame to render; blocking here would hold the press open across
+		# it. The scoreboard is unchanged either way, so there is nothing waiting
+		# on the result.
+		_do_share()
 	elif action == "versus_quick":
 		# The headless matchmaker, so our own status card stays in front instead
 		# of Apple's sheet covering the screen for the whole search.

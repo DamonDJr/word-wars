@@ -47,6 +47,7 @@ Profile="*res://scripts/profile.gd"
 Haptics="*res://scripts/haptics.gd"
 Store="*res://scripts/store.gd"
 Ads="*res://scripts/ads.gd"
+Sharing="*res://scripts/share.gd"
 Boards="*res://scripts/leaderboards.gd"
 Awards="*res://scripts/achievements.gd"
 Cloud="*res://scripts/cloud.gd"
@@ -61,7 +62,7 @@ window/handheld/orientation=1
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/epic-online-services-godot/plugin.cfg", "res://addons/admob/plugin.cfg")
+enabled=PackedStringArray("res://addons/InappReviewPlugin/plugin.cfg", "res://addons/NotificationSchedulerPlugin/plugin.cfg", "res://addons/SharePlugin/plugin.cfg", "res://addons/admob/plugin.cfg", "res://addons/epic-online-services-godot/plugin.cfg")
 
 [filesystem]
 
