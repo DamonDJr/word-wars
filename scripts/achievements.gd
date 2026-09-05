@@ -39,7 +39,17 @@ const AWARDS := {
 	"hundred_matches": {"matches": 100},
 	"fifteen_wins": {"wins": 15},
 	"six_hundred_words": {"words": 600},
-	"speed_demon": {"wpm": 65},
+	# 65 was a keyboard number on a game that ships to thumbs. `TOUCH_PACE` in
+	# `ai_opponent.gd` is 0.7 — a good phone typist runs about seven tenths of
+	# their own keyboard speed, measured rather than guessed — which puts 65 on
+	# a desk at 45.5 on a phone. 50 rather than 45 because **the icon says 50**:
+	# the art carries the number, and a threshold that disagrees with the
+	# picture is a bug the player can see. Still a real ask — Wordsmith, the
+	# hardest bot, types at 41 on a touch build.
+	#
+	# Must match the Speed Demon title in `profile.gd`, which this is named
+	# after; `tools/awardtest.gd` fails if the two drift apart.
+	"speed_demon": {"wpm": 50},
 	"chainbreaker": {"chain": 8},
 	"wordsmith": {"longest": 12},
 	"flawless": {"flawless": 1},

@@ -175,7 +175,7 @@ change one, take it from another.
 | `flawless` | No Looking Back | 40 | Win a match without losing a life. | You won without losing a life. |
 | `six_hundred_words` | Dictionary | 50 | Type 600 words. | Six hundred words typed. |
 | `wordsmith` | Wordsmith | 50 | Play a 12-letter word. | Twelve letters, one word. |
-| `speed_demon` | Speed Demon | 60 | Reach 65 words per minute. | Sixty-five words a minute. |
+| `speed_demon` | Speed Demon | 60 | Reach 50 words per minute. | Fifty words a minute. |
 | `chainbreaker` | Chainbreaker | 60 | Reach a x8 chain. | Eight in a row, no mistakes. |
 | `salvo_king` | Salvo King | 60 | Land 12 salvos. | Twelve salvos landed. |
 | `fifteen_wins` | Undefeated | 60 | Win 15 matches. | Fifteen wins. |
@@ -191,6 +191,38 @@ Titles are the cosmetic names wherever one exists — `Centurion`, `Undefeated`,
 `Dictionary`, `Chainbreaker`, `Salvo King`, `Ice Water` and the rest are the same
 strings the mastery screen shows, so an achievement and the thing it unlocks
 read as one reward rather than two.
+
+That is not only a naming convention. Eight of these state their requirement
+**twice** — once in `achievements.gd` for Apple and once in `COSMETICS["title"]`
+in `profile.gd` for the mastery screen — and the two have to say the same thing
+or the achievement fires while the title it is named after stays locked. There
+is a check for it in `tools/awardtest.gd`; if you change a threshold, change
+both and run that.
+
+### Changing a threshold
+
+Three places, and the third is the one that gets forgotten:
+
+1. `achievements.gd` — what Apple is told.
+2. `profile.gd` — what the mastery screen unlocks.
+3. **App Store Connect** — the two description strings. They live in Apple's
+   database, not in this repo, so nothing here can update them and nothing here
+   will complain when they are stale. An achievement that pays at 45 while its
+   description still says 65 is a bug the player sees and you do not.
+
+And if the icon carries the number — which the table below says it should — the
+art is a fourth place.
+
+**`speed_demon` was 65 and is now 50.** 65 was measured on a keyboard and this
+game ships to thumbs: `TOUCH_PACE` in `ai_opponent.gd` is 0.7, because a good
+phone typist runs about seven tenths of their own keyboard speed, which puts 65
+on a desk at 45.5 on a phone.
+
+50 rather than 46 because **the artwork already said 50** — the car in
+`AchievementIcons_007.png` carries it on the door. Where the art and the code
+disagree about a number the player can see, the cheaper thing to move is the
+code. It is still a real ask: Wordsmith, the hardest bot, types at 41 on a
+touch build.
 
 ### The images
 
@@ -249,7 +281,7 @@ their target.
 | `flawless` | A win with no life lost. Not combat — the game has no swords. |
 | `six_hundred_words` | **600** words typed. No lettering that reads as real text. |
 | `wordsmith` | A **12**-letter word. Letters, not stationery. |
-| `speed_demon` | **65** wpm. |
+| `speed_demon` | **50** wpm. Was 65; the icon already carried 50, so the code moved to the art. |
 | `chainbreaker` | A **x8** chain, unbroken. |
 | `salvo_king` | **12** salvos landed — a barrage arriving. |
 | `fifteen_wins` | **15** wins. |

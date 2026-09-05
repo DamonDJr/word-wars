@@ -19,6 +19,7 @@ func _init() -> void:
 	_every_award_resolves()
 	_progress_only_moves_forward()
 	_ids_are_well_formed()
+	_an_award_and_its_title_agree()
 	_the_cadence_is_what_we_think()
 
 	print("--- %s ---" % ("awards behave" if fails == 0 else "%d FAILURES" % fails))
@@ -124,6 +125,50 @@ func _ids_are_well_formed() -> void:
 			id == id.to_lower() and not id.contains(" ") and not id.contains("."))
 		_expect("%-18s is unique" % id, not seen.has(id))
 		seen[id] = true
+
+
+## Several achievements are named after the cosmetic title they unlock, and each
+## of those pairs states its threshold twice — once in `achievements.gd` for
+## Apple and once in `profile.gd` for the mastery screen. Two numbers that mean
+## one thing is a thing somebody has to remember rather than work out, and the
+## failure is quiet in the worst way: the achievement fires, the title it is
+## named after stays locked, and the player is told they are a Speed Demon by
+## Game Center and not by the game.
+##
+## Only the pairs that genuinely share a requirement are listed. An achievement
+## with no title, or a title with no achievement, is not a mismatch.
+func _an_award_and_its_title_agree() -> void:
+	print("--- an achievement and the title it unlocks want the same thing ---")
+	var awards = Engine.get_main_loop().root.get_node("Awards")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+
+	# award id -> title id. Same reward, two tables.
+	var pairs := {
+		"speed_demon": "speed_demon",
+		"chainbreaker": "chainbreaker",
+		"wordsmith": "wordsmith",
+		"salvo_king": "salvo_king",
+		"six_hundred_words": "dictionary",
+		"fifteen_wins": "undefeated",
+		"hundred_matches": "centurion",
+		"flawless": "no_looking_back",
+	}
+	var titles := {}
+	for entry: Dictionary in p.COSMETICS["title"]:
+		titles[String(entry["id"])] = entry["need"]
+
+	for award_id: String in pairs:
+		var title_id: String = pairs[award_id]
+		if not awards.AWARDS.has(award_id):
+			_expect("%s is a real award" % award_id, false)
+			continue
+		if not titles.has(title_id):
+			_expect("%s is a real title" % title_id, false)
+			continue
+		var want: Dictionary = awards.AWARDS[award_id]
+		var need: Dictionary = titles[title_id]
+		_expect("%-18s matches the %s title (%s vs %s)" % [
+			award_id, title_id, want, need], want == need)
 
 
 ## The numbers a player actually feels. Asserted because they were retuned off a

@@ -359,7 +359,10 @@ const COSMETICS := {
 		{"id": "none", "name": "—", "need": {}},
 		{"id": "rookie", "name": "Rookie", "need": {"matches": 3}},
 		{"id": "dictionary", "name": "Dictionary", "need": {"words": 600}},
-		{"id": "speed_demon", "name": "Speed Demon", "need": {"wpm": 65}},
+		# Kept in step with the `speed_demon` achievement in `achievements.gd`,
+		# which is named after this title and unlocks alongside it. Lowered from
+		# 65 with it: that was a desktop pace on a game played with thumbs.
+		{"id": "speed_demon", "name": "Speed Demon", "need": {"wpm": 50}},
 		{"id": "chainbreaker", "name": "Chainbreaker", "need": {"chain": 8}},
 		{"id": "wordsmith", "name": "Wordsmith", "need": {"longest": 12}},
 		{"id": "no_looking_back", "name": "No Looking Back", "need": {"flawless": 1}},
