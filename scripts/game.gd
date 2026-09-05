@@ -1882,6 +1882,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_activate("pick:%d" % (k.keycode - KEY_1))
 		return
 
+	if phase == Phase.LOBBY:
+		# The keys the doors advertise. ENTER is quick match while there is one
+		# to start and Stop once there is — the same swap the first door makes,
+		# so the key and the plate never disagree about what they do.
+		match k.keycode:
+			KEY_ENTER, KEY_KP_ENTER:
+				_activate("versus_cancel" if _versus_busy() else "versus_quick")
+			KEY_I: _activate("versus_invite")
+			KEY_C: _activate("versus_cpu")
+			KEY_ESCAPE:
+				_activate("versus_cancel" if _versus_busy() else "title")
+		return
+
 	if phase == Phase.SETTINGS:
 		match k.keycode:
 			KEY_ESCAPE: _activate("title")
@@ -3124,6 +3137,14 @@ func _process(delta: float) -> void:
 
 	if phase == Phase.OVER:
 		over_age += delta
+	# The search clock. Ticked wherever the player is rather than only on the
+	# lobby, because a search survives walking back to the title — the plate
+	# there reads `net_status` and would otherwise be counting from a number
+	# that stopped moving the moment the screen changed.
+	if _versus_busy():
+		_lobby_search += delta
+	elif _lobby_search != 0.0:
+		_lobby_search = 0.0
 	_tick_scroll()
 
 	# The playfields have nothing to say on the front-of-house screens.
@@ -4474,7 +4495,10 @@ func _back_action() -> String:
 				Phase.COSMETICS, Phase.BOARDS:
 			return "title"
 		Phase.LOBBY:
-			return "leave" if Link.connected else "title"
+			# Backing out of a running search stops it rather than leaving it
+			# going behind you. The chevron is the only way off this screen in
+			# portrait, so if it did not cancel there would be no way to.
+			return "versus_cancel" if _versus_busy() else "title"
 	return ""
 
 
@@ -5581,6 +5605,8 @@ func _draw_overlay() -> void:
 			_draw_title(size)
 		elif phase == Phase.SOLO:
 			_draw_solo(size)
+		elif phase == Phase.LOBBY:
+			_draw_lobby(size)
 		elif phase == Phase.PRACTICE:
 			_draw_practice(size)
 		elif phase == Phase.MASTERY:
@@ -7260,52 +7286,266 @@ func _draw_pause(size: Vector2) -> void:
 			"F1 — sound      CTRL+BACKSPACE clears your line", 12, Color("#4d5878"))
 
 
+# ------------------------------------------------------------- the versus lobby
+#
+# Versus used to be a jump straight to Apple's matchmaking sheet, which carried
+# quick match and invite-a-friend on one screen and was therefore better than the
+# two doors we would have drawn. That reasoning was sound and it is no longer the
+# whole picture: the sheet also owns the entire screen for the length of a
+# search, and with nobody else online a search finds nobody. What the player got
+# was somebody else's spinner, then nothing, on a mode they never tried twice.
+#
+# This screen is that missing half. It keeps both of Apple's doors — Invite still
+# opens the sheet, in INVITE_ONLY mode, because texting a link to a contact is
+# the one route in the whole API that reaches somebody who is not already a Game
+# Center friend — and it puts a search we can narrate and a CPU match we can
+# offer on the near side of them.
+#
+# The layout is deliberately a single column of doors rather than a composition,
+# so a fourth one can be added without moving the other three.
+
+## How long a fruitless search runs before the screen stops pretending and points
+## at the CPU door instead.
+##
+## Twenty seconds is long enough that a real opponent on a slow network is not
+## given up on, and short enough to be inside the patience of somebody who has
+## just tapped a button. It does not cancel the search — the offer appears
+## alongside one that is still running, because the two are not exclusive and
+## the player may still want to wait.
+const LOBBY_FALLBACK := 20.0
+
+## How long the current search has been running, or zero when none is. Ticked in
+## `_process` so the status line counts up rather than sitting still.
+var _lobby_search := 0.0
+
+## Who the CPU door offers. Fixed for the life of the screen rather than rolled
+## per frame, because a door whose name changes while you are reading it is a
+## door you do not trust.
+var _lobby_bot := "Duelist"
+
+
+## The screen at its landscape size — header block, three doors, the gaps between
+## them and the margin under the last. `_menu_fill` wants this to answer "how
+## tall am I", the same way every other menu here declares itself.
+const LOBBY_NATURAL := 262.0 + 3.0 * 88.0 + 2.0 * 12.0 + 110.0
+
+
 func _lobby_fill() -> float:
-	return 1.25 if portrait else 1.0
+	return _menu_fill(LOBBY_NATURAL, 1.7)
+
+
+func _lobby_spread() -> float:
+	return _menu_spread(LOBBY_NATURAL)
+
+
+## The header and the status card above the doors.
+##
+## Not a free choice, and it was 200 in landscape until the render showed why
+## that is wrong: the card is drawn at `hy + 124` and is 96 tall, so anything
+## below 220 puts the first door through the bottom of it. The extra is the gap
+## between the two, and it is the same in both orientations because the card is.
+func _lobby_head_h() -> float:
+	return 262.0
+
+
+## One door. The base is a landscape plate and the fill grows it for a thumb,
+## which is the same deal the practice and solo screens make.
+##
+## Both dimensions stay above `_draw_menu_button`'s plate threshold: under 38
+## units high or 230 wide it falls back to the plain wordless panel used for
+## Back, and these are the primary doors of the screen.
+func _lobby_door_h() -> float:
+	return 88.0 * _lobby_fill()
+
+
+func _lobby_door_w() -> float:
+	var usable: float = get_viewport_rect().size.x - GRID_MARGIN * 2.0
+	# Portrait gives the doors the whole width the way practice's do; landscape
+	# caps them, because a plate twelve hundred units across is a horizon.
+	return usable if portrait else minf(560.0, usable)
+
+
+func _lobby_door_gap() -> float:
+	return 12.0 * _lobby_spread()
+
+
+## Under the header and the status card, both of which are always drawn. Nothing
+## on this screen appears or disappears with state, so a door cannot move out
+## from under a thumb already on its way down.
+func _lobby_doors_top() -> float:
+	return _lobby_head_h() + safe_top + _menu_offset(_lobby_laid())
+
+
+func _lobby_door_rects() -> Array:
+	return _grid_rects(_lobby_doors().size(), _lobby_doors_top(), 1,
+		_lobby_door_w(), _lobby_door_h(), 12.0, 260.0, _lobby_door_gap())
 
 
 func _lobby_laid() -> float:
-	var f := _lobby_fill()
-	if Link.connected:
-		var seats: float = 2.0 if portrait else 1.0
-		return 232.0 + seats * 128.0 * f + 60.0 + 200.0 * f + 80.0
-	# Name, code, the backend pair and the two buttons, all stacked on a phone.
-	return 234.0 + 2.0 * 52.0 * f + 34.0 + 82.0 + 2.0 * 56.0 * f + 14.0 \
-		+ 24.0 + 2.0 * 66.0 * f + 90.0
+	var n := float(_lobby_doors().size())
+	# Portrait reserves almost nothing under the last door: the chevron in the
+	# corner is the way back, so unlike landscape there is no button down there
+	# to leave room for. Over-reserving it would push the whole block up the
+	# screen, which is the opposite of what the trailing margin is for.
+	return _lobby_head_h() + n * _lobby_door_h() \
+		+ (n - 1.0) * _lobby_door_gap() + 70.0 + (20.0 if portrait else 60.0)
 
 
-## Where everyone in the room sits. Four across on a desktop; on a phone they
-## wrap to two rows rather than shrinking to a width a name cannot be read at.
-func _room_seat_rects(count: int, w: float) -> Array:
-	return _grid_rects(count, 232.0 + safe_top + _menu_offset(_lobby_laid()), count,
-		w, 128.0 * _lobby_fill(), 16.0, 240.0, 12.0)
+## True once a search has gone on long enough to be worth apologising for. Only
+## ever true while one is actually running, so the CPU door goes back to its
+## ordinary self the moment the search is cancelled or answered.
+func _lobby_offering() -> bool:
+	return _versus_busy() and _lobby_search >= LOBBY_FALLBACK
 
 
-## The bottom of the seat grid, which everything else in a connected room hangs
-## off. Recomputed rather than remembered, because `_menu_buttons` is called
-## from the hit test as well as from the draw.
-func _room_foot() -> float:
-	var ids := Link.peer_ids()
-	var count := 1 + ids.size() + Link.bot_count
-	var w := 250.0 if count > 2 else 320.0
-	return _grid_bottom(_room_seat_rects(count, w), 360.0 + safe_top)
+## What the CPU door says for itself. After a fruitless search it stops being a
+## third option and starts being the answer to the question the player is by then
+## actually asking.
+func _lobby_cpu_sub() -> String:
+	var wpm := AiOpponent.paced_wpm(_lobby_bot, portrait)
+	if _lobby_offering():
+		return "Nobody about — %s is ready now" % _lobby_bot.to_upper()
+	return "%s · %d wpm · starts immediately" % [_lobby_bot.to_upper(), wpm]
 
 
+## The line under a running search. The count is there because a wait with a
+## number on it is a wait; a wait without one is a hang.
+func _lobby_search_line() -> String:
+	if not _versus_busy():
+		return ""
+	return "%s · %ds" % [net_status if net_status != "" else "looking for an opponent",
+		int(_lobby_search)]
 
-## Groups a code for reading aloud. Short single-case codes split in threes,
-## which is how people say them; long mixed-case ones split in fives.
+
+## The doors, in order, without their rectangles.
 ##
-## Never change the case here. On the default alphabet codes are case-sensitive,
-## and a player reading an upper-cased one off the screen would type something
-## that does not exist. On a single-case alphabet there is nothing to change.
-func _chunk_code(code: String) -> String:
-	var every := 3 if Link.short_codes() else 5
-	var out := ""
-	for i in code.length():
-		if i > 0 and i % every == 0:
-			out += " "
-		out += code[i]
+## Split from `_lobby_door_rects` on purpose: the rects are positioned from
+## `_lobby_laid`, which counts the doors, so a spec list that needed its own
+## rectangles to build would be a loop with no bottom to it.
+func _lobby_doors() -> Array:
+	var out: Array = []
+	var can: bool = MultiplayerManager.available()
+	var grey := Color("#4d5878")
+	var why := "needs an iPhone signed in to Game Center"
+
+	# The search takes the first slot whether it is idle or running, so cancelling
+	# does not shuffle the two doors underneath it.
+	# Every label is completed by its own stamp — the block carries a fragment and
+	# the word starts with those letters, which is the title screen's rule and the
+	# game's own loop. A label the stamp does not prefix draws as a block with an
+	# unrelated word next to it.
+	if _versus_busy():
+		out.append({
+			"rect": Rect2(), "key": "ESC", "stamp": "STOP",
+			"label": "Stop looking", "sub": _lobby_search_line(), "note": "",
+			"rating": 0, "accent": Color("#8d99bd"), "action": "versus_cancel"})
+	else:
+		out.append({
+			"rect": Rect2(), "key": "ENTER", "stamp": "QUICK",
+			"label": "Quick Match",
+			"sub": "Find anyone else looking right now" if can else why,
+			"note": "", "rating": 0,
+			"accent": Color("#c77dff") if can else grey,
+			"action": "versus_quick"})
+
+	out.append({
+		"rect": Rect2(), "key": "I", "stamp": "INV", "label": "Invite a friend",
+		"sub": "Text a link to anyone in your contacts" if can else why,
+		"note": "", "rating": 0,
+		"accent": PLAYER_ACCENT if can else grey,
+		"action": "versus_invite"})
+
+	# Always present, and never only a consolation prize behind a failed search.
+	# With nobody else online this is the one door in the room that opens, and a
+	# player who taps VERSUS to find a dead end and two grey plates does not come
+	# back to the mode a second time.
+	out.append({
+		"rect": Rect2(), "key": "C", "stamp": "CPU", "label": "CPU Match",
+		"sub": _lobby_cpu_sub(), "note": "", "rating": 0,
+		"accent": Color("#ffd166") if _lobby_offering() else Color("#90be6d"),
+		"action": "versus_cpu"})
 	return out
+
+
+## The status card's headline. Three words about what Game Center is doing,
+## because the doors underneath say what you can do about it.
+## A live search is asked about before availability, not after. The two cannot
+## honestly disagree — nothing can be matchmaking on a device Game Center is not
+## on — but ordering it the other way meant that if they ever did, the card
+## announced the mode was unavailable directly above a door saying it was
+## searching. Whichever of the two is wrong, the running search is the one the
+## player can see the consequences of.
+func _lobby_head() -> String:
+	if _versus_busy():
+		return "LOOKING FOR SOMEBODY"
+	if not MultiplayerManager.available():
+		return "NOT AVAILABLE HERE"
+	return "READY"
+
+
+## And the sentence under it. This is where a search that is going nowhere says
+## so in as many words — the door below has already turned gold by then, and a
+## card still cheerfully saying "looking" would be arguing with it.
+func _lobby_note() -> String:
+	if not MultiplayerManager.available() and not _versus_busy():
+		return "versus needs an iPhone signed in to Game Center"
+	if _versus_busy():
+		if _lobby_offering():
+			return "%ds and nobody yet — the CPU match starts straight away" \
+				% int(_lobby_search)
+		return _lobby_search_line()
+	# `net_status` carries the reason a previous attempt failed, which is worth
+	# more than the resting copy: a handshake that timed out has something to
+	# say and this is the only screen left to say it on.
+	if net_status != "":
+		return net_status
+	return "quick match finds a stranger · invite reaches anyone you can text"
+
+
+## The versus screen. A header, one card saying what Game Center is doing, and
+## the doors — see the block comment above `LOBBY_FALLBACK` for why it exists.
+func _draw_lobby(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.93), true)
+	_draw_decor()
+
+	var hy := safe_top + _menu_offset(_lobby_laid())
+	_otext(_font_bold, Vector2(cx, hy + 62.0), "VERSUS", 32, Color("#e6ecff"))
+	_otext(_font, Vector2(cx, hy + 96.0),
+		"play a person, or a machine that types back", 14, Color("#8d99bd"))
+
+	# Always drawn, in every state. A card that only appears once a search starts
+	# would push all three doors down the screen under a thumb already moving.
+	var cw := _lobby_door_w()
+	var card := Rect2(cx - cw * 0.5, hy + 124.0, cw, 96.0)
+	var accent: Color = Color("#ffd166") if _versus_busy() else (
+		PLAYER_ACCENT if MultiplayerManager.available() else Color("#4d5878"))
+	_panel(card, Color("#141b33"), Color(accent, 0.45), 10.0, 2.0)
+	_otext(_font, Vector2(cx, card.position.y + 22.0), "GAME CENTER", 10,
+		Color("#7c88ad"))
+	_text_fit_overlay(_font_bold, Vector2(cx, card.position.y + 48.0),
+		_lobby_head(), 20, card.size.x - 24.0, Color("#e6ecff"), 13)
+	_text_fit_overlay(_font, Vector2(cx, card.position.y + 74.0),
+		_lobby_note(), 12, card.size.x - 24.0, Color(accent, 0.9), 9)
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+	# The two things about versus that are true whatever the doors are doing, and
+	# that a player has no way to find out by trying. The second one is the more
+	# important: an invite sends somebody to the App Store, and Game Center does
+	# not carry the invitation through an install — so the friend who accepts and
+	# then installs arrives to no match and no explanation unless one of you knows
+	# to just do it again.
+	var foot := _grid_bottom(_lobby_door_rects(), 360.0 + safe_top) + 30.0
+	_text_fit_overlay(_font, Vector2(cx, foot),
+		"quick match needs somebody else looking at the same moment", 12,
+		size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 9)
+	_text_fit_overlay(_font, Vector2(cx, foot + 20.0),
+		"an invite reaches anyone you can text — ask again once they have it", 12,
+		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 9)
 
 
 ## Overlay twin of `_text_fit`, since the lobby draws on the overlay layer.
@@ -7317,32 +7557,6 @@ func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
 	while s > min_size and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
 		s -= 1
 	_otext(font, center, text, s, color)
-
-
-## Name and room code. `min_w` is set above what a 720px screen can give two of
-## them, so portrait stacks rather than squeezing — a room code being read out
-## over a call is the one string in this game that has to stay large.
-func _lobby_field_rect(i: int) -> Rect2:
-	var f := _lobby_fill()
-	return _grid_rects(2, 234.0 + safe_top + _menu_offset(_lobby_laid()), 2, 320.0,
-		52.0 * f, 20.0, 340.0, 34.0)[i]
-
-
-## Which backends the picker offers, in slot order.
-##
-## EOS takes the code slot whenever credentials are present: it is the same
-## "share a code" experience, but five readable characters instead of the
-## orchestrator's twenty-one, and rooms can be listed. noray stays the fallback
-## for an unconfigured checkout, so there are always exactly two slots to draw
-## and the existing layout is untouched.
-func _backend_slots() -> Array:
-	if EOSConfig.is_configured():
-		return [Link.Backend.EOS, Link.Backend.DIRECT]
-	return [Link.Backend.ROOM, Link.Backend.DIRECT]
-
-func _lobby_backend_rect(i: int) -> Rect2:
-	var top := _lobby_field_rect(1).end.y + 82.0
-	return _grid_rects(2, top, 2, 320.0, 56.0 * _lobby_fill(), 20.0, 340.0, 14.0)[i]
 
 
 func _draw_rules_panel(size: Vector2) -> void:
@@ -8951,71 +9165,26 @@ func _menu_buttons() -> Array:
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.LOBBY:
-		# Restored. A slice-replacement while splitting the title screen into
-		# four doors took this whole branch out with it, which left every button
-		# in the versus lobby drawn nowhere and clickable nowhere — Host, Join,
-		# Ready up, Leave, Add CPU. The keyboard shortcuts still worked, which is
-		# exactly why it survived the network testing that came after.
-		if Link.connected:
-			# All measured off the bottom of the seat grid, which is one row on a
-			# desktop and two on a phone. The offsets are chosen to land on the
-			# old constants at 1280, so the landscape screen is unmoved.
-			var rfoot := _room_foot()
-			# The CPU buttons flank the Ready button on a desktop. There is no
-			# room to flank anything at 720, so in portrait they go underneath.
-			var ready := Rect2(cx - 170.0, rfoot + 48.0, 340.0, 66.0)
-			if portrait:
-				var rw: float = minf(340.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
-				ready = Rect2(cx - rw * 0.5, rfoot + 48.0, rw, 66.0)
-			var bots: Array = []
-			if Link.is_host and Link.bot_count > 0:
-				bots.append(["-", "Drop CPU", Color("#8d99bd"), "dropbot"])
-			if Link.is_host and Link.free_seats() > 0:
-				bots.append(["+", "Add CPU", Color("#ffd166"), "addbot"])
-			for i in bots.size():
-				var b2: Array = bots[i]
-				var br := Rect2(cx - 336.0, ready.position.y, 150.0, 66.0)
-				if String(b2[3]) == "addbot" and not portrait:
-					br = Rect2(cx + 186.0, ready.position.y, 150.0, 66.0)
-				if portrait:
-					var half: float = (ready.size.x - 12.0) * 0.5
-					br = Rect2(ready.position.x + float(i) * (half + 12.0),
-						ready.end.y + 10.0, half, 56.0)
-				out.append({
-					"rect": br, "key": String(b2[0]), "label": String(b2[1]),
-					"sub": "", "note": "", "rating": 0,
-					"accent": b2[2], "action": String(b2[3])})
+		# The doors carry everything about themselves except where they are, so
+		# this is a zip rather than a second description of the screen. Anything
+		# added to `_lobby_doors` appears here, in the hit test and in the draw
+		# without being written down three times.
+		var doors := _lobby_doors()
+		var drects := _lobby_door_rects()
+		for i in doors.size():
+			var d: Dictionary = (doors[i] as Dictionary).duplicate()
+			d["rect"] = drects[i]
+			out.append(d)
+		# Portrait already has the chevron in the corner; a second Back inside
+		# the screen is the same button twice.
+		if not portrait:
+			# Below the two footer lines, which hang at +30 and +50 off the same
+			# edge. At +22 this sat on top of them.
 			out.append({
-				"rect": ready, "key": "ENTER",
-				"label": "Not ready" if Link.my_ready else "Ready up",
-				"sub": "", "note": "", "rating": 0,
-				"accent": Color("#ffd166") if Link.my_ready else PLAYER_ACCENT,
-				"action": "ready"})
-			# Leaving a room is not going back a screen — it disconnects other
-			# people's lobby — so this one keeps its button in portrait too.
-			var lv := rfoot + 124.0
-			if portrait:
-				lv = ready.end.y + (76.0 if bots.is_empty() else 76.0 + 56.0)
-			out.append({
-				"rect": Rect2(cx - 90.0, lv, 180.0, 38.0), "key": "ESC",
-				"label": "Leave", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#8d99bd"), "action": "leave"})
-		else:
-			var jt := _lobby_backend_rect(1).end.y + 24.0
-			var joins := _grid_rects(2, jt, 2, 320.0, 66.0, 20.0, 340.0, 12.0)
-			out.append({
-				"rect": joins[0], "key": "CTRL+H",
-				"label": "Host", "sub": "", "note": "", "rating": 0,
-				"accent": PLAYER_ACCENT, "action": "host"})
-			out.append({
-				"rect": joins[1], "key": "ENTER",
-				"label": "Join", "sub": "", "note": "", "rating": 0,
-				"accent": Color("#c77dff"), "action": "join"})
-			if not portrait:
-				out.append({
-					"rect": Rect2(cx - 90.0, (joins[1] as Rect2).end.y + 16.0, 180.0, 44.0),
-					"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
-					"accent": Color("#8d99bd"), "action": "title"})
+				"rect": Rect2(cx - 90.0, _grid_bottom(drects, 360.0 + safe_top)
+					+ 66.0, 180.0, 38.0),
+				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
+				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.BOARDS:
 		var hy := _boards_head()
 		# Two rows of two, both centred on the same 304-wide block so the pair of
@@ -9265,14 +9434,19 @@ const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
 ## just failed, with this plate the only thing that could mention it.
 func _versus_sub() -> String:
 	if not MultiplayerManager.available():
-		return "needs an iPhone or a Mac"
+		# Not "needs an iPhone or a Mac" any more, which was true of the door
+		# when the door was Apple's sheet. It now opens our own screen, and the
+		# CPU match on it works on anything — so a line reading as "there is
+		# nothing for you here" would be turning people away from a mode that
+		# is, on this device, entirely playable.
+		return "CPU matches now — online needs an iPhone"
 	if _versus_busy():
 		return net_status
 	# "signed in" is the resting state, not news. Saying it forever would turn
 	# the door's one line of copy into a status light nobody needs.
 	if net_status != "" and MultiplayerManager.state != MultiplayerManager.State.READY:
 		return net_status
-	return "Play anyone — Game Center finds them"
+	return "Quick match, invite a friend, or a CPU"
 
 
 ## What the survival door says for itself.
@@ -9922,13 +10096,8 @@ func _action_at(p: Vector2) -> String:
 		for c: Dictionary in _mastery_cards():
 			if (c["rect"] as Rect2).has_point(p):
 				return String(c["action"])
-	# The lobby's fields and backend tiles are clickable too.
-	if phase == Phase.LOBBY and not Link.connected:
-		for i in 2:
-			if _lobby_field_rect(i).has_point(p):
-				return "field:%d" % i
-			if _lobby_backend_rect(i).has_point(p):
-				return "backend:%d" % i
+	# The lobby needs nothing of its own here: its doors are ordinary menu
+	# buttons and were tested with the rest of them at the top.
 	return ""
 
 
@@ -9970,24 +10139,67 @@ func _activate(action: String) -> void:
 	elif action == "versus":
 		paused = false
 		_hover_action = ""
-		# Straight to Apple's screen. It carries quick match and invite-a-friend
-		# together, and the invite half texts a link to any contact rather than
-		# only to Game Center friends — so a screen of our own in front of it
-		# would be two worse copies of its two doors and a picker Apple returns
-		# almost nobody for.
+		# To our own screen rather than straight to Apple's. The sheet is still
+		# behind the Invite door — see `versus_invite` — but it is no longer the
+		# whole of versus, because it owned the screen for the length of a search
+		# and left no room to say that a search had found nobody.
 		#
-		# A search already running is left alone rather than restarted: the sheet
-		# refuses to open unless the state is READY, and the title plate is
-		# already saying what is happening.
-		if _versus_busy():
+		# A search already running is not restarted or interrupted; the lobby
+		# opens showing it, which is the state the player is walking into.
+		#
+		# Rolled here rather than per frame so the CPU door names the same
+		# opponent for as long as the screen is up.
+		if not _versus_busy():
+			_lobby_bot = AiOpponent.ROSTER.pick_random()
+		phase = Phase.LOBBY
+		Sfx.play("count", 1.2)
+	elif action == "versus_quick":
+		# The headless matchmaker, so our own status card stays in front instead
+		# of Apple's sheet covering the screen for the whole search.
+		if _versus_busy() or not MultiplayerManager.available():
 			Sfx.play("reject", 1.2)
-		elif MultiplayerManager.available():
-			MultiplayerManager.open_native_matchmaker()
-			Sfx.play("count", 1.2)
 		else:
-			# The plate's own subtitle says why, so this only has to not pretend
-			# something happened.
+			net_status = ""
+			_lobby_search = 0.0
+			MultiplayerManager.find_match()
+			Sfx.play("count", 1.2)
+	elif action == "versus_invite":
+		# Apple's sheet, narrowed to the one door worth having it for: Invite
+		# Friends texts a link to any contact, which is the only route in the
+		# whole API that reaches somebody who is not already a Game Center
+		# friend. INVITE_ONLY drops the quick match and SharePlay halves, which
+		# this screen now does better because it can talk while it waits.
+		if _versus_busy() or not MultiplayerManager.available():
 			Sfx.play("reject", 1.2)
+		else:
+			net_status = ""
+			MultiplayerManager.open_native_matchmaker(
+				MultiplayerManager.Native.INVITE_ONLY)
+			Sfx.play("count", 1.2)
+	elif action == "versus_cancel":
+		# Stops the search and stays put. Walking back to the title as well would
+		# take away the three doors at the moment the player has just said they
+		# want a different one.
+		#
+		# `leave_match`, not `cancel_find`. The busy states this button is drawn
+		# for are MATCHMAKING, CONNECTING and HANDSHAKING, and `cancel_find`
+		# returns without doing anything in the last two — so a search that had
+		# found somebody and stalled shaking hands, which is exactly the case
+		# worth escaping, had a Stop button that did nothing at all.
+		# `leave_match` forwards to `cancel_find` when it is the right call.
+		MultiplayerManager.leave_match()
+		_lobby_search = 0.0
+		Sfx.play("back")
+	elif action == "versus_cpu":
+		# A real versus match against a local bot: one opponent, normal rules,
+		# nothing switched off. Any search still running is dropped first, since
+		# a match arriving mid-game would have nowhere to go.
+		# `leave_match` rather than `cancel_find`, for the reason spelled out
+		# under `versus_cancel`: it is the one that works in all three states.
+		if _versus_busy():
+			MultiplayerManager.leave_match()
+		_lobby_search = 0.0
+		start_match(_lobby_bot, 1)
 	elif action == "buy":
 		# The title plate and the settings row are the same purchase, so they run
 		# the same call rather than each keeping its own idea of when it is

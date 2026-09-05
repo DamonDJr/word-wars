@@ -1,13 +1,19 @@
 extends SceneTree
-## What is left of versus once Apple's screen owns the matchmaking.
+## Versus, now that the game owns the screen again.
 ##
-## There is no versus screen any more — the title door opens Apple's sheet
-## directly — so what used to be tested here (three doors, a friend picker, a
-## layout that predicted its own height) went with it. What remains is the part
-## the game still owns and can still get wrong:
+## The title door used to open Apple's sheet directly and there was no versus
+## screen to test. There is one again — see the block above `LOBBY_FALLBACK` in
+## `game.gd` for why — and it is back on this list, because a lobby that is drawn
+## wrong is drawn wrong on a device and looks fine on a desk:
 ##
-##   * the door itself, which must not start a second search on top of one
-##     already running, and must fail quietly rather than pretend;
+##   * the door, which opens our lobby and must not start a second search on
+##     top of one already running, nor pretend when Game Center is not there;
+##   * the lobby itself — three doors that must not overlap the card above them
+##     or run off the screen, and whose first door swaps to Stop while a search
+##     is live so the plate and the ENTER key cannot disagree;
+##   * the fallback, which must offer the CPU match once a search has gone
+##     nowhere for long enough, and must stop offering it the moment the search
+##     is over;
 ##   * the rematch negotiation, which is ours end to end and may only exist
 ##     while there is somebody to negotiate with;
 ##   * the summary screen, whose foot is *measured* rather than drawn — so if
@@ -15,7 +21,9 @@ extends SceneTree
 ##     the table.
 ##
 ## Game Center is unavailable on Linux, which is the same shape as "not signed
-## in" — the case every one of these still has to behave in.
+## in" — the case every one of these still has to behave in. The searching states
+## are reached by writing `MultiplayerManager.state` directly, which is the only
+## way to see them on a machine Apple's matchmaker will not run on.
 ##
 ##   godot --headless --script tools/versustest.gd
 
@@ -46,26 +54,170 @@ func _press(code: int) -> void:
 	game._unhandled_key_input(ev)
 
 
-## The door hands straight over to Apple. All this end has to do is not make
-## things worse: no second search, no phase change, no silent pretence.
+## The door opens our lobby, on every platform. It is the one screen in versus
+## that does not need Game Center to be worth arriving at — the CPU match is
+## behind it — so it must open with the plugin refusing to load, which on Linux
+## is the only way it ever loads.
 func _the_door() -> void:
 	print("--- the versus door ---")
 	game.phase = game.Phase.TITLE
 
 	game._activate("versus")
-	_expect("the door does not navigate anywhere of ours",
-		game.phase == game.Phase.TITLE)
+	_expect("the door opens the lobby", game.phase == game.Phase.LOBBY)
 	_expect("and leaves no search running with Game Center off",
 		mm.available() or not game._versus_busy())
 
 	# The title keys are the other way in, and must agree with the plate.
+	game.phase = game.Phase.TITLE
 	_press(KEY_4)
+	_expect("4 is the same door", game.phase == game.Phase.LOBBY)
+	game.phase = game.Phase.TITLE
 	_press(KEY_V)
-	_expect("4 and V are still the door, and still harmless",
-		game.phase == game.Phase.TITLE)
+	_expect("and so is V", game.phase == game.Phase.LOBBY)
 
 	var sub: String = game._versus_sub()
 	_expect("the plate says something either way: '%s'" % sub, sub != "")
+
+
+## The lobby, measured. Every number here is one the render caught being wrong
+## at least once: the status card is drawn at a fixed offset and the doors are
+## laid out from `_lobby_head_h`, so the two have no shared arithmetic keeping
+## them apart — only the constant, which is exactly the kind of thing that goes
+## stale when somebody makes the card taller.
+func _the_lobby_fits() -> void:
+	print("--- the lobby fits, both ways up ---")
+	game.phase = game.Phase.LOBBY
+	mm.state = mm.State.OFF
+
+	for tall in [true, false]:
+		_orient(tall)
+		var which := "portrait" if tall else "landscape"
+		var view: Vector2 = game.get_viewport_rect().size
+		var rects: Array = game._lobby_door_rects()
+		_expect("%s draws all three doors" % which, rects.size() == 3)
+
+		# The card is drawn at `hy + 124` and is 96 tall; the doors start at
+		# `hy + _lobby_head_h()`. Anything under 220 puts the first door through
+		# the bottom of the card, which is what 200 did.
+		_expect("%s clears the status card (%d >= 220)"
+			% [which, int(game._lobby_head_h())], game._lobby_head_h() >= 220.0)
+
+		var first: Rect2 = rects[0]
+		var last: Rect2 = rects[rects.size() - 1]
+		_expect("%s keeps the doors inside the width" % which,
+			first.position.x >= 0.0 and first.end.x <= view.x)
+		_expect("%s doors are wide enough to draw as plates" % which,
+			first.size.x >= 230.0 and first.size.y >= 38.0)
+
+		# Landscape cannot scroll — `_scrollable` is portrait-only across the
+		# whole game — so anything past the bottom edge there is unreachable,
+		# including the Back button hanging off the last door.
+		if not tall:
+			var back := Rect2()
+			for b: Dictionary in game._menu_buttons():
+				if String(b["action"]) == "title":
+					back = b["rect"]
+			_expect("landscape keeps Back on screen and under the doors",
+				back.end.y <= view.y and back.position.y >= last.end.y)
+
+	_orient(true)
+
+
+## The first door is a toggle, and three things read it: the plate, the ENTER
+## key and the back chevron. They must not be able to disagree.
+func _the_search_door_swaps() -> void:
+	print("--- the search door swaps with the search ---")
+	game.phase = game.Phase.LOBBY
+
+	mm.state = mm.State.OFF
+	_expect("idle offers Quick Match",
+		String((game._lobby_doors()[0] as Dictionary)["action"]) == "versus_quick")
+	_expect("and the chevron goes back to the title",
+		game._back_action() == "title")
+
+	mm.state = mm.State.MATCHMAKING
+	_expect("searching offers Stop instead",
+		String((game._lobby_doors()[0] as Dictionary)["action"]) == "versus_cancel")
+	_expect("and the chevron cancels rather than leaving",
+		game._back_action() == "versus_cancel")
+	# The states `cancel_find` alone would not have escaped.
+	mm.state = mm.State.HANDSHAKING
+	_expect("a stalled handshake still offers Stop",
+		String((game._lobby_doors()[0] as Dictionary)["action"]) == "versus_cancel")
+
+	mm.state = mm.State.OFF
+
+
+## The whole point of the screen: a search that finds nobody must end up
+## pointing at the match that is available, rather than at a spinner.
+func _the_fallback_offers_a_bot() -> void:
+	print("--- the fallback ---")
+	game.phase = game.Phase.LOBBY
+	mm.state = mm.State.MATCHMAKING
+
+	game._lobby_search = 0.0
+	_expect("a fresh search offers nothing yet", not game._lobby_offering())
+	game._lobby_search = game.LOBBY_FALLBACK - 0.1
+	_expect("and still nothing a tenth of a second early",
+		not game._lobby_offering())
+	game._lobby_search = game.LOBBY_FALLBACK + 0.1
+	_expect("past the fallback it offers the CPU match",
+		game._lobby_offering())
+
+	var cpu := {}
+	for d: Dictionary in game._lobby_doors():
+		if String(d["action"]) == "versus_cpu":
+			cpu = d
+	_expect("the CPU door names who is waiting (%s)" % String(cpu["sub"]),
+		String(cpu["sub"]).contains(String(game._lobby_bot).to_upper()))
+	_expect("and the card says so too",
+		game._lobby_note().contains("nobody yet"))
+
+	# A search that is over stops apologising for itself, whatever the clock
+	# was left at — `_lobby_offering` reads the state, not just the timer.
+	mm.state = mm.State.OFF
+	_expect("and it stops the moment the search does",
+		not game._lobby_offering())
+	game._lobby_search = 0.0
+
+
+## The payoff. A dead versus mode is the thing this screen exists to fix, so the
+## CPU door has to actually deal a match — with a real opponent in seat one, on
+## a machine where Game Center never answers.
+func _the_cpu_door_deals_a_match() -> void:
+	print("--- the CPU door deals a real match ---")
+	game.phase = game.Phase.LOBBY
+	mm.state = mm.State.OFF
+	game._activate("versus_cpu")
+
+	_expect("it counts a match in", game.phase == game.Phase.COUNTDOWN)
+	_expect("in normal mode, not a lesson", game.mode == game.Mode.NORMAL)
+	_expect("with two seats in play", game.slots_in_play == 2)
+
+	var bots := 0
+	for s in game.sides:
+		if s.in_match and s.bot != null:
+			bots += 1
+	_expect("and one of them is a configured bot", bots == 1)
+	# A CPU match can go again; the summary's Rematch button reads this.
+	_expect("and it can be replayed from the summary", game._rematch_possible())
+
+	game.phase = game.Phase.TITLE
+
+
+## Every door has to be reachable by the thing that turns a tap into an action,
+## which is a different code path from the one that drew it.
+func _every_door_is_hittable() -> void:
+	print("--- every door answers a tap ---")
+	game.phase = game.Phase.LOBBY
+	mm.state = mm.State.OFF
+	_orient(true)
+
+	for b: Dictionary in game._menu_buttons():
+		var r: Rect2 = b["rect"]
+		var act := String(b["action"])
+		_expect("%s answers at its own centre" % act,
+			game._action_at(r.get_center()) == act)
 
 
 ## Rematch asks the opponent you already have, so the button may only exist
@@ -314,6 +466,11 @@ func _init() -> void:
 	_orient(false)
 
 	_the_door()
+	_the_lobby_fits()
+	_the_search_door_swaps()
+	_the_fallback_offers_a_bot()
+	_the_cpu_door_deals_a_match()
+	_every_door_is_hittable()
 	_rematch_follows_the_opponent()
 	_summary_fits_a_phone()
 
