@@ -229,6 +229,13 @@ const PREF_DEFAULTS := {
 	## random personality rolled at the start of each match, anything else names
 	## one from the roster.
 	"solo": ["Duelist", "", ""],
+	## Split the on-screen keyboard into two thumb-sized halves pinned to the
+	## edges of the screen. Only reachable, and only offered, on a tablet — see
+	## `_kb_form` in `game.gd`. On by default there, because a foot-wide
+	## keyboard has a middle neither thumb can get to, and the players who set
+	## the thing on a table and use more fingers are the ones who will go
+	## looking for the switch.
+	"split_keys": true,
 	## Set once the tutorial has been finished, so the game only nags once.
 	"taught": false,
 	## Set the first time the game opens the tutorial by itself. Separate from

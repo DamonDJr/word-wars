@@ -448,8 +448,10 @@ class SideState extends RefCounted:
 	var target := 0
 	## Slots beyond the roster size are not in the match at all.
 	var in_match := false
-	## What this player has typed so far, for the watch-them-work display.
-	var typing := ""
+	# There was a `typing` field here, holding what a peer had entered so far so
+	# it could be printed under their board. Both the display and the packet
+	# that fed it are gone — see `_typing_of` — and the field went with them
+	# rather than being left set-but-unread, which is how a leak grows back.
 
 	func active_slot() -> bool:
 		return in_match
@@ -607,6 +609,17 @@ var net_status := ""
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
+## How many points one design unit is worth here, and whether the glass is big
+## enough to be a tablet. Both measured in `_measure_device`, both zero and
+## false on a desktop and on anything that will not say.
+##
+## These exist so the keyboard can be laid out at a fixed physical size rather
+## than as a fraction of the screen — see `Keyboard.KEY_W_PT`. Nothing here asks
+## what platform it is on, in keeping with the rest of the layout: a tablet is
+## something the game *measures*, which is why the whole iPad layout can be
+## brought up on a desktop with a command-line flag instead of a device.
+var points_per_unit := 0.0
+var tablet := false
 ## Every board in the match. `sides[0]` is always yours; the rest are rivals,
 ## living or knocked out. `player` and `ai_side` are kept as names for slot 0 and
 ## the first rival so the one-on-one code paths still read naturally.
@@ -879,6 +892,7 @@ func _apply_orientation() -> void:
 	portrait = want_portrait
 	get_window().content_scale_size = want
 	_measure_safe_area(want)
+	_measure_device(want)
 	_layout_boards()
 	queue_redraw()
 	_overlay.queue_redraw()
@@ -919,6 +933,96 @@ func _measure_safe_area(base: Vector2i) -> void:
 			if parts.size() == 2:
 				safe_top = maxf(0.0, parts[0].to_float())
 				safe_bottom = maxf(0.0, parts[1].to_float())
+
+
+## How physically big this screen is, and whether it is a tablet.
+##
+## Two numbers, both of which the keyboard needs and neither of which anything
+## else in the layout has ever had to ask about.
+##
+## `points_per_unit` is the size of a design unit in points. `_measure_safe_area`
+## already works out how many *pixels* a unit is worth — that is the same `k` —
+## and a point is `screen_get_scale()` pixels, so this is that division and
+## nothing more. It comes out at 0.55 on a modern iPhone and 0.82 on an iPad,
+## which is the whole reason the keyboard cannot be written in units alone.
+##
+## `tablet` is decided by the shape of the design-space viewport rather than by
+## asking iOS what it is running on. With `expand` stretching, a phone pins its
+## width and overflows vertically — the viewport comes out 720x1561, a ratio of
+## 0.46. A tablet is the other way round: 4:3 glass pins the height and the
+## viewport widens to about 1000x1440, a ratio of 0.70. Nothing else lands
+## between those, so one threshold separates them, and the same rule that names
+## an iPad also names a desktop window dragged to roughly that shape — which is
+## the only reason any of this could be built and looked at without one.
+const TABLET_RATIO := 0.58
+
+func _measure_device(base: Vector2i) -> void:
+	points_per_unit = 0.0
+	tablet = false
+	var win := DisplayServer.window_get_size()
+	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
+		return
+	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
+	var dots: float = maxf(1.0, DisplayServer.screen_get_scale(
+		DisplayServer.window_get_current_screen()))
+	if k > 0.0:
+		points_per_unit = k / dots
+
+	# Measured off the viewport the game will actually draw into, which is the
+	# window divided by that same factor — not off the window, whose pixel
+	# dimensions say nothing about shape once the scale factor is in play.
+	if k > 0.0:
+		var vp := Vector2(float(win.x) / k, float(win.y) / k)
+		tablet = vp.y > 0.0 and (vp.x / vp.y) > TABLET_RATIO
+
+	# `godot -- --ipad` brings the whole tablet layout up in a desktop window,
+	# the way `--safe=` brings up a notch. Without it none of this could be seen
+	# before an App Store build, and a layout nobody can look at is a layout
+	# nobody can fix. The point figure is an iPad Air's, so what appears on the
+	# desktop is the real thing at the real size rather than an impression.
+	if OS.get_cmdline_user_args().has("--ipad"):
+		tablet = true
+		points_per_unit = 0.8194
+
+
+## Which keyboard this screen gets, and what to size it against.
+##
+## Split is a tablet-only shape — the whole point of it is that the two halves
+## are further apart than one hand can span, which on a phone describes a
+## keyboard nobody can reach the middle of. So a phone is never offered it and
+## never asked about it, and the preference below only does anything on glass
+## where both answers are usable.
+func _kb_form() -> int:
+	if tablet and bool(Profile.pref("split_keys")):
+		return Keyboard.Form.SPLIT
+	return Keyboard.Form.FULL
+
+
+## Zero on a phone, which is what tells `Keyboard` to lay itself out the way it
+## always has. See `_metrics` there for why phones are left on the old path.
+func _kb_ppu() -> float:
+	return points_per_unit if tablet else 0.0
+
+
+# `Keyboard`'s statics all want the same two extra arguments, and every caller
+# in this file has the same answer for them. These are that answer, applied
+# once, so the ten callsites read the way they did before the keyboard grew a
+# second shape — and so a new one cannot be added that forgets to ask.
+
+func _kb_height(size: Vector2) -> float:
+	return Keyboard.height(size, _kb_ppu(), _kb_form())
+
+
+## The multiplier for anything sized to match the keys: the type on the caps,
+## the pad above the top row, and the two touch corrections in `_key_at`. All of
+## those are physical quantities — a thumb does not get bigger on a tablet — so
+## they track the keys rather than the screen.
+func _kb_type_scale(size: Vector2) -> float:
+	return Keyboard.type_scale(size, _kb_ppu(), _kb_form())
+
+
+func _kb_emote_rect(size: Vector2, bottom: float) -> Rect2:
+	return Keyboard.emote_rect(size, bottom, _kb_ppu(), _kb_form())
 
 
 ## Push the equipped board theme and block style out to everything that paints.
@@ -995,6 +1099,10 @@ func _layout_boards() -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var duel := slots_in_play <= 2
 
+	if portrait and tablet:
+		_layout_tablet_boards(size)
+		return
+
 	if portrait:
 		# One board, sized by what is left after the keyboard has taken its
 		# share. There is no room for a second playfield on a phone and no point
@@ -1009,6 +1117,143 @@ func _layout_boards() -> void:
 			s2.board.position = Vector2((size.x - bw * scale) * 0.5, top)
 		return
 
+	_layout_landscape_boards(size, bw, duel)
+
+
+## How big your own board is allowed to get on a tablet, and how big a rival's
+## is against it.
+##
+## The cap is the interesting one. There is room on an iPad for a playfield half
+## again as tall as the one this is capped at — the arithmetic allows 1.63 —
+## and taking it would leave nothing beside it worth showing. A board you can
+## read at a glance from a foot away is the whole requirement, and 1.45 clears
+## that with most of a rival's board left over, which is what the extra glass is
+## actually for.
+##
+## Rivals at two thirds. Big enough that the shape of somebody else's trouble is
+## legible across the screen; small enough that yours is plainly the board the
+## game is about. Equal boards would read as a split-screen game, which this is
+## not — you play your own board and glance at theirs.
+const TABLET_BOARD_MAX := 1.75
+const TABLET_RIVAL_SCALE := 0.68
+## Clear space between your rail and the nearest rival board, and the margin
+## outside the rivals.
+const TABLET_GUTTER := 40.0
+const TABLET_MARGIN := 28.0
+## How much room each of your two rails needs. The rails carry the attack chips
+## — see `_draw_portrait_rails` — and a chip narrower than this sets its prefix
+## at a size that cannot be read from tablet distance, which is the whole reason
+## the chips exist. So this is a floor the board is sized *against* rather than
+## whatever happens to be left once the board has taken what it wants.
+const TABLET_MIN_RAIL := 130.0
+
+
+## Portrait on a tablet: your board on the left with both its rails, every live
+## rival stacked down the right.
+##
+## This is the layout the port exists for. A phone reduces rivals to a name, a
+## life count and a number — see `_portrait_rival_cards` — not because that is
+## the right amount to know about somebody but because a phone has room for one
+## playfield and it had better be yours. A tablet has room for both, so both are
+## drawn, and the thing you have been told about all match is finally a thing
+## you can watch.
+##
+## What is deliberately *not* restored along with their board is their
+## half-typed word. See `_typing_of`: seeing where somebody's blocks are is
+## reading the position, and seeing what they are about to type is reading their
+## hand. This layout gives the first and still refuses the second.
+##
+## Your board sits centred in whatever is left after the rivals have taken the
+## right-hand side, rather than pinned to the left margin, so its two rails come
+## out the same width as each other — `_draw_portrait_rails` measures the left
+## gutter and assumes the right one matches.
+func _layout_tablet_boards(size: Vector2) -> void:
+	var bw := WWBoard.COLS * WWBoard.CELL
+	var bh := WWBoard.ROWS * WWBoard.CELL
+	var top := _portrait_board_top()
+	var room := _portrait_board_bottom() - top
+
+	var rivals: Array = []
+	for s: SideState in sides:
+		if s.slot > 0 and s.in_match:
+			rivals.append(s)
+
+	# How big your board can be is a question about width, not height, and it
+	# was worth solving rather than capping. Everything across the screen scales
+	# with the same number — your board, both rails, the rival column beside it,
+	# because a rival is a fixed fraction of you — so the whole row is one
+	# inequality with one unknown, and this is it solved for the largest board
+	# that still leaves the rails their floor.
+	#
+	# Capping it at a hand-picked 1.45 instead, which is what this did first,
+	# was leaving two hundred units of height unused on every iPad while the
+	# constraint that actually binds went unstated. Height only wins in the
+	# modes with nobody to play against, where there is no column to fit and the
+	# board grows until it runs out of screen.
+	#
+	# `per_scale` is the width that grows with the scale — your board, plus a
+	# rival's if there is one. `fixed` is what does not: the two rails, and the
+	# gutter and margin either side of the rival column. The 22 is what
+	# `_draw_rail` spends before its chips start, ten of clearance off the board
+	# edge and twelve of its own inset. Budgeting the chip width alone left the
+	# rails 98 wide against a floor of 130, and the word INCOMING — which is
+	# centred on the rail rather than clipped to it — ran off the left of the
+	# screen.
+	var per_scale: float = bw
+	var fixed: float = (TABLET_MIN_RAIL + 22.0) * 2.0
+	if not rivals.is_empty():
+		per_scale += bw * TABLET_RIVAL_SCALE
+		fixed += TABLET_GUTTER + TABLET_MARGIN
+	var scale: float = clampf(
+		minf((size.x - fixed) / per_scale, room / bh), 0.7, TABLET_BOARD_MAX)
+
+	var rscale: float = scale * TABLET_RIVAL_SCALE
+	var rw: float = bw * rscale
+	# A rival column only as wide as it has to be, so the space it does not use
+	# goes back to your side of the screen rather than being reserved for it.
+	var used: float = 0.0 if rivals.is_empty() else rw + TABLET_GUTTER + TABLET_MARGIN
+	var mine: float = size.x - used
+
+	player.board.scale = Vector2(scale, scale)
+	# Centred in the playfield band rather than hung off the top of it. Where
+	# the two constraints disagree — the daily, where width is no object and the
+	# board is as tall as it can be — this changes nothing, and where width wins
+	# it puts the slack above and below the board instead of all of it below.
+	player.board.position = Vector2((mine - bw * scale) * 0.5,
+		top + (room - bh * scale) * 0.5)
+
+	# Rivals share the right-hand column top to bottom. One rival — which is
+	# every networked match and most single-player ones — gets the whole of it
+	# and is simply placed at its natural size; three have to shrink to stack,
+	# and shrink together so they stay comparable with each other.
+	if rivals.is_empty():
+		return
+	var rx: float = size.x - TABLET_MARGIN - rw
+	# Room for the name and lives above each board and the chain meter below —
+	# `_draw_rival_panel` hangs those off the board rect at fixed offsets, and
+	# stacked boards have to leave space for them between one and the next.
+	var furniture := 96.0
+	var each: float = room / float(rivals.size())
+	var fit: float = clampf((each - furniture) / bh, 0.4, rscale)
+	if rivals.size() > 1:
+		rscale = fit
+		rw = bw * rscale
+		rx = size.x - TABLET_MARGIN - rw
+
+	for i in rivals.size():
+		var s3: SideState = rivals[i]
+		s3.board.scale = Vector2(rscale, rscale)
+		# Down from the top of the playfield area, each one below the last, with
+		# the furniture gap between them. A single rival is nudged down so its
+		# board is vertically centred against yours instead of hanging off the
+		# top, which is where a lone panel otherwise floats.
+		var y: float = top + float(i) * (bh * rscale + furniture)
+		if rivals.size() == 1:
+			y = top + (room - bh * rscale) * 0.5
+		s3.board.position = Vector2(rx, y)
+
+
+func _layout_landscape_boards(size: Vector2, bw: float, duel: bool) -> void:
 	for s: SideState in sides:
 		if s.slot == 0:
 			s.board.position = Vector2(BOARD_MARGIN_X, BOARD_TOP)
@@ -1042,6 +1287,15 @@ func _layout_boards() -> void:
 ## wrong shape.
 func _portrait_rival_cards(size: Vector2) -> Array:
 	var out: Array = []
+	# A tablet draws the rivals' actual boards instead — see
+	# `_layout_tablet_boards` — so there are no cards, and everything that hangs
+	# off one has to hang off something else. Returning empty rather than
+	# leaving the rectangles computed-but-unused is what makes that a compile-
+	# time-ish fact: the emote anchors below check for empty and take the other
+	# path, and anything new that asks for a card gets nothing rather than a
+	# plausible rectangle over the middle of somebody's playfield.
+	if tablet:
+		return out
 	var rivals: Array = []
 	for s: SideState in sides:
 		if s.slot > 0 and s.in_match:
@@ -1092,6 +1346,18 @@ func _draw_portrait_emotes(size: Vector2) -> void:
 ## of the two it was.
 func _portrait_emote_anchors(size: Vector2) -> Array:
 	var cards := _portrait_rival_cards(size)
+	if cards.is_empty() and tablet:
+		# No cards on a tablet, but there is something better to hang them off:
+		# the rival's own board. Theirs floats to its left, yours to the left of
+		# your own board, so each bubble sits beside the playfield it came from
+		# and the two cannot be mixed up.
+		var rivals := _living_rivals()
+		if rivals.is_empty():
+			return []
+		var them := _board_rect(rivals[0])
+		var you := _board_rect(player)
+		return [Vector2(them.position.x - 58.0, them.get_center().y),
+			Vector2(you.position.x - 58.0, you.get_center().y)]
 	if cards.is_empty():
 		return []
 	var r: Rect2 = (cards[0] as Dictionary)["rect"]
@@ -1105,7 +1371,16 @@ func _portrait_emote_anchors(size: Vector2) -> Array:
 
 
 func _draw_portrait_hud(size: Vector2) -> void:
-	var cx := size.x * 0.5
+	# Centred on your own board rather than on the screen. On a phone those are
+	# the same point. On a tablet your board sits left of centre to make room
+	# for the rivals, and a screen-centred header hangs over the gap between the
+	# two boards belonging to neither — while the rivals have names and life
+	# counts of their own hung off theirs. Anchoring it here makes your side of
+	# the screen read as one column: clock, score, lives, board, the word you
+	# are typing.
+	var cx: float = size.x * 0.5
+	if tablet:
+		cx = _board_rect(player).get_center().x
 	# The header hangs off the top of the safe area rather than the top of the
 	# screen, so the clock does not sit behind the Dynamic Island.
 	var top := safe_top
@@ -1160,9 +1435,26 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# and the line you are typing, stacked into the gap above the keyboard.
 	_draw_portrait_rails()
 
+	# On a tablet the rivals get their real boards down the right-hand side
+	# rather than a row of cards under the clock. Same panel the landscape
+	# layout draws, because it is the same thing: a board with a name, a life
+	# count and a chain meter arranged around it.
+	if tablet:
+		for s3: SideState in sides:
+			if s3.slot > 0 and s3.in_match:
+				_draw_rival_panel(s3)
+
 	var below := _portrait_board_bottom()
+	# The band under the board is `104 * band` tall — see
+	# `_portrait_board_bottom` — so the three things stacked in it are placed as
+	# fractions of that height rather than at fixed offsets. They were fixed,
+	# which was invisible while every screen was a phone and the scale never
+	# left 1.0 to 1.15, and put the commentary line twenty-six units inside the
+	# top row of keys the moment a tablet made the band shorter than the numbers
+	# written into it.
+	var band := _kb_type_scale(size)
 	var bw := WWBoard.COLS * WWBoard.CELL * player.board.scale.x
-	var meter := Rect2(cx - bw * 0.5, below + 30.0, bw, 6.0)
+	var meter := Rect2(cx - bw * 0.5, below + 30.0 * band, bw, 6.0)
 	draw_rect(meter, Color("#141b33"), true)
 	if player.chain > 0:
 		var frac: float = clampf(player.chain_timer / maxf(player.chain_window, 0.01),
@@ -1177,8 +1469,8 @@ func _draw_portrait_hud(size: Vector2) -> void:
 			col = Color("#ffd166")
 		elif not WordBank.is_valid(typed):
 			col = Color("#7c88ad")
-	_text_fit(_font_bold, Vector2(cx, below + 66.0), typed.to_upper(), 34,
-		size.x - 40.0, col)
+	_text_fit(_font_bold, Vector2(cx, below + 66.0 * band), typed.to_upper(), 34,
+		_input_width(size), col)
 
 	var note := ""
 	if hits > 0:
@@ -1195,8 +1487,25 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# has spare attention for mid-word. The band under the board was widened by
 	# the same amount it grew, so it is not sitting on the keyboard.
 	if note != "":
-		_text_fit(_font, Vector2(cx, below + 96.0), note, 17, size.x - 40.0,
+		_text_fit(_font, Vector2(cx, below + 96.0 * band), note, 17,
+			_input_width(size),
 			Color("#ffd166") if hits > 0 else Color("#8d99bd"))
+
+
+## How wide the typed line and the commentary under it are allowed to run.
+##
+## The whole screen minus a margin on a phone, where the board is the only thing
+## on it. On a tablet the rivals are sitting in the right-hand third and a long
+## word set at 34 would run straight across them, so it is held to your own
+## side of the screen — which is where it belongs anyway, being your word.
+func _input_width(size: Vector2) -> float:
+	if not tablet:
+		return size.x - 40.0
+	var rivals := _living_rivals()
+	if rivals.is_empty():
+		return size.x - 40.0
+	var mine: float = _board_rect(rivals[0]).position.x - TABLET_GUTTER
+	return maxf(240.0, mine - 40.0)
 
 
 ## The two columns either side of the board in portrait.
@@ -1296,13 +1605,20 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 ## is 17 now, and without the extra it would be drawn over the top row of keys.
 func _portrait_board_bottom() -> float:
 	var size := get_viewport_rect().size
-	return _keyboard_bottom() - Keyboard.height(size) - 104.0 * Keyboard.ui_scale(size)
+	return _keyboard_bottom() - _kb_height(size) - 104.0 * _kb_type_scale(size)
 
 
 ## Where the board starts, below the status header and whatever the phone has
 ## parked at the top of the screen.
+## `PORTRAIT_BOARD_TOP` is 208 because that is what the phone header needs:
+## clock, pressure countdown, your lives, and then a row of rival cards under
+## them. A tablet has no rival cards — the rivals are boards down the side now —
+## so the header ends after the life pips and the playfield starts where the
+## cards used to, which is most of a hundred units earlier.
+const TABLET_BOARD_TOP := 132.0
+
 func _portrait_board_top() -> float:
-	return PORTRAIT_BOARD_TOP + safe_top
+	return (TABLET_BOARD_TOP if tablet else PORTRAIT_BOARD_TOP) + safe_top
 
 
 ## The baseline the keyboard's last row sits on. Held off the very bottom edge
@@ -1560,14 +1876,29 @@ func _owned_here(s: SideState) -> bool:
 	return s.is_local or s.bot != null
 
 
-## What a given board is mid-way through typing: your own line, a bot's progress,
-## or whatever a peer last told us.
+## What a given board is mid-way through typing — which, for anybody but you, is
+## nothing at all.
+##
+## A half-typed word is the one piece of state in this game that is genuinely
+## private. It is somebody's plan several seconds before they commit to it, and
+## whoever can read it knows which of their blocks are about to go and roughly
+## how much is about to come back. None of that is a thing you are meant to be
+## able to find out by looking.
+##
+## It leaked three separate ways, none of them ever a deliberate feature: drawn
+## as text under the rival's board in landscape, fed to `highlight_word` so the
+## blocks their word would reach lit up on their own playfield, and sent over
+## the wire in every state packet as "t". Fixing it at each callsite would have
+## fixed it until somebody added a fourth, so it is fixed here instead — every
+## reader of an opponent's word now reads an empty string, and the ones that
+## already handled "nothing typed yet" gracefully needed no change at all.
+##
+## Bots are covered by the same rule, though there is plainly no fairness
+## argument for hiding a CPU's word from you. A rule with an exception in it
+## gets forgotten at exactly the callsite that matters; "nobody's word but yours
+## is ever drawn" is a rule that can be checked by reading one function.
 func _typing_of(s: SideState) -> String:
-	if s.is_local:
-		return typed
-	if s.bot != null:
-		return s.bot.visible_text()
-	return s.typing
+	return typed if s.is_local else ""
 
 
 ## Opening the menu freezes a solo match outright. It cannot freeze a networked
@@ -3168,9 +3499,15 @@ func _process(delta: float) -> void:
 		# There is no rival in a lesson or a practice run, so its board is not
 		# drawn at all — an empty playfield sitting there reads as an opponent
 		# who is somehow doing nothing.
+		# Portrait hides everybody else's playfield because a phone has room for
+		# exactly one and it had better be yours — the rivals become cards under
+		# the clock instead. A tablet is portrait too and has room for both, so
+		# it is excused: `_layout_tablet_boards` has already put theirs down the
+		# right-hand side, and this is the line that was leaving that space
+		# occupied by a board with `visible` still false.
 		s.board.visible = showing_boards and s.in_match \
 			and (mode == Mode.NORMAL or s.slot == 0) \
-			and (not portrait or s.slot == 0)
+			and (not portrait or tablet or s.slot == 0)
 	if phase != Phase.PLAY:
 		_step_decor(delta)
 
@@ -4381,7 +4718,7 @@ func _on_net_emote(idx: int) -> void:
 ## Built from the key's own rect rather than from the screen, so the column
 ## cannot drift away from the control that opened it.
 func _emote_rects(size: Vector2) -> Array:
-	var key := Keyboard.emote_rect(size, _keyboard_bottom(size.y))
+	var key := _kb_emote_rect(size, _keyboard_bottom(size.y))
 	var out: Array = []
 	# Pulled back in from the edge. The key sits hard against the right margin
 	# because P does, but the column is wider than the key and its rail is wider
@@ -4746,7 +5083,8 @@ func _press_back() -> void:
 ## The keys, positioned against the current screen. One source for drawing and
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
-	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom())
+	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom(),
+		_kb_ppu(), _kb_form())
 
 
 ## The letters on the keycaps, and the words on the three action keys.
@@ -4772,7 +5110,7 @@ const KEY_WEIGHT := -0.2
 func _draw_keyboard() -> void:
 	var held := _keys_down.values()
 	# Type is a physical size like the keys are, so it travels with them.
-	var s := Keyboard.ui_scale(get_viewport_rect().size)
+	var s := _kb_type_scale(get_viewport_rect().size)
 	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
 		var id: String = k["id"]
@@ -4821,7 +5159,7 @@ func _draw_keyboard() -> void:
 func _draw_emote_key() -> void:
 	if not _emotes_live():
 		return
-	var key := Keyboard.emote_rect(get_viewport_rect().size, _keyboard_bottom())
+	var key := _kb_emote_rect(get_viewport_rect().size, _keyboard_bottom())
 	var cooling: bool = _emote_cool > 0.0
 	var down: bool = _emote_touch != -2
 
@@ -4963,15 +5301,15 @@ func _hide_keyboard() -> void:
 ## else, so the band keeps the same physical reach on a phone whose units are
 ## smaller than the design space's.
 func _key_band_top(size: Vector2) -> float:
-	return _keyboard_bottom() - Keyboard.height(size) \
-		- KEY_BAND_PAD * Keyboard.ui_scale(size)
+	return _keyboard_bottom() - _kb_height(size) \
+		- KEY_BAND_PAD * _kb_type_scale(size)
 
 
 ## `TOUCH_LIFT` against this screen. A correction for where a finger sits is a
 ## physical distance, not a number of design units, so it travels with the same
 ## scale the keys do.
 func _touch_lift(size: Vector2) -> float:
-	return TOUCH_LIFT * Keyboard.ui_scale(size)
+	return TOUCH_LIFT * _kb_type_scale(size)
 
 
 ## Which key is under a point, or "" if the point is not on the keyboard at all.
@@ -5020,9 +5358,32 @@ func _key_at(p: Vector2) -> String:
 	if at.y < _key_band_top(size):
 		return ""
 
-	var lean: float = KEY_LEAN * Keyboard.ui_scale(size)
+	var lean: float = KEY_LEAN * _kb_type_scale(size)
+
+	# How far a tap may be from a key and still count as that key.
+	#
+	# Unlimited on a phone, which is deliberate and has to stay that way: the
+	# keyboard spans the full width, so the nearest key is always the adjacent
+	# one, and the unlimited search is what lets a thumb that lands just below
+	# the bottom row still get the letter it was aiming at.
+	#
+	# A split keyboard breaks that assumption in the most damaging way available.
+	# There are now two hundred units of nothing between the halves — the part of
+	# the screen you rest a thumb on, and the part you tap when you meant to tap
+	# nothing at all — and every point of it has a nearest key several key-widths
+	# away on one side or the other. Left unlimited, resting a thumb in the middle
+	# of the keyboard types a letter. So in SPLIT a tap has to land within a key's
+	# width of a key, and the dead gap goes back to being dead.
+	#
+	# FIRE is unaffected: it still spans the whole width along the bottom, and a
+	# tap inside any action key returns from the loop before this is consulted.
+	var limit := INF
+	if _kb_form() == Keyboard.Form.SPLIT:
+		limit = Keyboard.KEY_W_PT / maxf(points_per_unit, 0.001)
+
 	var best := ""
 	var best_score := INF
+	var best_dist := INF
 	for k: Dictionary in _keyboard():
 		var r: Rect2 = k["rect"]
 		var id: String = k["id"]
@@ -5040,8 +5401,13 @@ func _key_at(p: Vector2) -> String:
 			score -= lean
 		if score < best_score:
 			best_score = score
+			best_dist = d
 			best = id
-	return best
+	# Tested against the true distance, not the leaned score — `lean` exists to
+	# break ties between two keys a thumb is genuinely between, and letting it
+	# also decide whether the tap was near the keyboard at all would put the
+	# reach back by most of a key on exactly the letters that can finish a word.
+	return "" if best_dist > limit else best
 
 
 ## The `typed` that `_lean_set` was built against. Starts as something no line
@@ -5555,11 +5921,14 @@ func _draw_rival_panel(s: SideState) -> void:
 		_text_centered(_font_bold, r.get_center(), "OUT", 26, Color("#ff6b6b"))
 		return
 
-	# What they are mid-way through typing.
-	var shown := _show(_typing_of(s).to_upper())
-	_text_fit(_font_bold, Vector2(cx, r.end.y + 18.0),
-		shown if shown != "" else "…", 18, r.size.x + 30.0,
-		Color(s.accent, 0.9) if shown != "" else Color("#3d4666"))
+	# Their half-typed word used to be printed here, and is not any more — see
+	# `_typing_of`. The line is gone rather than blanked: `_typing_of` would now
+	# feed it an empty string forever, which drew a permanent grey ellipsis that
+	# looked like a rival who had stopped playing.
+	#
+	# The panel does not read as dead without it. What is left is everything you
+	# are entitled to know and every part of it moves: the chain meter fills and
+	# times out, the incoming count changes, the lives go.
 
 	# Their chain, and how much is queued on them.
 	var seg := (r.size.x - 5 * 3.0) / 6.0
@@ -6104,6 +6473,16 @@ func _settings_defs() -> Array:
 	if portrait:
 		defs.append(["haptics", "toggle", "Haptics", "the buzz on hits and keys",
 			bool(Profile.pref("haptics"))])
+	# Tablets only, for the same reason: a phone cannot usefully split a
+	# keyboard it can already reach across, so the row would be a switch between
+	# one layout and one that does not fit. On a tablet both answers are real —
+	# thumbs at the edges if you are holding it, ten fingers if you have set it
+	# down — and which one a player wants is a fact about their hands that the
+	# game has no way to measure.
+	if tablet:
+		defs.append(["split_keys", "toggle", "Split keyboard",
+			"two halves at the edges, for thumbs",
+			bool(Profile.pref("split_keys"))])
 	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))])
@@ -6298,7 +6677,7 @@ func _change_setting(key: String) -> void:
 		Sfx.play("count", 1.3 if Notify.enabled() else 0.9)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
-			or key == "haptics":
+			or key == "haptics" or key == "split_keys":
 		Profile.set_pref(key, not bool(Profile.pref(key)))
 		_apply_prefs()
 		Sfx.play("count", 1.3 if bool(Profile.pref(key)) else 0.9)
@@ -9259,7 +9638,10 @@ func _on_net_state(payload: Dictionary) -> void:
 		p.timer = float(spec[2])
 		ai_side.pending.append(p)
 
-	ai_side.typing = String(payload.get("t", ""))
+	# "t" — their half-typed word — is neither sent nor read any more. An older
+	# build on the far end still puts it in the packet; dropping it on the floor
+	# here is what makes this end honest regardless of what it is talking to,
+	# and is why the change is safe to ship one side at a time.
 	ai_side.chain = int(payload.get("c", 0))
 	ai_side.chain_timer = float(payload.get("ct", 0.0))
 	ai_side.chain_window = maxf(0.001, float(payload.get("cw", 1.0)))
@@ -9300,8 +9682,13 @@ func _state_of(who: SideState, own: int) -> Dictionary:
 	for p: Pending in who.pending:
 		pend_specs.append([p.tier, p.prefix, p.timer])
 
+	# No "t". It carried the sender's half-typed word, which is the one thing
+	# about a board its owner is entitled to keep — see `_typing_of`. A peer
+	# running an older build will still send it and will still expect it; both
+	# are fine, because the field was only ever read to be drawn, and the far
+	# end reading "" simply draws nothing where it used to draw a secret.
 	return {
-		"own": own, "b": block_specs, "p": pend_specs, "t": _typing_of(who),
+		"own": own, "b": block_specs, "p": pend_specs,
 		"c": who.chain, "ct": who.chain_timer, "cw": who.chain_window,
 		"w": who.words_played, "cl": who.blocks_cleared,
 		"sf": who.salvo_flash, "lv": who.lives, "rs": who.respite,
@@ -10169,7 +10556,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_touch_input = true
 		var vp := get_viewport_rect().size
 		if et.pressed and _emote_touch == -2 and _emotes_live() \
-				and Keyboard.emote_rect(vp, _keyboard_bottom()).grow(8.0).has_point(
+				and _kb_emote_rect(vp, _keyboard_bottom()).grow(8.0).has_point(
 						et.position - Vector2(0.0, _touch_lift(vp))):
 			_emote_begin(et.index)
 			return

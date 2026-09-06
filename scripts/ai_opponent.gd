@@ -193,11 +193,11 @@ func attention_span() -> float:
 	return randf_range(4.0, 9.0) + grudge * 14.0
 
 
-## What the player sees the AI has entered so far.
-func visible_text() -> String:
-	if word == "":
-		return ""
-	return word.substr(0, int(chars_done))
+## `visible_text()` lived here — the bot's word truncated to how much of it the
+## bot had "typed" — and it existed solely so `game.gd` could print it under the
+## bot's board. Nobody's half-typed word is drawn any more, including a CPU's,
+## so the accessor went with its only caller. `chars_done` still drives the
+## bot's own pacing; it is just no longer readable from outside.
 
 
 func progress() -> float:
