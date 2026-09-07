@@ -496,6 +496,24 @@ var pending := 0
 ## error rather than a value. The number is Apple's and has been 1 since iOS 6.
 const CHALLENGE_PENDING := 1
 
+## `GKChallenge.ChallengeType.score`, written out for the same reason.
+const CHALLENGE_SCORE := 0
+
+## The challenge worth offering to play, or `{}` when there is none.
+##
+## `pending` is a count, and a count cannot be played. Starting one needs three
+## things a count throws away: which board it is on — the only thing that says
+## whether this is a daily or a survival run — the number to beat, and who to
+## beat it for.
+##
+## Flattened into a plain dictionary rather than kept as the `GKChallenge`
+## itself. The object arrives inside a callback that has already returned by the
+## time a menu reads this, and nothing outside this file should be reaching into
+## Apple's types to draw a button.
+##
+## Keys: `board`, `score`, `formatted`, `from`, `issued`.
+var challenge: Dictionary = {}
+
 var _challenges_loading := false
 var _challenges_wired := false
 
@@ -524,12 +542,87 @@ func _on_challenges_loaded(challenges: Array, error) -> void:
 		print("[Boards] challenges refused: %s" % str(error))
 		return
 	var was := pending
+	var was_offer := challenge
 	pending = 0
+	var best: Dictionary = {}
 	for c in challenges:
-		if c != null and int(c.state) == CHALLENGE_PENDING:
-			pending += 1
-	if pending != was:
+		if c == null or int(c.state) != CHALLENGE_PENDING:
+			continue
+		pending += 1
+		var one := _playable_challenge(c)
+		# Newest wins. Several can be waiting at once, and the one somebody has
+		# just accepted on Apple's screen — which is the whole reason this is
+		# being refreshed — is the one most recently issued.
+		if one.is_empty():
+			continue
+		if best.is_empty() or float(one["issued"]) > float(best["issued"]):
+			best = one
+	challenge = best
+	if pending != was or challenge != was_offer:
 		challenges_changed.emit()
+
+
+## One challenge, flattened — or `{}` if it is not one this game can start.
+##
+## Two ways to be unplayable, and both are ordinary rather than errors. An
+## achievement challenge has no score to beat and no mode to open. And a score
+## challenge on a board this build has never heard of is one configured against
+## a leaderboard added after this version shipped; offering to "play" it would
+## mean guessing at a mode, and guessing wrong drops somebody into the wrong
+## game entirely.
+##
+## `leaderboard_identifier` is the only route to the board, which is worth
+## saying because the plugin's own docs call it the legacy field and point at
+## `leaderboard_entry` for newer systems. That is a `GKLeaderboardEntry`: it
+## carries a score, a rank, a date and a player, and no identifier of the board
+## it came off. Preferring it would have left every challenge unplayable on
+## exactly the modern systems challenges require.
+func _playable_challenge(c) -> Dictionary:
+	if int(c.challenge_type) != CHALLENGE_SCORE:
+		return {}
+	var board := String(c.leaderboard_identifier)
+	if board != DAILY_ID and board != SURVIVAL_ID:
+		return {}
+	var from := ""
+	var who = c.issuing_player
+	if who != null:
+		from = String(who.display_name).strip_edges()
+		if from == "":
+			from = String(who.alias).strip_edges()
+	return {
+		"board": board,
+		"score": int(c.score),
+		"formatted": String(c.formatted_score).strip_edges(),
+		"from": from,
+		"issued": float(c.issue_date),
+	}
+
+
+## Whether there is a challenge the game can actually start right now.
+##
+## Asks only whether one is held, deliberately, rather than also re-asking
+## `challenges_available()`. Nothing else can put a challenge here: the only
+## writer is `_on_challenges_loaded`, which Apple only calls when challenges
+## were available in the first place, and signing out empties it — so the extra
+## gate answered a question already answered and could only ever disagree with
+## itself. It also made the title screen's door impossible to exercise anywhere
+## but a signed-in phone, which is the one place a broken menu is expensive.
+func challenge_armed() -> bool:
+	return not challenge.is_empty()
+
+
+## Forget the offer, once it has been played.
+##
+## Apple will not drop a challenge from `load_received_challenges` until the
+## score lands and it moves the state itself, which is a round trip through
+## their servers. Waiting on that would leave the title screen offering a race
+## that has just been run, so the local copy is dropped the moment the run
+## starts and comes back on the next refresh if Apple disagrees.
+func clear_challenge() -> void:
+	if challenge.is_empty():
+		return
+	challenge = {}
+	challenges_changed.emit()
 
 
 ## Apple's own challenge screen.
@@ -620,9 +713,13 @@ func _on_gc_state_changed(_text: String) -> void:
 			view_total = 0
 			_set_view(ViewState.FAILED, "sign in to Game Center to see this board")
 		# Somebody else's challenges, and a badge counting them is worse than no
-		# badge: it advertises something the signed-out player cannot open.
-		if pending != 0:
+		# badge: it advertises something the signed-out player cannot open. The
+		# offer on the title screen goes with it, and for a stronger reason —
+		# that one is a door, and it would start a run scored for an account
+		# that is no longer signed in.
+		if pending != 0 or not challenge.is_empty():
 			pending = 0
+			challenge = {}
 			challenges_changed.emit()
 		_set_state(State.WAITING, "waiting for Game Center")
 		return

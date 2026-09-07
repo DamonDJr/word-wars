@@ -69,7 +69,14 @@ func _the_door_opens() -> void:
 			plate = b
 	_expect("there is a survival plate on the title", not plate.is_empty())
 	if not plate.is_empty():
-		_expect("it is in the PLAY band", int(plate.get("band", -1)) == 1)
+		# By name rather than by number. The bands were renumbered when the
+		# challenge door got a WAITING band of its own above LEARN, and a test
+		# that hardcodes the index fails for a screen that is perfectly correct.
+		# What this actually cares about is which heading the door sits under.
+		var band := int(plate.get("band", -1))
+		_expect("it is in the PLAY band", band >= 0
+			and band < game.TITLE_BANDS.size()
+			and String(game.TITLE_BANDS[band]) == "PLAY")
 		# Hit-tested where it is drawn, which is the failure a new plate actually
 		# has: the list that draws them and the list that answers a tap are the
 		# same list, right up until one of them is filtered and the other is not.

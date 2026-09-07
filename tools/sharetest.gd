@@ -20,6 +20,7 @@ extends SceneTree
 
 var game: Node
 var sharing: Node
+var sharing_profile: Node
 var stage: SubViewport
 var fails := 0
 
@@ -112,6 +113,88 @@ func _the_copy_reads_outside_the_game() -> void:
 			game._share_text().contains(sharing.STORE_URL))
 
 
+## Everything the redesigned card promises, for every mode that can produce one.
+##
+## The card stopped being a table of numbers and became an advertisement, and the
+## parts that make it one are the parts a fifth mode would silently ship without:
+## a question aimed at the reader, a line under it, and a badge saying why the
+## number is worth anything. None of those are load-bearing for the *render* — a
+## card with an empty dare draws perfectly happily, and looks exactly like the
+## inert first cut this replaced.
+func _the_card_sells_the_game() -> void:
+	print("--- every card asks for something back ---")
+
+	var modes := {
+		game.Mode.SURVIVAL: "survival",
+		game.Mode.DAILY: "daily",
+		game.Mode.NORMAL: "a match",
+	}
+	for m: int in modes:
+		game.start_match("Duelist", 1, [], m)
+		game.player.score = 9400
+		game.match_time = 187.0
+		game.winner = "YOU"
+		var c = game._share_card_data()
+		var who := String(modes[m])
+		_expect("%s dares the reader: '%s'" % [who, c.dare], c.dare != "")
+		_expect("%s explains itself: '%s'" % [who, c.footer], c.footer != "")
+		# The card draws three cells and no more. A fourth would be measured into
+		# the layout and then never painted, which is a hole rather than a crash.
+		_expect("%s carries no more than three stats (%d)" % [who, c.stats.size()],
+			c.stats.size() <= 3)
+		for row in c.stats:
+			_expect("%s stat '%s' is a label and a value" % [who, row[0]],
+				(row as Array).size() == 2 and String(row[1]) != "")
+
+	# The best word is the only thing on the card that says "word game". It comes
+	# off the side rather than being recomposed, so a rename upstream loses it
+	# quietly.
+	game.start_match("Duelist", 1, [], game.Mode.NORMAL)
+	game.player.best_word = "ENTRANCE"
+	game.player.best_word_score = 2440
+	var w = game._share_card_data()
+	_expect("the card carries the match's best word (%s)" % w.word,
+		w.word == "ENTRANCE")
+	_expect("and what it was worth: '%s'" % w.word_note, w.word_note.contains("2,440"))
+
+	# A match with nothing played still has to draw. The word block is dropped
+	# rather than left as an empty row of tiles.
+	game.start_match("Duelist", 1, [], game.Mode.NORMAL)
+	game.player.best_word = ""
+	_expect("a match with no word drops the block outright",
+		game._share_card_data().word == "")
+
+
+## The one badge that can lie.
+##
+## Survival's "new personal best" cannot be worked out at summary time: by then
+## `Profile.survival_best_time` has already been raised to include the run that
+## just ended, so a naive comparison calls every single run a record. The answer
+## is only knowable from `survival_took`, banked at the moment the run was
+## recorded — and a run too short to bank is not a record at all.
+func _the_record_badge_tells_the_truth() -> void:
+	print("--- and only claims a record when there was one ---")
+
+	game.start_match("Duelist", 0, [], game.Mode.SURVIVAL)
+	game.match_time = 252.0
+	game.player.score = 14320
+	sharing_profile.survival_best_time = 402.0
+
+	game.survival_took = {}
+	var plain = game._share_card_data()
+	_expect("an ordinary run is not announced as a best: '%s'" % plain.badge,
+		not plain.badge.to_lower().contains("personal best"))
+	_expect("and it is not drawn in gold", not plain.badge_hot)
+
+	game.survival_took = {"time": true, "score": true}
+	var best = game._share_card_data()
+	_expect("the run that took the record says so: '%s'" % best.badge,
+		best.badge.to_lower().contains("personal best"))
+	_expect("and that one is gold", best.badge_hot)
+
+	game.survival_took = {}
+
+
 ## The bug. Three doors have to get three rectangles, both ways up.
 func _the_summary_fits_three_doors() -> void:
 	print("--- three doors fit the summary ---")
@@ -154,6 +237,10 @@ func _the_summary_has_no_letter_keys() -> void:
 func _init() -> void:
 	await process_frame
 	sharing = root.get_node("Sharing")
+	# Named off the root rather than at class scope: `--script` compiles this
+	# file before the autoloads exist, and a bare `Profile` here is a compile
+	# error that takes the run down before a single check runs.
+	sharing_profile = root.get_node("Profile")
 	game = load("res://scenes/main.tscn").instantiate()
 	stage = SubViewport.new()
 	stage.size = Vector2i(1280, 720)
@@ -165,6 +252,8 @@ func _init() -> void:
 
 	_the_seam_refuses_cleanly()
 	_the_copy_reads_outside_the_game()
+	_the_card_sells_the_game()
+	_the_record_badge_tells_the_truth()
 	_the_summary_fits_three_doors()
 	_the_summary_has_no_letter_keys()
 

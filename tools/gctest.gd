@@ -160,9 +160,21 @@ const PROPERTIES := {
 	# `player` is the board screen's addition: a page of ranks and scores with
 	# nobody's name against them is not a leaderboard.
 	"GKLeaderboardEntry": ["rank", "score", "player"],
-	# What a received challenge is counted by. Only `state` is read — the rest
-	# of a challenge is drawn by Apple, on Apple's screen.
-	"GKChallenge": ["state"],
+	# What a received challenge is read for. `state` counts it for the badge;
+	# the rest is what makes it playable, and none of it can be guessed at —
+	# `board` decides whether the door opens a daily or a survival run, and
+	# opening the wrong one is worse than opening neither.
+	"GKChallenge": ["state", "challenge_type", "issuing_player", "issue_date"],
+	# The score half, which is a subclass and registers its own properties.
+	#
+	# `leaderboard_identifier` is the load-bearing one and the plugin's own docs
+	# argue against it: they call it the legacy field for older platforms and
+	# point at `leaderboard_entry` instead. That is a `GKLeaderboardEntry`, and
+	# the entry carries a score, a rank, a date and a player and *no identifier
+	# of the board it came off* — so following the documentation would have left
+	# every challenge unplayable. Pinned here so a future version that finally
+	# drops the field fails on a PC rather than on somebody's phone.
+	"GKScoreChallenge": ["leaderboard_identifier", "score", "formatted_score"],
 }
 
 ## Callbacks Game Center invokes on us that are not signals, so nothing checks

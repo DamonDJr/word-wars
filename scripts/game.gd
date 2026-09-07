@@ -703,6 +703,16 @@ var survival_banked := 0.0
 ## Read by the summary, which is the only place it means anything.
 var survival_took: Dictionary = {}
 
+## The challenge this match is being played for, or `{}` for an ordinary run.
+##
+## Copied off `Boards` when the run starts rather than read live at the end.
+## Submitting a score is what makes Apple move the challenge out of `pending`,
+## so by the time the summary wants to say whether it was beaten, the thing it
+## would be reading has already gone. The target has to be held here.
+##
+## Same shape as `Boards.challenge`: board, score, formatted, from, issued.
+var challenge_run: Dictionary = {}
+
 ## How often ambient garbage arrives in training, and what to call it. Practice
 ## is worthless if it is not at a speed you would actually meet.
 const TRAINING_PACE := [
@@ -1705,6 +1715,11 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	# start a third one nobody asked for.
 	rematch_asked = false
 	rematch_offered = false
+	# Every run starts unchallenged. `_start_challenge` sets this immediately
+	# after calling through here — the order matters, and this is why: a run
+	# started from the DAILY door on a day somebody happens to have challenged
+	# you is not that challenge, and must not report itself as one.
+	challenge_run = {}
 	# A lesson, a practice run and the daily are played alone. There is nobody to
 	# lose to and nothing to be distracted by, which is the entire point.
 	if mode != Mode.NORMAL:
@@ -8257,6 +8272,18 @@ func _draw_gameover(size: Vector2) -> void:
 		_over_size(62), Color("#ffd166"))
 	var line_y := 288.0 * lead
 
+	# A challenge is the only thing on this screen that somebody else is waiting
+	# on, so it is said first and said in bold. Everything below it is a comment
+	# on how the run went; this is the one line about whether it counted.
+	var chline := _challenge_line()
+	if chline != "":
+		line_y += 8.0 * _over_fill()
+		_text_fit_overlay(_font_bold, Vector2(cx, line_y), chline,
+			_over_size(18), size.x - GRID_MARGIN * 2.0,
+			Color("#90be6d") if bool(_challenge_verdict().get("beat", false))
+				else Color("#ff6b6b"), 12)
+		line_y += 30.0 * _over_fill()
+
 	# How close it was, on a loss, in the loss colour and directly under the
 	# score it is a comment on. This is the line the Rematch button is arguing
 	# with, so it sits above everything else that could dilute it.
@@ -8453,9 +8480,16 @@ func _scoreboard_top() -> float:
 	# The win line only exists on a won match, so the table starts lower only
 	# when there is something above it to make room for. The margin line on a
 	# loss takes the same row, so the two never both claim it.
-	var extra := 26.0 * _over_fill() if (win_spoils > 0 or _over_margin() != "") \
-		else 0.0
-	return 342.0 * _over_lead() + safe_top + extra
+	#
+	# A challenge verdict is a second row and can ride on top of either, so the
+	# rows are counted rather than switched on. Reserving one row for two lines
+	# put the table through the bottom of the verdict.
+	var rows := 0
+	if win_spoils > 0 or _over_margin() != "":
+		rows += 1
+	if _challenge_line() != "":
+		rows += 1
+	return 342.0 * _over_lead() + safe_top + 26.0 * _over_fill() * float(rows)
 
 
 ## Which columns the table carries. Powers and salvos are the first to go on a
@@ -8620,6 +8654,133 @@ func _over_button_rects(count: int) -> Array:
 	return out
 
 
+# ---------------------------------------------------------------- challenges
+#
+# Apple runs the whole of a challenge except the one part that matters here:
+# starting it. Their challenge screen has a Start button, and pressing it tells
+# this game nothing at all.
+#
+# The callback that would is `GKLocalPlayerListener.player(_:wantsToPlay:)`, and
+# the plugin does not bridge it — `GKLocalPlayer` publishes `challenge_received`,
+# `challenge_completed`, `challenge_other_player_accepted` and
+# `challenge_other_player_completed`, and nothing for "they pressed play". The
+# dashboard simply dismisses. What that looks like from the sofa is a button
+# that did nothing, followed by having to go and find the right mode by hand
+# with no sign anywhere that a challenge is running. Which is what it was.
+#
+# So the game reads what is waiting and offers it as a door of its own, at the
+# top of the title screen. That is a tap rather than an automatic start on
+# purpose: closing Apple's dashboard is not the same as accepting, and the same
+# close arrives from browsing, declining, or backing out. Launching a timed run
+# off it would be wrong more often than right.
+
+## What the challenge door says.
+##
+## Names whoever sent it. A number on its own is a target; a number with a name
+## on it is somebody waiting, which is the whole of why this row is worth a tap.
+func _challenge_sub() -> String:
+	var ch: Dictionary = Boards.challenge
+	if ch.is_empty():
+		return ""
+	var target := String(ch.get("formatted", ""))
+	if target == "":
+		target = _commas(int(ch.get("score", 0)))
+	var daily: bool = String(ch.get("board", "")) == Boards.DAILY_ID
+	# Said on the door rather than found out by pressing it. A daily challenge
+	# on a day already spent cannot be started at all, and a row that rejects
+	# the tap it invited is worse than one that explains itself first.
+	if daily and Profile.daily_done(daily_key()):
+		return "Beat %s — today's board is spent, a new one at midnight" % target
+	var where := "today's daily board" if daily else "Survival"
+	var who := String(ch.get("from", ""))
+	if who == "":
+		return "Beat %s on %s" % [target, where]
+	return "%s says beat %s on %s" % [_show_name(who), target, where]
+
+
+## Start the run a waiting challenge is asking for.
+func _start_challenge() -> void:
+	var ch: Dictionary = Boards.challenge
+	var board := String(ch.get("board", "")) if not ch.is_empty() else ""
+	if board == Boards.DAILY_ID:
+		if Profile.daily_done(daily_key()):
+			_say("today's board is spent — the challenge keeps until midnight",
+				Color("#8d99bd"))
+			Sfx.play("reject", 1.2)
+			return
+		Link.leave()
+		MultiplayerManager.leave_match()
+		start_match("Daily", 0, [], Mode.DAILY)
+	elif board == Boards.SURVIVAL_ID:
+		Link.leave()
+		MultiplayerManager.leave_match()
+		start_match("Survival", 0, [], Mode.SURVIVAL)
+	else:
+		# No challenge, or one on a board this build does not know. Either way
+		# there is no mode to open and the door should not have been drawn.
+		Sfx.play("reject", 1.2)
+		return
+	# After `start_match`, which clears it. See the note on `challenge_run`.
+	challenge_run = ch.duplicate()
+	# Dropped now rather than when Apple catches up, or the title screen offers
+	# the race again the moment this run ends.
+	Boards.clear_challenge()
+
+
+## How the run that just finished did against the challenge it was played for.
+##
+## `{}` for an ordinary run, which is every run that did not come through the
+## door above. Beating it is `>=` rather than `>`: Apple ranks a tie ahead of
+## the later score on a classic leaderboard, and claiming a loss the leaderboard
+## is about to disagree with is the one wrong answer here.
+func _challenge_verdict() -> Dictionary:
+	if challenge_run.is_empty():
+		return {}
+	var target := int(challenge_run.get("score", 0))
+	var mine := player.score
+	# Survival challenges race the board they are on, and the survival board is
+	# scored — `submit_survival` sends the score, not the clock. So both modes
+	# compare the same number.
+	return {
+		"beat": mine >= target,
+		"target": target,
+		"by": absi(mine - target),
+		"from": String(challenge_run.get("from", "")),
+	}
+
+
+## The badge a challenge earns on the share card, laid over whatever the mode
+## had to say for itself.
+##
+## A beaten challenge outranks a personal best, and it is not close: a record is
+## a thing you did, and this is a thing you did to somebody who is about to be
+## sent the picture.
+func _challenge_badge(c: ShareCard.Card) -> void:
+	var v := _challenge_verdict()
+	if v.is_empty():
+		return
+	var who := String(v["from"])
+	if bool(v["beat"]):
+		c.badge = "challenge beaten" if who == "" \
+			else "beat %s's challenge" % _show_name(who)
+		c.badge_hot = true
+		return
+	c.badge = "challenge missed by %s" % _commas(int(v["by"]))
+	c.badge_hot = false
+
+
+## The one line the summary gives a challenge, or "" for an ordinary run.
+func _challenge_line() -> String:
+	var v := _challenge_verdict()
+	if v.is_empty():
+		return ""
+	var who := String(v["from"])
+	var whose := _show_name(who) if who != "" else "the challenge"
+	if bool(v["beat"]):
+		return "CHALLENGE BEATEN — %s by %s" % [whose, _commas(int(v["by"]))]
+	return "CHALLENGE MISSED — %s by %s" % [whose, _commas(int(v["by"]))]
+
+
 # ------------------------------------------------------------------- sharing
 #
 # The summary is the one screen in this game worth showing somebody, because it
@@ -8684,41 +8845,77 @@ func _share_text() -> String:
 
 
 ## The sentence, without the link.
+##
+## Every one of these ends by asking for something, because the message body is
+## the half of a share that arrives as text in a chat window — the picture may be
+## collapsed behind a tap, and a line that only reports a number gives nobody a
+## reason to open it. The card asks the same question in bigger letters; this is
+## the version that survives being quoted.
 func _share_line() -> String:
 	var me := _commas(player.score)
 	if mode == Mode.SURVIVAL:
-		return "I lasted %s in Word Wars Survival — %s points." % [
+		return "I lasted %s in Word Wars Survival — %s points. Think you can last longer?" % [
 			_survival_clock(match_time), me]
 	if mode == Mode.DAILY:
 		var streak: int = Profile.daily_streak(daily_key())
 		var line := "I scored %s on today's Word Wars daily board." % me
 		if streak > 1:
 			line += " %d days running." % streak
-		return line
+		# The daily's own hook, and the only one that is an invitation rather
+		# than a boast: the board is the same one for everybody, today only.
+		return line + " You get the same board — go and beat it."
 	var rival := _share_rival()
 	var them := _share_rival_name()
 	var theirs: String = _commas(rival.score) if rival != null else "0"
 	if winner == "YOU":
-		return "I beat %s %s to %s at Word Wars." % [them, me, theirs]
+		return "I beat %s %s to %s at Word Wars. Your turn." % [them, me, theirs]
 	return "%s beat me %s to %s at Word Wars. Somebody go and take them down." % [
 		them, theirs, me]
 
 
-## What the picture says. The headline is whichever number the mode is actually
-## about — which is the clock in survival and the score everywhere else.
+## What the picture says.
+##
+## Four things, in the order somebody reading it takes them in: the number the
+## mode is actually about, a badge saying why that number is worth anything, the
+## best word of the match as proof of what kind of game this is, and a question
+## aimed at whoever is holding the phone.
+##
+## The badge is the part that took the most working out, because "is this any
+## good" is a different question in each mode and none of them can be answered
+## from the score alone. Survival has the run it just banked, the daily has a
+## streak, and a match has a margin. Where a mode has nothing to say the badge is
+## left empty and the card simply closes up around it.
 func _share_card_data() -> ShareCard.Card:
 	var c := ShareCard.Card.new()
 	var win := winner == "YOU"
+
+	# Every mode produces one, and it is the only thing on the card that tells a
+	# stranger this is a word game at all. See `share_card.gd`.
+	c.word = player.best_word
+	if c.word != "" and player.best_word_score > 0:
+		c.word_note = "worth %s" % _commas(player.best_word_score)
 
 	if mode == Mode.SURVIVAL:
 		c.mode = "Survival"
 		c.accent = SURVIVAL_ACCENT
 		c.headline = _survival_clock(match_time)
 		c.headline_note = "survived"
-		c.rows = [
+		# `survival_took` is the only place the answer is knowable. By the time
+		# the summary draws, `survival_best_time` has already been raised to
+		# include this run, so comparing against it here would call every run a
+		# record.
+		if bool(survival_took.get("time", false)):
+			c.badge = "new personal best"
+			c.badge_hot = true
+		elif Profile.survival_best_time > 0.0:
+			c.badge = "my record: %s" % _survival_clock(Profile.survival_best_time)
+		c.stats = [
 			["Score", _commas(player.score)],
 			["Best run", _survival_clock(Profile.survival_best_time)],
-			["Runs played", str(Profile.survival_runs)]]
+			["Runs", str(Profile.survival_runs)]]
+		c.dare = "can you last %s?" % _survival_clock(match_time)
+		c.footer = "one board, no opponent, and it never stops coming"
+		_challenge_badge(c)
 		return c
 
 	if mode == Mode.DAILY:
@@ -8727,22 +8924,52 @@ func _share_card_data() -> ShareCard.Card:
 		c.headline = _commas(player.score)
 		c.headline_note = "on today's board"
 		var streak: int = Profile.daily_streak(daily_key())
-		c.rows = [["Date", daily_key()]]
+		# `record_daily` has already folded this run into `daily_best`, so the
+		# test is against-or-equal rather than greater — and guarded on a score
+		# above zero, or a first-ever blank run would announce itself as a record.
+		if player.score > 0 and player.score >= Profile.daily_best:
+			c.badge = "new daily best"
+			c.badge_hot = true
+		elif streak > 1:
+			c.badge = "%d day streak" % streak
+			c.badge_hot = streak >= 7
+		c.stats = [["Date", daily_key()]]
 		if streak > 1:
-			c.rows.append(["Streak", "%d days" % streak])
-		c.footer = "everybody gets the same board"
+			c.stats.append(["Streak", "%d days" % streak])
+		if Profile.daily_best > 0:
+			c.stats.append(["My best", _commas(Profile.daily_best)])
+		c.dare = "can you beat %s?" % _commas(player.score)
+		# The whole reason a daily is worth sharing: it is not a boast about a
+		# board nobody else can play, it is an invitation to the same one.
+		c.footer = "everybody gets the same board — today only"
+		_challenge_badge(c)
 		return c
 
 	var rival := _share_rival()
+	var them := _share_rival_name()
 	c.mode = "Versus" if difficulty == "Versus" else "Solo"
 	c.accent = Color("#c77dff") if difficulty == "Versus" else Color("#7bdff2")
 	c.verdict = "WON" if win else "LOST"
 	c.headline = _commas(player.score)
 	c.headline_note = "points"
+	var margin: int = absi(player.score - rival.score) if rival != null else 0
+	if win and player.lives >= LIVES:
+		c.badge = "flawless — never lost a life"
+		c.badge_hot = true
+	elif rival != null:
+		c.badge = "%s by %s" % ["won" if win else "lost", _commas(margin)]
 	if rival != null:
-		c.rows = [
-			[_share_rival_name(), _commas(rival.score)],
-			["Margin", _commas(absi(player.score - rival.score))]]
+		c.stats = [
+			[them, _commas(rival.score)],
+			["Margin", _commas(margin)],
+			["Words", str(player.words_played)]]
+	if win:
+		c.dare = "can you beat %s?" % _commas(player.score)
+		c.footer = "I already put %s down" % them
+	else:
+		c.dare = "somebody take %s down" % them
+		c.footer = "they beat me %s to %s" % [
+			_commas(rival.score) if rival != null else "0", _commas(player.score)]
 	return c
 
 
@@ -8757,7 +8984,10 @@ func _do_share() -> void:
 		Sfx.play("reject", 1.2)
 		return
 	Sfx.play("count", 1.2)
-	var card := ShareCard.new(_font, _font_bold)
+	# The wordmark on the card wears the same face it wears on the title screen.
+	# A share is the first time most people see this game's name and it may as
+	# well be the game's own lettering rather than the system's.
+	var card := ShareCard.new(_font, _font_bold, _font_title)
 	add_child(card)
 	var path: String = Sharing.card_path()
 	var drew: bool = await card.render(_share_card_data(), path)
@@ -10038,9 +10268,16 @@ func _draw_title_bands() -> void:
 ## game already teaches on the same screen. Reading down the menu is reading the
 ## same artifact you read all match.
 ##
-## The bands are real grouping rather than decoration: one place to learn, three
-## to play, two that are about you rather than about a match.
-const TITLE_BANDS := ["LEARN", "PLAY", "YOU"]
+## The bands are real grouping rather than decoration: something somebody else
+## is waiting on, one place to learn, three to play, two that are about you
+## rather than about a match.
+##
+## WAITING is empty on almost every launch — a challenge has to have been sent
+## and not yet answered — and `_draw_title_bands` only draws the bands the rows
+## actually use, so an empty one costs nothing and is never seen. It exists so
+## the challenge door does not have to sit under a heading that calls it a
+## lesson, which is where putting it in LEARN left it.
+const TITLE_BANDS := ["WAITING", "LEARN", "PLAY", "YOU"]
 
 
 ## What the versus door has to say for itself.
@@ -10117,16 +10354,23 @@ func _title_modes() -> Array:
 	# and "SUS" and "TINGS" are not what those buttons are called. This is the
 	# game's actual loop instead. A block carries a fragment, and the word that
 	# clears it starts with those letters.
-	var rows: Array = [
+	var rows: Array = []
+	# Above everything, because it is the only row on this screen that somebody
+	# else is waiting on — and because it is the answer to a Start button that
+	# was pressed on Apple's screen and did nothing. See `_start_challenge`.
+	if Boards.challenge_armed():
+		rows.append(["VS", "CHALLENGE", _challenge_sub(), "challenge",
+			Color("#c77dff"), 0])
+	rows += [
 		["PRAC", "PRACTICE", "Learn it, or drill it", "practice",
-			Color("#90be6d"), 0],
+			Color("#90be6d"), 1],
 		["DAI", "DAILY", dsub, "daily",
-			Color("#5d6a92") if spent else Color("#ffd166"), 1],
-		["SUR", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 1],
-		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 1],
-		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 1],
+			Color("#5d6a92") if spent else Color("#ffd166"), 2],
+		["SUR", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 2],
+		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 2],
+		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 2],
 		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
-			Color("#f8961e"), 2],
+			Color("#f8961e"), 3],
 		# Next to MASTERY, and one band down from the modes, because it is the
 		# same kind of door: a record rather than a thing to play. Mastery is
 		# yours and this one is everybody's.
@@ -10135,9 +10379,9 @@ func _title_modes() -> Array:
 		# The screen behind it says why it is empty — see `_boards_message` — and
 		# a door that explains itself is worth more than a door that silently
 		# is not there on the machine the game is developed on.
-		["BOA", "BOARDS", _boards_door_sub(), "boards", Color("#5390d9"), 2],
+		["BOA", "BOARDS", _boards_door_sub(), "boards", Color("#5390d9"), 3],
 		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
-			Color("#64dfdf"), 2],
+			Color("#64dfdf"), 3],
 	]
 	# The one thing on this screen with a price on it, and only while there is
 	# something to sell — bought, or no store, and it is not a door at all.
@@ -10151,9 +10395,9 @@ func _title_modes() -> Array:
 	if Store.can_buy():
 		rows.append(["PRE", "PREMIUM",
 			"%s · no ad break, and three things you cannot earn" % Store.price,
-			"buy", Color("#ffd166"), 2])
+			"buy", Color("#ffd166"), 3])
 	rows.append(["SET", "SETTINGS", "Sound, effects, haptics", "settings",
-		Color("#8d99bd"), 2])
+		Color("#8d99bd"), 3])
 	return rows
 
 
@@ -10960,6 +11204,8 @@ func _activate(action: String) -> void:
 			_open_board_view()
 		_hover_action = ""
 		Sfx.play("key", 1.2)
+	elif action == "challenge":
+		_start_challenge()
 	elif action == "challenges":
 		Boards.open_challenges()
 	elif action == "gcboard":
