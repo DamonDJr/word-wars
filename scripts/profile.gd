@@ -262,6 +262,11 @@ const PREF_DEFAULTS := {
 	## cannot answer: somebody who found the row in settings and turned it on and
 	## off again has answered, even though no iOS dialog was involved.
 	"notify_touched": false,
+	## The daily key whose banked score has already been resent to a running
+	## challenge, so it is sent once rather than on every frame of the title
+	## screen. A date rather than a bool: tomorrow's board is a new question.
+	## See `_maybe_send_banked_to_challenge`.
+	"challenge_sent_for": "",
 	## The rating prompt's budget. iOS allows three displays a year and reports
 	## nothing about whether any of them happened, so these are counted at the
 	## moment of asking rather than on a confirmation that never comes.

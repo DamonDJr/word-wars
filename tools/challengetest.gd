@@ -247,6 +247,137 @@ class ChallengeStub:
 	var issuing_player = null
 
 
+## Stands in for a `GKChallengeDefinition` and the `GKLeaderboard` hanging off
+## it. Duck-typed for the same reason `ChallengeStub` is: `_definition_board`
+## reads properties and never asks what class it was handed.
+class LeaderboardStub:
+	var base_leaderboard_id := ""
+
+
+class DefinitionStub:
+	var identifier := ""
+	var title := ""
+	var leaderboard = null
+
+
+## The modern challenge store, which is the one this app actually has.
+##
+## The bug this exists to stop coming back is the one that shipped: the game
+## read `GKChallenge.load_received_challenges`, which is the legacy iOS 6 store,
+## while every challenge it can actually receive is configured in App Store
+## Connect as a challenge *definition* and arrives through
+## `GKChallengeDefinition`. The legacy call returned an empty array, correctly,
+## forever — and an empty array is indistinguishable from "nobody has challenged
+## you" right up until you have checked App Store Connect.
+func _definitions_drive_the_door() -> void:
+	print("--- the modern challenge store ---")
+	boards.challenge = {}
+	boards.active = {}
+	profile.daily.erase(game.daily_key())
+
+	# A definition is placed by the leaderboard it tracks, not by its own id, so
+	# renaming one in App Store Connect cannot unplug it.
+	var daily := DefinitionStub.new()
+	daily.identifier = "something.else.entirely"
+	daily.leaderboard = LeaderboardStub.new()
+	daily.leaderboard.base_leaderboard_id = DAILY_BOARD
+	_expect("a definition is placed by its leaderboard",
+		boards._definition_board(daily) == DAILY_BOARD)
+
+	# And by its own id when the leaderboard relationship comes back null, which
+	# the wrapper allows and which would otherwise make every definition
+	# unplaceable.
+	var fallback := DefinitionStub.new()
+	fallback.identifier = boards.CHALLENGE_DEF_SURVIVAL
+	_expect("and by its identifier when the leaderboard is null",
+		boards._definition_board(fallback) == SURVIVAL_BOARD)
+
+	var unknown := DefinitionStub.new()
+	unknown.identifier = "com.damonj.wordwars.ch.somethingnew"
+	_expect("one this build cannot place is dropped",
+		boards._definition_board(unknown) == "")
+
+	# Apple answers `has_active_challenges` with a bare bool and no clue which
+	# definition it was about, so the board is bound on the way out.
+	boards._on_definition_active(true, null, DAILY_BOARD)
+	_expect("an active definition arms the board",
+		boards.active_challenge_board() == DAILY_BOARD)
+	_expect("but not the legacy door, which has no target to show",
+		not boards.challenge_armed())
+
+	var sub: String = game._running_challenge_sub()
+	_expect("the door says a challenge is running: '%s'" % sub,
+		sub.contains("challenge is running") and sub.contains("daily"))
+
+	# Pressing it opens the mode the challenge is scored on, off the active
+	# board rather than off the empty legacy dictionary.
+	game.mode = game.Mode.NORMAL
+	game._start_challenge()
+	_expect("and pressing it starts the daily", game.mode == game.Mode.DAILY)
+	_expect("without claiming the run is a challenge run",
+		game.challenge_run.is_empty())
+	_expect("so the summary says nothing about a verdict",
+		game._challenge_line() == "")
+
+	# The daily wins a tie: both boards can be running at once and the door has
+	# room for one.
+	boards._on_definition_active(true, null, SURVIVAL_BOARD)
+	_expect("the daily outranks survival for the one door",
+		boards.active_challenge_board() == DAILY_BOARD)
+	boards._on_definition_active(false, null, DAILY_BOARD)
+	_expect("and survival takes it once the daily is not running",
+		boards.active_challenge_board() == SURVIVAL_BOARD)
+	var ssub: String = game._running_challenge_sub()
+	_expect("with its own copy: '%s'" % ssub, ssub.contains("Survival"))
+	boards._on_definition_active(false, null, SURVIVAL_BOARD)
+	_expect("and nothing at all once neither is running",
+		game._running_challenge_sub() == "")
+
+
+## A spent daily draws no door and sends the score anyway.
+func _a_spent_daily_sends_itself() -> void:
+	print("--- and a spent day sends itself, quietly ---")
+	var key: String = game.daily_key()
+	boards.challenge = {}
+	boards.active = {}
+	profile.daily.erase(key)
+	profile.prefs.erase("challenge_sent_for")
+
+	# Nothing to send before the board has been played, whatever is running.
+	boards._on_definition_active(true, null, DAILY_BOARD)
+	game._maybe_send_banked_to_challenge()
+	_expect("an unplayed board sends nothing",
+		String(profile.pref("challenge_sent_for")) == "")
+	_expect("and the door offers the run instead",
+		game._running_challenge_sub().contains("challenge is running"))
+
+	profile.record_daily(key, 9000, 40, 12, 3)
+	_expect("but a spent one draws no door at all",
+		game._running_challenge_sub() == "")
+
+	game._maybe_send_banked_to_challenge()
+	_expect("and sends the banked score without being asked",
+		String(profile.pref("challenge_sent_for")) == key)
+
+	# Once. The poll behind this runs every frame the title screen is up.
+	profile.set_pref("challenge_sent_for", "")
+	profile.set_pref("challenge_sent_for", key)
+	game._maybe_send_banked_to_challenge()
+	_expect("exactly once, however many times it is asked",
+		String(profile.pref("challenge_sent_for")) == key)
+
+	# And nothing at all when no challenge is running — a resubmission with
+	# nothing to close is noise on somebody's leaderboard.
+	profile.prefs.erase("challenge_sent_for")
+	boards.active = {}
+	game._maybe_send_banked_to_challenge()
+	_expect("and nothing when no challenge is running",
+		String(profile.pref("challenge_sent_for")) == "")
+
+	profile.daily.erase(key)
+	profile.prefs.erase("challenge_sent_for")
+
+
 ## Beaten, missed, and the tie that Apple counts as beaten.
 func _the_verdict_is_reported() -> void:
 	print("--- and the summary says how it went ---")
@@ -317,6 +448,8 @@ func _init() -> void:
 	_the_title_offers_the_challenge()
 	_the_door_starts_the_right_mode()
 	_a_spent_daily_still_answers()
+	_definitions_drive_the_door()
+	_a_spent_daily_sends_itself()
 	_an_unknown_board_is_not_offered()
 	_the_verdict_is_reported()
 	_an_ordinary_run_is_silent()

@@ -538,43 +538,196 @@ var _challenges_loading := false
 var _challenges_wired := false
 
 
-## Whether this build can see challenges at all. Challenges ride the leaderboards
-## so this is `available()` plus the class, and the class is the part that moves:
-## `GKChallenge` is iOS 26 in practice even though GameKit has carried the name
-## since iOS 6, because the plugin's wrapper is new.
+# ------------------------------------------------- the other challenge system
+#
+# There are two, they are not the same store, and the game was reading the empty
+# one. This is the note that stops that being rediscovered a third time.
+#
+# `GKChallenge.load_received_challenges` above is the **legacy** challenge: the
+# iOS 6 "beat my score" one player sends another off a leaderboard. It has no
+# App Store Connect configuration, because it never needed any — it rides on a
+# leaderboard entry and Apple routes the rest. Everything above is built on it.
+#
+# `GKChallengeDefinition` is the **modern** one, and it is what this app actually
+# has. A challenge definition is a resource configured in App Store Connect — we
+# have two, `com.damonj.wordwars.ch.daily` and `...ch.survival`, both LIVE — and
+# the Game Center UI on a current iPhone issues challenges *against a
+# definition*, not into the legacy store.
+#
+# So on a device with both leaderboards live and both definitions published, and
+# a challenge sent and accepted, `load_received_challenges` returns an empty
+# array. Correctly. There is nothing in that store and nothing will ever put
+# anything there again. The door was built on an API that cannot fire.
+#
+# ## What this one can and cannot say
+#
+# Much less, and the difference is the whole cost of the fix. A definition
+# carries its `identifier`, `title`, `details` and the `leaderboard` it tracks,
+# and answers `has_active_challenges` with a bare bool. There is no target score
+# on it, no issuing player, and no clock — `GKLeaderboardEntry`, which is the
+# only other object in reach, carries a score and a rank and no identifier of
+# the board it came off, so it cannot be walked back to either.
+#
+# That is why the door this drives says "a challenge is running on today's
+# board" and not "Anna says beat 12,400". The richer sentence needs a number and
+# a name that this API does not have. The legacy reader is kept above rather
+# than deleted for exactly that reason: if a classic challenge ever does arrive,
+# it still carries both, and it still gets the better door.
+
+## Which boards the local player has a challenge running on right now.
+##
+## Board id -> true. Only ever holds `DAILY_ID` or `SURVIVAL_ID`: a definition
+## pointing at a leaderboard this build has never heard of is one added after
+## this version shipped, and is dropped for the same reason `_playable_challenge`
+## drops the legacy equivalent.
+var active: Dictionary = {}
+
+var _defs_loading := false
+## The definitions Apple handed back, held only so the `has_active_challenges`
+## round trips below have something to sit on while they are in flight.
+var _defs: Array = []
+
+
+## Whether this build can see legacy challenges at all. Challenges ride the
+## leaderboards so this is `available()` plus the class, and the class is the
+## part that moves: the plugin's `GKChallenge` wrapper is new even though GameKit
+## has carried the name since iOS 6.
 func challenges_available() -> bool:
 	return available() and ClassDB.can_instantiate("GKChallenge")
 
 
-## Count what is waiting. Cheap, and safe to call from a screen opening.
+## And whether it can see the modern ones. Separate question, separate class,
+## and on any build that has one it will have the other — but they are different
+## stores and conflating them is the bug this pair exists to prevent.
+func definitions_available() -> bool:
+	return available() and ClassDB.can_instantiate("GKChallengeDefinition")
+
+
+## Ask both stores what is waiting. Cheap, and safe to call from a screen
+## opening — each half guards its own in-flight load.
 func refresh_challenges() -> void:
-	if not challenges_available() or not _signed_in() or _challenges_loading:
+	if not _signed_in():
 		return
-	_challenges_loading = true
-	GKChallenge.load_received_challenges(_on_challenges_loaded)
+	if challenges_available() and not _challenges_loading:
+		_challenges_loading = true
+		GKChallenge.load_received_challenges(_on_challenges_loaded)
+	if definitions_available() and not _defs_loading:
+		_defs_loading = true
+		GKChallengeDefinition.load_challenge_definitions(_on_definitions_loaded)
+
+
+## The definitions this app has published, on their way to being asked whether
+## any of them are running.
+##
+## Two round trips rather than one: Apple hands back the definitions, and each
+## one has to be asked separately whether *this* player has a challenge on it.
+## The second call answers with a bare bool and no clue which definition it was
+## about, so the board is bound onto the callback on the way out.
+func _on_definitions_loaded(definitions: Array, error) -> void:
+	_defs_loading = false
+	if error != null:
+		print("[Boards] challenge definitions refused: %s" % str(error))
+		return
+	# Held so the objects survive the loop — they are RefCounted, and a
+	# definition dropped on the floor here takes its in-flight callback with it.
+	_defs = definitions
+	var asked := 0
+	for d in definitions:
+		if d == null:
+			continue
+		var board := _definition_board(d)
+		if board == "":
+			continue
+		asked += 1
+		d.has_active_challenges(_on_definition_active.bind(board))
+	print("[Boards] %d challenge definitions, %d on a board this build knows"
+		% [definitions.size(), asked])
+	if asked == 0 and not active.is_empty():
+		active = {}
+		challenges_changed.emit()
+
+
+## Which of our boards a definition is about, or "" for one this build cannot
+## place.
+##
+## The leaderboard it tracks is the honest route and is tried first:
+## `base_leaderboard_id` is the same string the game submits against, so a
+## definition renamed in App Store Connect still resolves. The definition's own
+## identifier is the fallback, for the case where the `leaderboard` relationship
+## comes back null — which the wrapper allows and which would otherwise make
+## every definition unplaceable.
+func _definition_board(d) -> String:
+	var lb = d.leaderboard
+	if lb != null:
+		var id := String(lb.base_leaderboard_id)
+		if id == DAILY_ID or id == SURVIVAL_ID:
+			return id
+	match String(d.identifier):
+		CHALLENGE_DEF_DAILY:
+			return DAILY_ID
+		CHALLENGE_DEF_SURVIVAL:
+			return SURVIVAL_ID
+	return ""
+
+
+## The two definition ids configured in App Store Connect, named here only as the
+## fallback in `_definition_board`. The leaderboard is the real key.
+const CHALLENGE_DEF_DAILY := "com.damonj.wordwars.ch.daily"
+const CHALLENGE_DEF_SURVIVAL := "com.damonj.wordwars.ch.survival"
+
+
+func _on_definition_active(has_active: bool, error, board: String) -> void:
+	if error != null:
+		print("[Boards] %s active-challenge check refused: %s" % [board, str(error)])
+		return
+	var was: bool = bool(active.get(board, false))
+	if has_active:
+		active[board] = true
+	else:
+		active.erase(board)
+	print("[Boards] %s has %s challenge running"
+		% [board, "a" if has_active else "no"])
+	if was != has_active:
+		challenges_changed.emit()
+
+
+## Whether a challenge is running on one of our boards, and which.
+##
+## The daily wins a tie. Both can be live at once and the door only has room for
+## one; the daily is the board with a clock on it, so it is the one where being
+## told late costs something.
+func active_challenge_board() -> String:
+	if bool(active.get(DAILY_ID, false)):
+		return DAILY_ID
+	if bool(active.get(SURVIVAL_ID, false)):
+		return SURVIVAL_ID
+	return ""
 
 
 ## Why there is nothing to show, in one line.
 ##
-## "No challenge appeared" has four causes that are indistinguishable from the
-## outside — not an Apple device, `GKChallenge` not in this plugin build, signed
-## out, or Apple genuinely has nothing waiting — and the last of those is the
-## only one that is not a bug. Written down so a device log answers the question
-## rather than starting it.
+## "No challenge appeared" has several causes that are indistinguishable from
+## the outside, and only one of them is not a bug. This line is what found the
+## last one: it said "Apple reports no challenges waiting" on a device with both
+## definitions live and a challenge running, which is how the two stores turned
+## out to be two stores. It now reports on both.
 func why_no_challenges() -> String:
 	if not MultiplayerManager.available():
 		return "challenges need an Apple device"
 	if DAILY_ID == "":
 		return "no leaderboard is configured in this build"
-	if not ClassDB.can_instantiate("GKChallenge"):
-		return "GKChallenge is not in this plugin build"
+	if not ClassDB.can_instantiate("GKChallengeDefinition"):
+		return "GKChallengeDefinition is not in this plugin build"
 	if not _signed_in():
 		return "not signed in to Game Center"
-	if pending == 0:
-		return "Apple reports no challenges waiting"
-	if challenge.is_empty():
-		return "%d waiting, none on a board this build knows" % pending
-	return ""
+	if active_challenge_board() != "" or not challenge.is_empty():
+		return ""
+	# Both stores empty. Said separately, because "the legacy one is empty" is
+	# the expected state on every modern device and is not news — what would be
+	# news is the modern one being empty too.
+	if _defs.is_empty():
+		return "Apple returned no challenge definitions for this app"
+	return "definitions are live, none running for you right now"
 
 
 func _on_challenges_loaded(challenges: Array, error) -> void:
@@ -771,9 +924,13 @@ func _on_gc_state_changed(_text: String) -> void:
 		# offer on the title screen goes with it, and for a stronger reason —
 		# that one is a door, and it would start a run scored for an account
 		# that is no longer signed in.
-		if pending != 0 or not challenge.is_empty():
+		if pending != 0 or not challenge.is_empty() or not active.is_empty():
 			pending = 0
 			challenge = {}
+			# The modern half goes with it and for the same reason: a challenge
+			# running is a fact about an account, and the account has left.
+			active = {}
+			_defs = []
 			challenges_changed.emit()
 		_set_state(State.WAITING, "waiting for Game Center")
 		return

@@ -8831,14 +8831,50 @@ func _tick_challenges(delta: float) -> void:
 		challenge_sent_life = maxf(0.0, challenge_sent_life - delta)
 		if challenge_sent_life == 0.0:
 			challenge_sent = ""
-	if phase != Phase.TITLE or not Boards.challenges_available():
+	if phase != Phase.TITLE \
+			or not (Boards.challenges_available() or Boards.definitions_available()):
 		_challenge_poll = 0.0
 		return
+	_maybe_send_banked_to_challenge()
 	_challenge_poll -= delta
 	if _challenge_poll > 0.0:
 		return
 	_challenge_poll = CHALLENGE_POLL
 	Boards.refresh_challenges()
+
+
+## Put today's banked daily score in front of a challenge that started after it
+## was set.
+##
+## The case: you play the daily at breakfast, somebody starts a challenge on that
+## board at lunch, and your score is already sitting on the leaderboard. Apple
+## scores an active challenge from the board, so in the ordinary case this is
+## redundant — and in the case where it is not, there is no other way to close
+## it, because the one run in today's board has been used.
+##
+## Silent, with no row and no verdict, which is a deliberate narrowing of what
+## this used to be. The legacy challenge could be answered out loud because it
+## carried a number to answer *against*; a definition carries none, so the
+## honest report is no report. A resubmission Apple ignores and a resubmission
+## that closes a challenge look identical from here, and saying "sent!" about
+## the first would be inventing an event.
+##
+## Once per day, remembered in the profile rather than in a variable: the poll
+## that calls this runs every frame the title screen is up, and the guard has to
+## survive a relaunch as well as a redraw.
+func _maybe_send_banked_to_challenge() -> void:
+	if not _daily_is_spent():
+		return
+	if not bool(Boards.active.get(Boards.DAILY_ID, false)):
+		return
+	var key := daily_key()
+	if String(Profile.pref("challenge_sent_for")) == key:
+		return
+	Profile.set_pref("challenge_sent_for", key)
+	var mine := _banked_daily()
+	print("[Game] a challenge is running on today's spent board — resending %d"
+		% mine)
+	Boards.submit_daily(mine)
 
 
 ## What the challenge door says.
@@ -8864,6 +8900,29 @@ func _challenge_sub() -> String:
 	if who == "":
 		return "Beat %s on %s" % [target, where]
 	return "%s says beat %s on %s" % [_show_name(who), target, where]
+
+
+## What the door says for a challenge that came from a definition rather than
+## from the legacy store, or "" when there is no such challenge to offer.
+##
+## Everything the richer version says — the number, the name, beaten or missed —
+## is missing here because the API does not carry it. So this says the two true
+## things that are left: that a challenge is running, and which board your score
+## has to land on for it to count.
+##
+## The daily on a day already played returns "". There is nothing to press: the
+## score is sent without being asked for — see `_maybe_send_banked_to_challenge`
+## — and a door that opens a mode you cannot play is the thing the old spent-day
+## rejection already got wrong once.
+func _running_challenge_sub() -> String:
+	var board := Boards.active_challenge_board()
+	if board == Boards.DAILY_ID:
+		if _daily_is_spent():
+			return ""
+		return "A challenge is running — your daily score counts toward it"
+	if board == Boards.SURVIVAL_ID:
+		return "A challenge is running — your Survival score counts toward it"
+	return ""
 
 
 ## Today's daily, already played.
@@ -8919,15 +8978,36 @@ func _send_banked_daily(ch: Dictionary) -> void:
 
 
 ## Start the run a waiting challenge is asking for.
+##
+## Two stores can have put the door there. The legacy one carries a target and a
+## name and is the better race when it exists, so it is asked first; a challenge
+## from a definition has neither and is just a board to go and play. Either way
+## the mode opened is decided by the board, which is the one thing both agree on.
+##
+## `challenge_run` is only ever set from the legacy dictionary, and that is not
+## an oversight. It is what the summary reads to say "CHALLENGE BEATEN — Anna by
+## 5,680", and a definition-backed run has no target to have beaten. Left set
+## from an empty dictionary the summary would claim a verdict against zero,
+## which every run would win.
 func _start_challenge() -> void:
 	var ch: Dictionary = Boards.challenge
 	var board := String(ch.get("board", "")) if not ch.is_empty() else ""
+	if board == "":
+		board = Boards.active_challenge_board()
 	if board == Boards.DAILY_ID:
 		if _daily_is_spent():
 			# Not a run. See `_send_banked_daily` — and note that this returns
 			# before `challenge_run` is set below, which matters: the next run
 			# this player starts is not this challenge and must not report
 			# itself as one.
+			#
+			# Only for the legacy challenge, which has a target to report against.
+			# The definition-backed one has already had the score sent for it
+			# without being asked — `_maybe_send_banked_to_challenge` — and draws
+			# no door on a spent day, so this is unreachable rather than silent.
+			if ch.is_empty():
+				Sfx.play("reject", 1.2)
+				return
 			_send_banked_daily(ch)
 			return
 		Link.leave()
@@ -10593,6 +10673,13 @@ func _title_modes() -> Array:
 	# was pressed on Apple's screen and did nothing. See `_start_challenge`.
 	if Boards.challenge_armed():
 		rows.append(["VS", "CHALLENGE", _challenge_sub(), "challenge",
+			Color("#c77dff"), 0])
+	elif _running_challenge_sub() != "":
+		# The modern challenge, which is the one that actually turns up. Plainer
+		# copy because `GKChallengeDefinition` has no target score and no issuer
+		# to put in it — see the note in `leaderboards.gd`. Same door, same band,
+		# and the same action: it opens the mode the challenge is scored on.
+		rows.append(["VS", "CHALLENGE", _running_challenge_sub(), "challenge",
 			Color("#c77dff"), 0])
 	elif challenge_sent != "":
 		# The same row, holding the answer for a few seconds. Clearing the

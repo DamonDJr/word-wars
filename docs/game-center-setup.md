@@ -100,9 +100,42 @@ boards, because Apple routes a submitted score into the challenges that score is
 eligible for. The game has been feeding challenges correctly since before any of
 this existed.
 
-What the game does have is `Boards.pending` — a count of challenges waiting for
-you — a badge for it on the BOARDS door, and a button that opens Apple's
-challenge screen. All of it is quiet and empty until the entries below exist.
+What the game does have is a door on the title screen, a badge on the BOARDS
+door, and a button that opens Apple's challenge screen. All of it is quiet and
+empty until the entries below exist.
+
+### There are two challenge systems and only one of them is yours
+
+This cost a release to find, so it is written down here rather than only in the
+code.
+
+**Legacy challenges** are the iOS 6 feature: one player sends another a "beat my
+score" challenge off a leaderboard entry. They have no App Store Connect
+configuration, they arrive through `GKChallenge.load_received_challenges`, and
+they carry a target score and an issuing player. The modern Game Center UI does
+not create them any more.
+
+**Challenge definitions** are what the entries below actually are — the
+`gameCenterChallenges` resource in App Store Connect. Players start them from
+the Challenges tab in the Game Center UI, and they arrive in the game through
+`GKChallengeDefinition.load_challenge_definitions`, one object per *definition*
+rather than one per challenge. Each one answers `has_active_challenges` with a
+bare bool.
+
+They are different stores. A build reading only the first sees an empty array on
+a device with both definitions live and a challenge actually running, which is
+exactly what shipped in 0.46.0 build 1 and exactly what it looked like: no door,
+no badge, and nothing in any log that reads as an error. `leaderboards.gd` reads
+both now — see the long note over `active` — and the modern one drives the door.
+
+**A definition carries no target score and no issuing player.** That is a limit
+of the API, not a gap in the implementation: the only other object in reach is
+`GKLeaderboardEntry`, which has a score and a rank and no identifier of the
+board it came off. So the door says "a challenge is running on today's board"
+rather than "Anna says beat 12,400", and there is no beaten/missed verdict on
+the summary or the share card for a definition-backed challenge. The legacy
+reader is kept for the case where a classic challenge does arrive, because that
+one still carries both.
 
 ### The two entries
 
@@ -166,17 +199,28 @@ is unfair rather than merely inconsistent.
 Nothing in the game announces a challenge, so verify from the outside:
 
 1. With two Game Center accounts and a build on each, open **BOARDS → Open in
-   Game Center**, then challenge the other account from Apple's screen.
+   Game Center**, then start a challenge from the **Challenges** tab.
 2. The recipient's phone gets a notification from Game Center. That notification
    is the entire retention feature — if it arrives, this works.
-3. On the recipient's build, **BOARDS** shows `Challenges (1)` and the door's
-   subtitle reads `1 challenge waiting`.
+3. On the recipient's build, the title screen shows a **CHALLENGE** row reading
+   `A challenge is running — your daily score counts toward it`, and the log
+   carries `[Boards] com.damonj.wordwars.daily has a challenge running`.
 4. Play the mode. The score submits through the path it always did, and Apple
    scores the challenge from it — no extra call, and nothing in the log.
 
-If the badge never appears but the notification does, the count is the only
-broken part: `Boards.refresh_challenges` logs `[Boards] challenges refused: …`
-and everything else keeps working.
+If the row never appears, the line under the **Challenges** button on the BOARDS
+screen says which of the causes it is — `Boards.why_no_challenges` covers all of
+them, and the two worth knowing apart are `Apple returned no challenge
+definitions for this app` (nothing published, or the plugin cannot see them) and
+`definitions are live, none running for you right now` (everything works, nobody
+has challenged you). Whatever it says, scoring is unaffected: submitted scores
+feed running challenges whether or not the game can see that they exist.
+
+Check the App Store Connect side from a terminal rather than the web UI:
+
+```bash
+asc game-center challenges list --app 6802900966
+```
 
 ---
 
