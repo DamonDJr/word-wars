@@ -126,6 +126,56 @@ func _the_reminder_clock_is_local() -> void:
 	_expect("notify's day key matches the game's", notify._today_key()
 		== game.daily_key())
 
+	# The three hours are a schedule, not three independent numbers: morning,
+	# then afternoon, then a last call with enough of the evening left to act on
+	# it. Swapping any two of them would still compile and would send the streak
+	# warning before the board had been up long enough to skip.
+	_expect("the three reminders run in order (%d, %d, %d)" % [
+		notify.DAILY_HOUR, notify.MIDDAY_HOUR, notify.STREAK_HOUR],
+		notify.DAILY_HOUR < notify.MIDDAY_HOUR
+			and notify.MIDDAY_HOUR < notify.STREAK_HOUR)
+	_expect("and the last one leaves the evening to answer it",
+		notify.STREAK_HOUR < 22)
+
+
+## Who the offer after a daily run may be made to.
+##
+## Three states look identical through `enabled()` and only one of them may be
+## re-offered: never asked, asked and refused, and switched off on purpose. The
+## second and third are answers, and re-asking somebody who answered is the
+## nagging the whole file is written to avoid.
+func _the_offer_is_made_once() -> void:
+	print("--- who gets offered the reminders ---")
+	profile.prefs.erase("notify_asked")
+	profile.prefs.erase("notify_touched")
+	_expect("a profile that has never been asked is open to the offer",
+		notify.never_answered())
+
+	profile.set_pref("notify_asked", true)
+	_expect("one that has seen the iOS dialog is not", not notify.never_answered())
+
+	profile.prefs.erase("notify_asked")
+	profile.set_pref("notify_touched", true)
+	_expect("and neither is one that worked the switch itself",
+		not notify.never_answered())
+
+	# `set_enabled` is the only thing that sets `notify_touched`, and it has to
+	# do it on the way off as well as on the way on — turning the row off is an
+	# answer, and the loudest one available.
+	profile.prefs.erase("notify_touched")
+	notify.set_enabled(false)
+	_expect("turning the row off counts as an answer",
+		bool(profile.pref("notify_touched")))
+
+	# With no plugin in this build the offer is refused whatever the profile
+	# says, and says so by returning false rather than by throwing.
+	profile.prefs.erase("notify_asked")
+	profile.prefs.erase("notify_touched")
+	_expect("but with no plugin behind it nothing is offered",
+		not notify.offer_after_daily())
+	_expect("and the status line says why: '%s'" % notify.status(),
+		notify.status().begins_with("off — "))
+
 
 ## The settings row may only be offered where it could do something.
 func _the_switch_is_honest() -> void:
@@ -154,6 +204,7 @@ func _init() -> void:
 	_the_seams_are_shut()
 	_the_review_budget_holds()
 	_the_reminder_clock_is_local()
+	_the_offer_is_made_once()
 	_the_switch_is_honest()
 
 	print("--- %s ---" % ("retention holds up" if fails == 0

@@ -548,7 +548,10 @@ func _normal_play_is_untouched() -> void:
 	game.start_match("Daily", 0, [], game.Mode.DAILY)
 	_expect("the daily is still one seat", game.slots_in_play == 1)
 	_expect("still solo", game.solo_run())
-	_expect("and still takes no breaks", not game._ad_allowed())
+	# It takes one now, at the end, paid for out of the clock budget the same way
+	# survival's is. What has not changed is that it is still the only mode on
+	# this list with no opponent and no second board.
+	_expect("and now takes a break of its own", game._ad_allowed())
 
 	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
 	_expect("the lesson takes no breaks", not game._ad_allowed())

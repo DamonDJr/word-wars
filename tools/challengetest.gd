@@ -135,6 +135,71 @@ func _the_door_starts_the_right_mode() -> void:
 	_expect("and says nothing about one", game._challenge_line() == "")
 
 
+## A daily challenge on a day already played is answered, not refused.
+##
+## The bug: a challenge has a clock on it and the daily has one run in it, so
+## somebody challenged after breakfast was told to come back at midnight and the
+## challenge expired unanswered in between. From the sender's side that is the
+## game ignoring them.
+func _a_spent_daily_still_answers() -> void:
+	print("--- and a spent daily sends the score it already has ---")
+	var key: String = game.daily_key()
+
+	# Today, played, 9,000 on the board. The challenge asks for 7,500.
+	profile.daily.erase(key)
+	profile.record_daily(key, 9000, 40, 12, 3)
+	_arm(DAILY_BOARD, 7500)
+	game.mode = game.Mode.NORMAL
+	game.challenge_sent = ""
+
+	var sub: String = game._challenge_sub()
+	_expect("the door offers the score rather than a run: '%s'" % sub,
+		sub.contains("Send your 9,000"))
+	_expect("and still names the target", sub.contains("7,500"))
+
+	game._start_challenge()
+	_expect("pressing it starts no run at all", game.mode == game.Mode.NORMAL)
+	_expect("the challenge is answered and dropped", not boards.challenge_armed())
+	_expect("and nothing is labelled a challenge run",
+		game.challenge_run.is_empty())
+	_expect("the verdict is reported: '%s'" % game.challenge_sent,
+		game.challenge_sent.contains("beats Anna"))
+	_expect("and hot, because it beat the target", game.challenge_sent_hot)
+
+	# The row has to survive the challenge being cleared, or the tap takes the
+	# plate off the screen and reads as nothing having happened.
+	var rows: Array = game._title_modes()
+	_expect("the row stays up holding the answer",
+		rows.size() > 0 and String((rows[0] as Array)[1]) == "SENT")
+	_expect("and every band is still a real band",
+		_bands_are_real(rows))
+
+	# Short of the target is still an answer — it closes the challenge — and has
+	# to say so rather than claiming a win.
+	profile.daily.erase(key)
+	profile.record_daily(key, 4000, 40, 12, 3)
+	_arm(DAILY_BOARD, 7500)
+	game.challenge_sent = ""
+	game._start_challenge()
+	_expect("falling short still sends: '%s'" % game.challenge_sent,
+		game.challenge_sent.contains("Sent your 4,000"))
+	_expect("and reports the gap", game.challenge_sent.contains("3,500"))
+	_expect("without claiming it beat anything", not game.challenge_sent_hot)
+
+	# And it expires, rather than sitting on the title screen forever.
+	game._tick_challenges(game.CHALLENGE_SENT_LIFE + 1.0)
+	_expect("the answer clears itself after a few seconds",
+		game.challenge_sent == "")
+	profile.daily.erase(key)
+
+
+func _bands_are_real(rows: Array) -> bool:
+	for r: Array in rows:
+		if int(r[5]) < 0 or int(r[5]) >= game.TITLE_BANDS.size():
+			return false
+	return true
+
+
 ## A board this build has never heard of is not a door.
 ##
 ## Challenges are configured in App Store Connect against a leaderboard, and a
@@ -251,6 +316,7 @@ func _init() -> void:
 
 	_the_title_offers_the_challenge()
 	_the_door_starts_the_right_mode()
+	_a_spent_daily_still_answers()
 	_an_unknown_board_is_not_offered()
 	_the_verdict_is_reported()
 	_an_ordinary_run_is_silent()

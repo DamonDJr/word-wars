@@ -273,16 +273,24 @@ enum Mode { NORMAL, TUTORIAL, TRAINING, DAILY, SURVIVAL }
 ## second word. So the pressure is the ambient clock and nothing else, and what
 ## is being measured is how much you can wring out of it.
 ##
-## A minute, not three. Three minutes of solitaire against a clock that starts
-## at twenty-two seconds a block is not a contest, it is a warm-up that outlasts
-## its own interest — and the score it produces is mostly a measure of patience.
-## Sixty seconds is short enough that the whole run is the interesting part, and
-## short enough to want another go at tomorrow.
-const DAILY_SECONDS := 60.0
+## Seventy-five seconds, not three minutes. Three minutes of solitaire against a
+## clock that starts at twenty-two seconds a block is not a contest, it is a
+## warm-up that outlasts its own interest — and the score it produces is mostly
+## a measure of patience. A run this length is short enough that the whole of it
+## is the interesting part, and short enough to want another go at tomorrow.
+##
+## It was sixty, and the extra quarter-minute is a scoring decision rather than a
+## pacing one. A minute is barely twenty words at the speed this is played at,
+## which is not enough room for the back half of the ramp to be *played* — the
+## board goes under and the run ends on the same handful of seconds. Fifteen
+## more is one more dig-out, and the ramp below is stretched to match so the
+## difficulty curve is the same shape over a longer run rather than the same
+## curve with a harder tail bolted on.
+const DAILY_SECONDS := 75.0
 ## When the clock turns red. Lands on the last size step, so the alarm and the
 ## thing it is warning about are the same moment.
 const DAILY_ALARM := 12.0
-## How hard the minute leans on you.
+## How hard the run leans on you.
 ##
 ## Built around a phone typist at 36-38 wpm, which is the speed that actually
 ## turns up: at that rate a word is found and fired about every three seconds,
@@ -290,13 +298,29 @@ const DAILY_ALARM := 12.0
 ## seconds by the end is meant to be faster than anyone can answer. Losing
 ## ground is the shape of the last fifteen seconds; the three lives are what
 ## make that a scoring decision rather than a death.
+##
+## The step is what got retuned when the run went from sixty seconds to
+## seventy-five. Start and floor are both physical claims — how long the first
+## block takes to arrive, and the fastest rate a thumb can be asked to answer —
+## and neither of those changed. What changed is how long the run spends at the
+## floor: at 0.14 a step the rate bottomed out around thirty seconds in, which
+## was half of a sixty-second run and would have been well under half of this
+## one. 0.11 puts the floor at about forty seconds, which is the same fraction
+## of the run it always was. Without it the extra quarter-minute would have been
+## fifteen more seconds of the hardest part of the board, which is the opposite
+## of more room to score.
 const DAILY_PRESSURE_START := 3.4
 const DAILY_PRESSURE_MIN := 1.6
-const DAILY_PRESSURE_STEP := 0.14
+const DAILY_PRESSURE_STEP := 0.11
 ## Seconds elapsed at which ambient garbage steps up a size. Rate alone runs out
 ## of room — below about a second and a half the blocks arrive faster than the
 ## eye reads them — so the back half of the run escalates by weight instead.
-const DAILY_TIER_AT := [25.0, 48.0]
+##
+## Stretched with the run rather than left where they were. The second one is
+## also what `DAILY_ALARM` is measured against: the clock turning red and the
+## last size step are meant to be the same moment, so `DAILY_SECONDS` minus the
+## last entry here has to stay `DAILY_ALARM`.
+const DAILY_TIER_AT := [31.0, 63.0]
 
 ## How full the board is before the first word is typed, as a fraction of its
 ## cells, rolled from the day's seed.
@@ -609,16 +633,18 @@ var net_status := ""
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
-## How many points one design unit is worth here, and whether the glass is big
-## enough to be a tablet. Both measured in `_measure_device`, both zero and
-## false on a desktop and on anything that will not say.
+## Whether the glass is big enough to be a tablet. Measured in `_measure_device`
+## and false on a desktop and on anything that will not say.
 ##
-## These exist so the keyboard can be laid out at a fixed physical size rather
-## than as a fraction of the screen — see `Keyboard.KEY_W_PT`. Nothing here asks
-## what platform it is on, in keeping with the rest of the layout: a tablet is
-## something the game *measures*, which is why the whole iPad layout can be
-## brought up on a desktop with a command-line flag instead of a device.
-var points_per_unit := 0.0
+## Nothing here asks what platform it is on, in keeping with the rest of the
+## layout: a tablet is something the game *measures*, which is why the whole
+## iPad layout can be brought up on a desktop with a command-line flag instead
+## of a device.
+##
+## `points_per_unit` used to sit beside this, because the keyboard was laid out
+## at a fixed physical size and needed to know how big a design unit was in
+## points. It is not any more — see the note at the top of `keyboard.gd` — and
+## nothing else in the layout ever wanted the number, so it went with it.
 var tablet := false
 ## Every board in the match. `sides[0]` is always yours; the rest are rivals,
 ## living or knocked out. `player` and `ai_side` are kept as names for slot 0 and
@@ -757,6 +783,20 @@ var _overlay: Node2D
 var _chip_sb: StyleBoxFlat
 var _ui_sb: StyleBoxFlat
 var _hover_action := ""
+## Which menu action the finger went down on, held until it comes back up.
+##
+## Buttons used to fire on the press. On a desktop that is merely unusual; on a
+## phone it made the scrolling menus unscrollable, because every one of them is
+## wall-to-wall buttons and there is nowhere on the screen a drag can *begin*
+## that is not already a button. Touching a row to scroll opened it instead, and
+## the drag handling below — which is careful to decide "this was a drag, not a
+## tap" — never got a say, because by the time it could the screen had changed.
+##
+## So a press only remembers, and the release decides: same action under the
+## finger at both ends and no drag in between, or nothing happens. That is also
+## how every button on the phone in your hand already behaves, including the
+## right to slide off one and have it not fire.
+var _press_action := ""
 
 
 func _ready() -> void:
@@ -945,18 +985,9 @@ func _measure_safe_area(base: Vector2i) -> void:
 				safe_bottom = maxf(0.0, parts[1].to_float())
 
 
-## How physically big this screen is, and whether it is a tablet.
+## Whether this is a tablet.
 ##
-## Two numbers, both of which the keyboard needs and neither of which anything
-## else in the layout has ever had to ask about.
-##
-## `points_per_unit` is the size of a design unit in points. `_measure_safe_area`
-## already works out how many *pixels* a unit is worth — that is the same `k` —
-## and a point is `screen_get_scale()` pixels, so this is that division and
-## nothing more. It comes out at 0.55 on a modern iPhone and 0.82 on an iPad,
-## which is the whole reason the keyboard cannot be written in units alone.
-##
-## `tablet` is decided by the shape of the design-space viewport rather than by
+## Decided by the shape of the design-space viewport rather than by
 ## asking iOS what it is running on. With `expand` stretching, a phone pins its
 ## width and overflows vertically — the viewport comes out 720x1561, a ratio of
 ## 0.46. A tablet is the other way round: 4:3 glass pins the height and the
@@ -967,35 +998,29 @@ func _measure_safe_area(base: Vector2i) -> void:
 const TABLET_RATIO := 0.58
 
 func _measure_device(base: Vector2i) -> void:
-	points_per_unit = 0.0
 	tablet = false
 	var win := DisplayServer.window_get_size()
 	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
 		return
 	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
-	var dots: float = maxf(1.0, DisplayServer.screen_get_scale(
-		DisplayServer.window_get_current_screen()))
-	if k > 0.0:
-		points_per_unit = k / dots
+	if k <= 0.0:
+		return
 
 	# Measured off the viewport the game will actually draw into, which is the
 	# window divided by that same factor — not off the window, whose pixel
 	# dimensions say nothing about shape once the scale factor is in play.
-	if k > 0.0:
-		var vp := Vector2(float(win.x) / k, float(win.y) / k)
-		tablet = vp.y > 0.0 and (vp.x / vp.y) > TABLET_RATIO
+	var vp := Vector2(float(win.x) / k, float(win.y) / k)
+	tablet = vp.y > 0.0 and (vp.x / vp.y) > TABLET_RATIO
 
 	# `godot -- --ipad` brings the whole tablet layout up in a desktop window,
 	# the way `--safe=` brings up a notch. Without it none of this could be seen
 	# before an App Store build, and a layout nobody can look at is a layout
-	# nobody can fix. The point figure is an iPad Air's, so what appears on the
-	# desktop is the real thing at the real size rather than an impression.
+	# nobody can fix.
 	if OS.get_cmdline_user_args().has("--ipad"):
 		tablet = true
-		points_per_unit = 0.8194
 
 
-## Which keyboard this screen gets, and what to size it against.
+## Which keyboard this screen gets.
 ##
 ## Split is a tablet-only shape — the whole point of it is that the two halves
 ## are further apart than one hand can span, which on a phone describes a
@@ -1008,31 +1033,25 @@ func _kb_form() -> int:
 	return Keyboard.Form.FULL
 
 
-## Zero on a phone, which is what tells `Keyboard` to lay itself out the way it
-## always has. See `_metrics` there for why phones are left on the old path.
-func _kb_ppu() -> float:
-	return points_per_unit if tablet else 0.0
-
-
-# `Keyboard`'s statics all want the same two extra arguments, and every caller
-# in this file has the same answer for them. These are that answer, applied
-# once, so the ten callsites read the way they did before the keyboard grew a
-# second shape — and so a new one cannot be added that forgets to ask.
+# `Keyboard`'s statics all want the same extra argument, and every caller in
+# this file has the same answer for it. These are that answer, applied once, so
+# the ten callsites read the way they did before the keyboard grew a second
+# shape — and so a new one cannot be added that forgets to ask.
 
 func _kb_height(size: Vector2) -> float:
-	return Keyboard.height(size, _kb_ppu(), _kb_form())
+	return Keyboard.height(size, _kb_form())
 
 
 ## The multiplier for anything sized to match the keys: the type on the caps,
 ## the pad above the top row, and the two touch corrections in `_key_at`. All of
-## those are physical quantities — a thumb does not get bigger on a tablet — so
-## they track the keys rather than the screen.
+## those are sized to the keys rather than to the screen, so that a cap stays the
+## same fraction of the key it is printed on wherever this is being played.
 func _kb_type_scale(size: Vector2) -> float:
-	return Keyboard.type_scale(size, _kb_ppu(), _kb_form())
+	return Keyboard.type_scale(size, _kb_form())
 
 
 func _kb_emote_rect(size: Vector2, bottom: float) -> Rect2:
-	return Keyboard.emote_rect(size, bottom, _kb_ppu(), _kb_form())
+	return Keyboard.emote_rect(size, bottom, _kb_form())
 
 
 ## Push the equipped board theme and block style out to everything that paints.
@@ -1999,8 +2018,8 @@ func daily_left() -> float:
 
 ## The sprint clock, as the player reads it.
 ##
-## Not `m:ss`. A minute-long run spends fifty-nine of its sixty seconds showing a
-## leading "0:", which is a whole digit of nothing, and the last ten seconds are
+## Not `m:ss`. A run this short spends all but its first fifteen seconds showing
+## a leading "0:", which is a whole digit of nothing, and the last ten seconds are
 ## the ones being counted — so they get tenths, and the readout visibly speeds up
 ## exactly when the run does.
 func _daily_clock(left: float) -> String:
@@ -2837,11 +2856,26 @@ func _rematch_sub() -> String:
 ## It banks a run, it feeds the clock, and it is the one mode long enough that a
 ## break can land inside it rather than only after it — see `_lose_life`.
 ##
-## Still never in a lesson, a training run or the daily: none of them banks a
-## match, so none of them has moved the counter, and a break at the end of one is
-## being charged for something the game does not otherwise count.
+## The daily counts now too, and it is the one that had to be argued for rather
+## than measured. It does not bank a match, which is what the old rule was really
+## about — a break paid for out of a counter the mode never moved. So it pays the
+## clock budget instead, the way survival does: `_finish_daily` hands over the
+## seconds the run took before it asks for a break, and the break is charged for
+## play that actually happened.
+##
+## The stronger argument is about where the daily sits. It is the mode with the
+## most sessions and the fewest seconds in it — somebody who only plays the daily
+## opens this game once a day for a minute and has, until now, never seen an
+## advert at all. One break at the end of that, with the scoreboard behind it, is
+## the whole of what that session is asked to pay, and the cadence in `profile.gd`
+## still decides whether it is due: a daily run alone moves the clock by seventy-
+## five seconds against a five-to-eight minute gap, so this is a break every few
+## days rather than every day.
+##
+## Still never in a lesson or a training run: neither banks anything, neither
+## moves either counter, and neither is play somebody chose to sit down for.
 func _ad_allowed() -> bool:
-	return mode == Mode.NORMAL or mode == Mode.SURVIVAL
+	return mode == Mode.NORMAL or mode == Mode.SURVIVAL or mode == Mode.DAILY
 
 
 ## Whether the match that just ended should be followed by a break.
@@ -2852,8 +2886,17 @@ func _ad_allowed() -> bool:
 ## hand" are different questions — and the counter must only be spent on the
 ## second, or a run of empty nights silently resets the cadence and the player
 ## goes hours without a break.
+##
+## `Reviews.asking` is the other veto, and it is about a collision rather than a
+## cadence. Both of the moments that take a break — the end of a survival run and
+## the end of a daily — are also moments that may spend a rating ask, and the
+## rating sheet is the system's, arriving a second or two later on its own
+## schedule. Without this the sheet lands on top of the advert. The break is
+## dropped rather than delayed: the counter keeps its place, and the next run
+## takes it.
 func _break_due() -> bool:
-	return _ad_allowed() and Profile.ad_due() and Ads.has_ad()
+	return _ad_allowed() and not Reviews.asking() \
+		and Profile.ad_due() and Ads.has_ad()
 
 
 # ------------------------------------------------------------------ the curtain
@@ -3503,6 +3546,7 @@ func _process(delta: float) -> void:
 		_lobby_search += delta
 	elif _lobby_search != 0.0:
 		_lobby_search = 0.0
+	_tick_challenges(delta)
 	_tick_scroll()
 
 	# The playfields have nothing to say on the front-of-house screens.
@@ -3998,12 +4042,31 @@ func _finish_daily() -> void:
 	# iOS offers the permission dialog once per install and never again, and a
 	# dialog put up before any of that is a dialog about nothing. `offer_after_daily`
 	# is a no-op on every call after the first.
-	Notify.offer_after_daily()
+	var asked_to_notify: bool = Notify.offer_after_daily()
 	Notify.refresh()
 	# Finishing today's board with a streak going is one of the three good moments
 	# in this game. See `review.gd` for why the bar is this high.
 	if survived and Profile.daily_streak(daily_key()) >= 3:
 		Reviews.maybe_ask("a %d-day daily streak" % Profile.daily_streak(daily_key()))
+
+	# What the run cost, handed over before the break that may follow it. The
+	# daily banks no match, so the count budget never moves for it and the clock
+	# budget is the only one it can pay into — see `_ad_allowed`. `match_time`
+	# rather than `DAILY_SECONDS`, because a run that topped out at forty seconds
+	# is forty seconds of play and should be billed as such.
+	Profile.note_time_for_ads(match_time)
+	# Last, and after the rating ask above: `_break_due` stands the break down
+	# when an ask is in flight, which it cannot know about until the ask has been
+	# made. The summary is already built underneath — the break covers it and
+	# uncovers it, and `_ad_note` promises exactly that on the curtain.
+	#
+	# Stood down outright on the one run that asks for notification permission.
+	# That is the first daily somebody ever finishes, it is the only chance iOS
+	# will ever give us to ask, and an advert arriving over the top of the dialog
+	# would cost the answer as well as the frame. The counter keeps its place and
+	# the next run takes the break.
+	if not asked_to_notify:
+		_try_ad_break()
 
 
 ## Hand the ad budget whatever this run has played since it was last asked.
@@ -4623,6 +4686,27 @@ var _emote_in: Dictionary = {}
 ## reply delete the thing it was replying to.
 var _emote_out: Dictionary = {}
 
+## Draw the emote UI without a live match behind it. Off, and nothing in the
+## game ever turns it on.
+##
+## It exists because emotes cannot otherwise be filmed. `net_active()` is
+## `MultiplayerManager.current_match != null` and that is a `GKMatch` — a Game
+## Center type whose plugin is a stub on Linux and refuses to instantiate. So on
+## the only machine that can record footage, the one state in which emotes are
+## drawn is a state that cannot be entered, and the trailer would have to either
+## leave the feature out or paint fake bubbles over the gameplay in the editor.
+##
+## Painting them on is the option worth refusing. A trailer that shows a screen
+## the build cannot produce is the one kind of trailer that is actually
+## dishonest, so the recorder is given a way to reach the real UI instead. See
+## `tools/trailer.gd`, which sets this for one scene and clears it after.
+##
+## Sending still requires a real match — `_send_emote` returns early without one
+## — so with this on and no network the key is a button that does nothing. That
+## is fine for a recorder driving the dictionaries directly, and is why nothing
+## in the game turns it on.
+var demo_emotes := false
+
 
 ## The hold that opens the menu, the cooldown, and the life of an incoming
 ## bubble. Run every frame from `_process` rather than on timers, because all
@@ -4793,7 +4877,7 @@ func _emote_frame(anim: Dictionary, t: float) -> Rect2:
 ## somebody, so they exist only in a live match against a person — a solo run
 ## would be a button that talks to nobody.
 func _emotes_live() -> bool:
-	return _keys_live() and net_active()
+	return _keys_live() and (net_active() or demo_emotes)
 
 
 ## Paint one. `alpha` fades the whole thing, glow included, so a bubble can
@@ -5084,6 +5168,13 @@ func _draw_back_button() -> void:
 ## Runs the back button. Kept apart from `_activate` because two of the things
 ## it does — closing the name field, pausing — are not menu actions at all.
 func _press_back() -> void:
+	# This one still fires on the press, because the back chevron is fixed
+	# furniture rather than part of the scrollable body — there is no drag it
+	# could be the start of. What it must not do is leave a half-finished press
+	# behind: its own release goes on to reach the menu handler, and a stale
+	# `_press_action` there would be a row on the screen we have just arrived at
+	# being activated by a finger that came down on the screen we just left.
+	_press_action = ""
 	var act := _back_action()
 	if act == "":
 		return
@@ -5099,7 +5190,7 @@ func _press_back() -> void:
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
 	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom(),
-		_kb_ppu(), _kb_form())
+		_kb_form())
 
 
 ## The letters on the keycaps, and the words on the three action keys.
@@ -5383,18 +5474,22 @@ func _key_at(p: Vector2) -> String:
 	# the bottom row still get the letter it was aiming at.
 	#
 	# A split keyboard breaks that assumption in the most damaging way available.
-	# There are now two hundred units of nothing between the halves — the part of
-	# the screen you rest a thumb on, and the part you tap when you meant to tap
+	# There is now a sixth of the screen's width of nothing between the halves —
+	# the part you rest a thumb on, and the part you tap when you meant to tap
 	# nothing at all — and every point of it has a nearest key several key-widths
 	# away on one side or the other. Left unlimited, resting a thumb in the middle
 	# of the keyboard types a letter. So in SPLIT a tap has to land within a key's
 	# width of a key, and the dead gap goes back to being dead.
 	#
+	# Asked of `Keyboard` rather than worked out here. The gap and the keys are
+	# both fractions of the screen now, so a limit written as a constant would be
+	# the right distance on one device and the wrong one on every other.
+	#
 	# FIRE is unaffected: it still spans the whole width along the bottom, and a
 	# tap inside any action key returns from the loop before this is consulted.
 	var limit := INF
 	if _kb_form() == Keyboard.Form.SPLIT:
-		limit = Keyboard.KEY_W_PT / maxf(points_per_unit, 0.001)
+		limit = Keyboard.key_width(size, Keyboard.Form.SPLIT)
 
 	var best := ""
 	var best_score := INF
@@ -6005,7 +6100,7 @@ func _draw_overlay() -> void:
 	if phase == Phase.PLAY:
 		if portrait:
 			_draw_keyboard()
-			if net_active():
+			if net_active() or demo_emotes:
 				_draw_portrait_emotes(size)
 			_draw_emote_key()
 			_draw_back_button()
@@ -6505,12 +6600,14 @@ func _settings_defs() -> Array:
 	# plugin this row could not do anything either way, and a dead switch in
 	# settings is worse than a setting that is not offered.
 	#
-	# The note says what will actually arrive, because "Reminders" on its own is
-	# a promise of unknown size and the honest answer — two, both about the daily
-	# board — is a better argument for leaving it on than anything vaguer.
+	# The note is `Notify.status()` rather than a fixed line. When everything is
+	# working it says what will actually arrive, because "Reminders" on its own
+	# is a promise of unknown size and the honest answer is a better argument for
+	# leaving it on than anything vaguer. When it is *not* working it says which
+	# of the four reasons it is — and the two most likely are fixed by the player
+	# in iOS Settings, which is a thing they can only do if somebody tells them.
 	if Notify.available():
-		defs.append(["notify", "toggle", "Daily reminders",
-			"the new board, and a streak about to lapse",
+		defs.append(["notify", "toggle", "Daily reminders", Notify.status(),
 			Notify.enabled()])
 	# There was a name field here, labelled "shown to other players". It was not
 	# shown to anybody. It belonged to the netfox lobby, where a typed name was
@@ -8673,6 +8770,76 @@ func _over_button_rects(count: int) -> Array:
 # purpose: closing Apple's dashboard is not the same as accepting, and the same
 # close arrives from browsing, declining, or backing out. Launching a timed run
 # off it would be wrong more often than right.
+#
+# ## Which leaves the question of when to look
+#
+# The door can only be drawn from what `Boards.challenge` is holding, and that
+# is filled by an asynchronous load. Until this poll existed there were exactly
+# three things that triggered one: signing in, opening the BOARDS screen, and —
+# on iOS 26 only — the dashboard's own close handler.
+#
+# The hole in that is the whole feature. A player taps GAME CENTER, accepts a
+# challenge on Apple's screen, and closes it. On iOS 26 the close handler fires
+# and the row appears. On anything older `show_type` takes no completion handler
+# at all, so nothing fires, nothing reloads, and they are returned to a title
+# screen with no sign that anything happened — which is the same symptom as the
+# feature not existing, and indistinguishable from it from the sofa.
+#
+# A poll rather than a better callback because there is no better callback to
+# have: the plugin publishes no signal for "the dashboard closed" on the old
+# path, and there is nothing else to hang this off. It is cheap — one load every
+# `CHALLENGE_POLL` seconds, only on the title screen, only while signed in — and
+# the title screen is precisely where somebody who just closed that dashboard is
+# standing.
+
+## How often to ask, in seconds, while the title screen is up.
+##
+## Twelve is chosen against a human rather than against a network: it is about
+## how long it takes to put a phone down and pick it up again after closing a
+## native sheet, which is the gap this is covering. Faster would be a round trip
+## to Apple every few seconds for a feature most players never touch.
+const CHALLENGE_POLL := 12.0
+var _challenge_poll := 0.0
+
+## What just happened to a challenge answered without playing one, and how long
+## is left to read it.
+##
+## `_say` is not available here and it is worth saying why, because it was tried:
+## the message banner is drawn by the playfield HUD and a menu has no playfield,
+## so every `_say` on the title screen since this feature shipped has gone to a
+## line nobody was ever shown. The verdict takes over the row that asked for it
+## instead, which is where the player is already looking.
+##
+## Eight seconds rather than the banner's two. This is a result being reported
+## rather than a nudge, there is nothing else moving on the screen, and the row
+## is a whole plate of text to read.
+const CHALLENGE_SENT_LIFE := 8.0
+var challenge_sent := ""
+var challenge_sent_hot := false
+var challenge_sent_life := 0.0
+
+
+## Ask Apple again, occasionally, while the player is somewhere the answer would
+## change what is on screen.
+##
+## Only on the title screen. The BOARDS screen asks on the way in and the two
+## challenge signals cover everything that happens while the app is open; this
+## is for the one case neither of those catches, which is coming back from a
+## native screen that does not tell us it closed.
+func _tick_challenges(delta: float) -> void:
+	if challenge_sent_life > 0.0:
+		challenge_sent_life = maxf(0.0, challenge_sent_life - delta)
+		if challenge_sent_life == 0.0:
+			challenge_sent = ""
+	if phase != Phase.TITLE or not Boards.challenges_available():
+		_challenge_poll = 0.0
+		return
+	_challenge_poll -= delta
+	if _challenge_poll > 0.0:
+		return
+	_challenge_poll = CHALLENGE_POLL
+	Boards.refresh_challenges()
+
 
 ## What the challenge door says.
 ##
@@ -8686,11 +8853,12 @@ func _challenge_sub() -> String:
 	if target == "":
 		target = _commas(int(ch.get("score", 0)))
 	var daily: bool = String(ch.get("board", "")) == Boards.DAILY_ID
-	# Said on the door rather than found out by pressing it. A daily challenge
-	# on a day already spent cannot be started at all, and a row that rejects
-	# the tap it invited is worse than one that explains itself first.
-	if daily and Profile.daily_done(daily_key()):
-		return "Beat %s — today's board is spent, a new one at midnight" % target
+	# Said on the door rather than found out by pressing it. A daily challenge on
+	# a day already spent is not a run, it is a score being posted, and the row
+	# has to offer the thing it is actually going to do.
+	if daily and _daily_is_spent():
+		return "Send your %s against %s — today's board is spent" % [
+			_commas(_banked_daily()), target]
 	var where := "today's daily board" if daily else "Survival"
 	var who := String(ch.get("from", ""))
 	if who == "":
@@ -8698,15 +8866,69 @@ func _challenge_sub() -> String:
 	return "%s says beat %s on %s" % [_show_name(who), target, where]
 
 
+## Today's daily, already played.
+func _daily_is_spent() -> bool:
+	return Profile.daily_done(daily_key())
+
+
+## What today's run scored, or zero if it has not been played.
+func _banked_daily() -> int:
+	return int(Profile.daily_result(daily_key()).get("score", 0))
+
+
+## Answer a daily challenge with the run that has already happened.
+##
+## The case this exists for is the one that made the feature useless to the
+## people most likely to use it. A challenge has a clock on it, set by whoever
+## sent it, and it can easily be shorter than the wait for tomorrow's board. So
+## somebody who plays their daily at breakfast and is challenged at lunch used to
+## be told to come back at midnight — by which point the challenge had expired
+## unanswered, and from the sender's side the game had simply ignored them.
+##
+## The rule the daily is built on is "one run a day", and this does not break it:
+## nothing is played, nothing is banked, and `record_daily` is not called. The
+## score sent is the one already on the board. Apple takes a resubmission of a
+## score it has seen without complaint — a classic leaderboard keeps the best
+## either way — and routes it into every challenge it is eligible for, which is
+## what closes this one.
+##
+## No summary and no share card. There is no run to draw one of, and a card
+## claiming a result for a match that did not just happen is a lie in a picture
+## somebody is about to post. The verdict is said on the title screen instead.
+func _send_banked_daily(ch: Dictionary) -> void:
+	var mine := _banked_daily()
+	var target := int(ch.get("score", 0))
+	Boards.submit_daily(mine)
+	Boards.clear_challenge()
+	var who := String(ch.get("from", ""))
+	var whose := _show_name(who) if who != "" else "the challenge"
+	challenge_sent_life = CHALLENGE_SENT_LIFE
+	if mine >= target:
+		# `>=` for the same reason `_challenge_verdict` uses it: Apple ranks a tie
+		# ahead of the score posted later, so a draw is a win for the defender.
+		challenge_sent = "Sent your %s — that beats %s" % [_commas(mine), whose]
+		challenge_sent_hot = true
+		Sfx.play("win", 1.2)
+		Haptics.fire("win")
+		return
+	challenge_sent = "Sent your %s — %s by %s" % [_commas(mine), whose,
+		_commas(target - mine)]
+	challenge_sent_hot = false
+	Sfx.play("count", 0.9)
+	Haptics.fire("life")
+
+
 ## Start the run a waiting challenge is asking for.
 func _start_challenge() -> void:
 	var ch: Dictionary = Boards.challenge
 	var board := String(ch.get("board", "")) if not ch.is_empty() else ""
 	if board == Boards.DAILY_ID:
-		if Profile.daily_done(daily_key()):
-			_say("today's board is spent — the challenge keeps until midnight",
-				Color("#8d99bd"))
-			Sfx.play("reject", 1.2)
+		if _daily_is_spent():
+			# Not a run. See `_send_banked_daily` — and note that this returns
+			# before `challenge_run` is set below, which matters: the next run
+			# this player starts is not this challenge and must not report
+			# itself as one.
+			_send_banked_daily(ch)
 			return
 		Link.leave()
 		MultiplayerManager.leave_match()
@@ -10068,9 +10290,20 @@ func _menu_buttons() -> Array:
 		if Boards.challenges_available():
 			# Waiting challenges are the reason to press it, so they are the sub
 			# line rather than a count in brackets after the word.
+			#
+			# When there are none it says why there are none. "Race a friend on
+			# this board" is a fine invitation and a useless answer to the one
+			# question somebody actually has at that moment, which is why the
+			# challenge they were just sent is nowhere on this screen — and every
+			# cause of that except "Apple has nothing" is something they or the
+			# build can fix. See `Boards.why_no_challenges`.
 			var csub := "race a friend on this board"
 			if Boards.pending > 0:
 				csub = "%d waiting for you" % Boards.pending
+			else:
+				var why := Boards.why_no_challenges()
+				if why != "":
+					csub = why
 			out.append({
 				"rect": Rect2(cx - bw * 0.5, bfoot, bw, bh), "key": "C",
 				"stamp": "CHA", "label": "Challenges", "sub": csub, "note": "",
@@ -10361,6 +10594,15 @@ func _title_modes() -> Array:
 	if Boards.challenge_armed():
 		rows.append(["VS", "CHALLENGE", _challenge_sub(), "challenge",
 			Color("#c77dff"), 0])
+	elif challenge_sent != "":
+		# The same row, holding the answer for a few seconds. Clearing the
+		# challenge takes the plate off the screen, and a plate that vanishes on
+		# the tap that was meant to do something is the same nothing-happened the
+		# whole door exists to fix. The action goes to BOARDS rather than staying
+		# inert: "where did that put me" is the only question left, and this
+		# screen answers it.
+		rows.append(["VS", "SENT", challenge_sent, "boards",
+			Color("#90be6d") if challenge_sent_hot else Color("#ffd166"), 0])
 	rows += [
 		["PRAC", "PRACTICE", "Learn it, or drill it", "practice",
 			Color("#90be6d"), 1],
@@ -10872,6 +11114,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				var moved: float = get_viewport().get_mouse_position().y - _drag_from
 				if absf(moved) > 8.0:
 					_dragging = true
+					# The press this started from is spent. The release is going
+					# to be swallowed below, but a drag that ends outside the
+					# scrollable region would otherwise leave the row it began
+					# on armed for whatever comes up next.
+					_press_action = ""
 				if _dragging:
 					_scroll = clampf(_drag_scroll - moved, 0.0, _scroll_max)
 					return
@@ -10923,10 +11170,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			Sfx.play("key", 1.3, -6.0)
 	elif event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			var act := _action_at(get_viewport().get_mouse_position())
-			if act != "":
-				_activate(act)
+		if mb.button_index != MOUSE_BUTTON_LEFT:
+			return
+		# Down remembers, up decides. See `_press_action` for why a menu whose
+		# buttons fired on the press could not be scrolled at all.
+		if mb.pressed:
+			_press_action = _action_at(get_viewport().get_mouse_position())
+			return
+		var began := _press_action
+		_press_action = ""
+		# A release that was a drag never reaches here — the scroll handling
+		# above swallows it — so the only thing left to check is that the finger
+		# came up on the row it went down on.
+		var act := _action_at(get_viewport().get_mouse_position())
+		if act != "" and act == began:
+			_activate(act)
 
 
 func _action_at(p: Vector2) -> String:

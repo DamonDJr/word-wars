@@ -183,13 +183,31 @@ func _who_never_sees_one() -> void:
 	game.mode = game.Mode.NORMAL
 	_expect("an ordinary match is due one", game._break_due())
 
+	# Asked here, before the premium round trip below: granting the pack drops
+	# the loaded ad and revoking it starts a fetch that has not landed by the
+	# next line, so anything asking `_break_due` after that point is answering
+	# "there is no ad in hand" rather than the question being put.
+	game.mode = game.Mode.DAILY
+	_expect("and so is the daily, which is not exempt any more",
+		game._break_due())
+
+	# And it stands down for the rating sheet, which arrives on exactly the same
+	# two moments and is a system dialog we do not control the timing of.
+	var reviews: Node = get_root().get_node("Reviews")
+	reviews._waiting = true
+	_expect("nothing breaks over a rating prompt", not game._break_due())
+	reviews._waiting = false
+	game.mode = game.Mode.NORMAL
+
 	P.grant(P.PACK_PREMIUM)
 	_expect("an owner is not", not game._break_due())
 	P.revoke(P.PACK_PREMIUM)
 
-	# A lesson, a training run and the daily bank nothing and cost nothing, so
-	# none of them may be interrupted to sell anything either.
-	for how in [game.Mode.TUTORIAL, game.Mode.TRAINING, game.Mode.DAILY]:
+	# A lesson and a training run bank nothing and cost nothing, so neither may
+	# be interrupted to sell anything either. The daily used to be on this list
+	# and is not any more — it pays the clock budget out of the run it just
+	# took, which is the thing the exemption was really about. See `_ad_allowed`.
+	for how in [game.Mode.TUTORIAL, game.Mode.TRAINING]:
 		game.mode = how
 		_expect("mode %d is exempt" % how, not game._break_due())
 	game.mode = game.Mode.NORMAL
@@ -215,7 +233,9 @@ func _versus_never_breaks() -> void:
 	_expect("a local match may be interrupted", game._ad_allowed())
 	game.mode = game.Mode.SURVIVAL
 	_expect("and so may a survival run", game._ad_allowed())
-	for m in [game.Mode.TUTORIAL, game.Mode.TRAINING, game.Mode.DAILY]:
+	game.mode = game.Mode.DAILY
+	_expect("and a daily run, which pays the clock budget", game._ad_allowed())
+	for m in [game.Mode.TUTORIAL, game.Mode.TRAINING]:
 		game.mode = m
 		_expect("mode %d is exempt" % m, not game._ad_allowed())
 	game.mode = game.Mode.NORMAL

@@ -48,12 +48,16 @@ const SETTLE := 10
 const KEY_EVERY := 0.055
 const THINK := 0.30
 
-## Words the shots will not type. The picker takes the longest candidate on the
-## board and the common-word list is a dictionary, not an advertising script.
-## Substring match, so inflections go with it.
-const NOT_IN_A_SHOT := ["sex", "lovemak", "kill", "death", "dead", "drug",
-	"suicid", "rape", "nazi", "abort", "cancer", "murder", "slaughter",
-	"terror", "victim", "corpse"]
+## The editorial line for what may appear in published frames, shared with
+## `adreel.gd` and `trailer.gd`.
+##
+## Was a shorter list local to this file. Unified because a screenshot is a
+## published frame exactly as much as a trailer is — these stills go into the
+## App Store listing and the press kit — and two lists guarding the same risk
+## means the one nobody is looking at is the one that goes stale. See
+## `tools/ad_words.gd` for why it is a frequency-rank cap and a list rather than
+## a list alone.
+const AdWords = preload("res://tools/ad_words.gd")
 
 var game: Node
 ## The game renders into this rather than into the window. A real window is
@@ -133,12 +137,10 @@ func _force_portrait() -> void:
 	game._measure_safe_area(_stage_size())
 	if ipad:
 		# `_measure_device` reads the real window, which here is a desktop one,
-		# so the two numbers it would have worked out are set directly instead —
-		# exactly what `--ipad` does inside the game. An iPad Air's: 0.82 points
-		# to a design unit, and a home indicator at the bottom with nothing at
-		# the top, because no iPad has a notch.
+		# so what it would have worked out is set directly instead — exactly what
+		# `--ipad` does inside the game. A home indicator at the bottom with
+		# nothing at the top, because no iPad has a notch.
 		game.tablet = true
-		game.points_per_unit = _ppu()
 		game.safe_top = 0.0
 		game.safe_bottom = 24.0
 		if full_keys:
@@ -147,8 +149,7 @@ func _force_portrait() -> void:
 	game.queue_redraw()
 
 
-## The iPad Air's portrait viewport, in design units, and what a unit is worth
-## there in points.
+## The iPad Air's portrait viewport, in design units.
 ##
 ## Not a guess. `expand` stretching pins whichever axis runs out first: against
 ## a 720x1440 design space a 820x1180pt iPad runs out of height, so the height
@@ -156,7 +157,6 @@ func _force_portrait() -> void:
 ## lands between 945 and 1080 across by the same arithmetic, so this one shot
 ## stands in for all of them to within a few percent.
 const IPAD_SIZE := Vector2i(1001, 1440)
-const IPAD_PPU := 0.8194
 
 ## What App Store Connect will actually take, and the design-space viewport each
 ## one implies. `--appstore` renders these instead of the sizes above.
@@ -182,9 +182,9 @@ const IPAD_PPU := 0.8194
 ## design size and the render target is the pixel size behind it, so the result
 ## is drawn at full resolution rather than upscaled from a 720-wide grab.
 const STORE_PHONE := {
-	"px": Vector2i(1320, 2868), "units": Vector2i(720, 1564), "ppu": 0.6111}
+	"px": Vector2i(1320, 2868), "units": Vector2i(720, 1564)}
 const STORE_TABLET := {
-	"px": Vector2i(2064, 2752), "units": Vector2i(1080, 1440), "ppu": 0.9556}
+	"px": Vector2i(2064, 2752), "units": Vector2i(1080, 1440)}
 
 var ipad := false
 var full_keys := false
@@ -203,13 +203,6 @@ func _stage_size() -> Vector2i:
 	if appstore:
 		return Vector2i(STORE_TABLET["units"] if ipad else STORE_PHONE["units"])
 	return IPAD_SIZE if ipad else SHOT_SIZE
-
-
-## What a design unit is worth in points on whichever device is being posed.
-func _ppu() -> float:
-	if appstore:
-		return float(STORE_TABLET["ppu"] if ipad else STORE_PHONE["ppu"])
-	return IPAD_PPU
 
 
 ## Resize the target, keeping the design-space override in step with it. Both
@@ -461,17 +454,13 @@ func _pick_reaching() -> String:
 		if int(count[pre]) < 2:
 			break
 		var best := ""
-		for w in _wb.candidates(String(pre), 5, 13, spent, 24):
+		for w in _wb.candidates(String(pre), 5, 13, spent, 24, AdWords.MAX_RANK):
 			var cand := String(w)
 			if cand.length() <= best.length():
 				continue
-			var ok := true
-			for bad in NOT_IN_A_SHOT:
-				if cand.contains(bad):
-					ok = false
-					break
-			if ok:
-				best = cand
+			if AdWords.unpostable(cand):
+				continue
+			best = cand
 		if best != "":
 			return best
 	return ""
@@ -487,17 +476,13 @@ func _pick() -> String:
 		if pre == "" or seen.has(pre):
 			continue
 		seen[pre] = true
-		for w in _wb.candidates(pre, 5, 13, spent, 24):
+		for w in _wb.candidates(pre, 5, 13, spent, 24, AdWords.MAX_RANK):
 			var cand := String(w)
 			if cand.length() <= best.length():
 				continue
-			var ok := true
-			for bad in NOT_IN_A_SHOT:
-				if cand.contains(bad):
-					ok = false
-					break
-			if ok:
-				best = cand
+			if AdWords.unpostable(cand):
+				continue
+			best = cand
 	return best
 
 

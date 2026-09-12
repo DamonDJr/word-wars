@@ -317,7 +317,12 @@ func _it_is_a_run_alone() -> void:
 	game.start_match("Daily", 0, [], game.Mode.DAILY)
 	game.phase = game.Phase.PLAY
 
-	_expect("the run is a minute", game.DAILY_SECONDS == 60.0)
+	_expect("the run is seventy-five seconds", game.DAILY_SECONDS == 75.0)
+	# The clock turning red and the last size step are meant to be the same
+	# moment. Two constants have to be moved together to keep that true, and the
+	# run length has now been changed once — this is the guard that says so.
+	_expect("and the alarm lands on the last size step",
+		game.DAILY_SECONDS - float(game.DAILY_TIER_AT[-1]) == game.DAILY_ALARM)
 	_expect("one seat is in the match", game.slots_in_play == 1)
 	var others := 0
 	for s in game.sides:
@@ -331,8 +336,9 @@ func _it_is_a_run_alone() -> void:
 
 	# The clock is what ends it, from the top of the run to the bottom.
 	game.match_time = 0.0
-	_expect("a fresh run has the whole minute", game.daily_left() == 60.0)
-	game.match_time = 61.0
+	_expect("a fresh run has the whole clock",
+		game.daily_left() == game.DAILY_SECONDS)
+	game.match_time = game.DAILY_SECONDS + 1.0
 	_expect("and none of it once the clock is out", game.daily_left() == 0.0)
 
 
@@ -444,17 +450,36 @@ func _damage_becomes_score() -> void:
 	_expect("and still spends the chain", game.player.chain == 0)
 
 
-## The pressure is the whole opponent, so it has to actually press. A minute
-## under the standard match ramp — twenty-two seconds to the first block, then
-## a step and a half off each time — deals two blocks and ends.
+## The pressure is the whole opponent, so it has to actually press. A run this
+## short under the standard match ramp — twenty-two seconds to the first block,
+## then a step and a half off each time — deals two blocks and ends.
 func _the_minute_leans_on_you() -> void:
-	print("--- the minute leans on you ---")
+	print("--- the run leans on you ---")
 	game.start_match("Daily", 0, [], game.Mode.DAILY)
 	game.phase = game.Phase.PLAY
 	game.player.board.reset()
 
 	_expect("the first block is seconds away, not half a minute",
 		game.pressure_timer <= 4.0)
+
+	# The floor is meant to arrive at about the same fraction of the run it
+	# always did — see `DAILY_PRESSURE_STEP`. Measured rather than asserted from
+	# the constants, because it is the product of three of them and the whole
+	# point of the tuning is the moment it lands on.
+	var floor_at := 0.0
+	var tick := 1.0 / 60.0
+	while game.match_time < game.DAILY_SECONDS:
+		game.match_time += tick
+		game._tick_pressure(tick)
+		game.player.pending.clear()
+		if floor_at <= 0.0 and game.pressure_interval <= game.DAILY_PRESSURE_MIN:
+			floor_at = game.match_time
+	_expect("the rate reaches its floor around halfway",
+		floor_at > game.DAILY_SECONDS * 0.4 and floor_at < game.DAILY_SECONDS * 0.65)
+
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.player.board.reset()
 
 	# Run the clock out with nobody typing and count what turned up. The board is
 	# emptied each time so a top-out cannot cut the count short.
@@ -466,8 +491,8 @@ func _the_minute_leans_on_you() -> void:
 		game._tick_pressure(step)
 		seeded += maxi(0, game.player.pending.size() - was)
 		game.player.pending.clear()
-	_expect("a minute of it deals a run's worth of garbage", seeded >= 20)
-	_expect("without turning into noise", seeded <= 45)
+	_expect("a run of it deals a run's worth of garbage", seeded >= 25)
+	_expect("without turning into noise", seeded <= 50)
 	_expect("and the rate bottoms out where it was told to",
 		game.pressure_interval == game.DAILY_PRESSURE_MIN)
 
@@ -480,14 +505,14 @@ func _the_minute_leans_on_you() -> void:
 	_expect("it opens on the smallest block there is", opened == 0)
 	_expect("and closes on something heavier", closed > opened)
 
-	# Lasting the minute and burning three lives are different runs, and the
+	# Lasting the clock and burning three lives are different runs, and the
 	# summary has to be able to tell them apart — it reads `winner`, and `winner`
 	# used to be "YOU" either way.
 	game.start_match("Daily", 0, [], game.Mode.DAILY)
 	game.phase = game.Phase.PLAY
 	game.match_time = game.DAILY_SECONDS
 	game._finish_daily()
-	_expect("lasting the minute counts as surviving it", game.winner == "YOU")
+	_expect("lasting the clock counts as surviving it", game.winner == "YOU")
 
 	game.start_match("Daily", 0, [], game.Mode.DAILY)
 	game.phase = game.Phase.PLAY

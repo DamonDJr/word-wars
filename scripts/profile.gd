@@ -244,8 +244,8 @@ const PREF_DEFAULTS := {
 	## they cannot leave. Offered once, then the title screen's own nag takes
 	## over — which is a plate they can choose rather than a screen they land in.
 	"tutorial_offered": false,
-	## The player's own switch for the two daily reminders. Off by default and
-	## turned on only where it is asked for — see `notify.gd`. It is not the same
+	## The player's own switch for the daily reminders. Off by default and turned
+	## on only where it is asked for — see `notify.gd`. It is not the same
 	## question as whether iOS has granted permission, and `Notify.enabled()`
 	## wants both.
 	"notify": false,
@@ -253,6 +253,15 @@ const PREF_DEFAULTS := {
 	## per install and never again, so this is what stops a second attempt that
 	## could only ever be a no-op.
 	"notify_asked": false,
+	## Whether the player has ever worked the switch above themselves. Set by
+	## `Notify.set_enabled` and never cleared.
+	##
+	## `notify` being false is three different situations — never asked, asked and
+	## refused, deliberately turned off — and the offer after a daily run must
+	## only be made in the first. This is the half of that question `notify_asked`
+	## cannot answer: somebody who found the row in settings and turned it on and
+	## off again has answered, even though no iOS dialog was involved.
+	"notify_touched": false,
 	## The rating prompt's budget. iOS allows three displays a year and reports
 	## nothing about whether any of them happened, so these are counted at the
 	## moment of asking rather than on a confirmation that never comes.

@@ -40,43 +40,36 @@ const ACTION_H := 96.0
 ## The design space's short axis. It is 720 in both orientations — 720x1440 on a
 ## phone, 1280x720 on a desktop — so one number covers both.
 const SHORT_AXIS := 720.0
-## Tablets run the compensation below off the end of its usefulness: their units
-## are enormous already and doubling down produces keys the size of a fist. The
-## shortest phone anyone still plays this on needs 1.125, so the cap sits just
-## above that and catches everything wider.
+## How far the vertical compensation below is allowed to run. The shortest phone
+## anyone still plays this on needs 1.125, so the cap sits just above that; a
+## tablet asks for 1.39 and gets this instead, which is what keeps the keyboard
+## from taking half the height of an iPad.
 const MAX_SCALE := 1.15
 
-## The phone's keyboard, measured in points.
+## There was a second way of sizing this keyboard here, and it is worth saying
+## what it was and why it is gone.
 ##
-## Every other number in this file is in design units, which is the right unit
-## for anything that has to sit in a composition and the wrong one for anything
-## a thumb has to hit. A design unit is 0.55pt on an iPhone and 0.82pt on an
-## iPad, so `KEY_H` — one number, unchanged — is a 50pt key on the phone and an
-## 86pt key on the tablet. Sideways it is worse, because `kw` is derived from
-## the viewport width and the tablet's viewport is 40% wider: 35pt against 74pt.
-## Together that is a key with three and a half times the area.
+## A design unit is 0.55pt on an iPhone and 0.82pt on an iPad, and `kw` is
+## derived from the viewport width, which is 40% wider on the tablet. So the one
+## layout below produces a 35pt key on a phone and a 74pt key on an iPad —
+## three and a half times the area. That looked like an unfair advantage in a
+## game scored on words per minute, so the tablet was given keys measured in
+## points instead: the phone's numbers, written down, reproduced at the same
+## physical size on every device.
 ##
-## That is not a cosmetic difference. This is a game about typing fast under
-## time pressure, where the cost of a big target is a miss that did not happen
-## and the currency is words per minute. Handing one platform a keyboard that is
-## measurably harder to mistype on is the definition of the unfair advantage
-## this port is trying not to create.
+## It was the right answer to the wrong question. Nobody plays this game against
+## an iPad; the daily board is a race against a clock, and the leaderboard it
+## feeds is not a fight somebody can lose *to* a tablet owner in any sense they
+## would notice. What players did notice is the thing the fairness argument cost
+## them: a phone-sized keyboard stranded in the middle of a foot of glass, keys a
+## third of the width of the ones iOS puts on the same device, and no reason
+## visible from the outside for either. The split form came off worst — its whole
+## purpose is halves far enough apart to need two thumbs, and phone-sized halves
+## on a tablet are two small keyboards with a lake between them.
 ##
-## So on a tablet the keys are asked for in points instead, and these are the
-## points to ask for: the numbers the phone layout above already produces on a
-## 393pt handset, written down. A key is the same size against a thumb on every
-## device that runs this game, and the tablet's extra glass is spent on things
-## that are not targets.
-##
-## Deliberately no tablet bonus. There is an argument for one — a tablet is held
-## further from the face and less steadily — and there is a better argument
-## against, which is that "the same size everywhere" is a rule that can be
-## explained to a player who thinks they were cheated, and "the same size plus
-## twelve percent" is not. If it turns out to need one, it is this constant.
-const KEY_W_PT := 34.8
-const KEY_H_PT := 50.2
-const GAP_PT := 3.8
-const ACTION_H_PT := 52.4
+## So both forms are proportional again, and the tablet's extra glass goes to the
+## keys. If the fairness question ever comes back it comes back as a scoring
+## question — what a leaderboard compares — rather than as a layout one.
 
 
 ## How much bigger than its written size the keyboard has to be drawn here.
@@ -106,61 +99,71 @@ static func ui_scale(size: Vector2) -> float:
 ## lines is two chances for the emote key to end up describing a keyboard that is
 ## not the one being drawn, which is the one bug the key cannot afford: it sits
 ## directly above P and is hit-tested first.
-## `ppu` is how many points one design unit is worth on this screen, and it is
-## the switch between the two ways of sizing a key. Left at zero — which is what
-## every phone and desktop caller passes — the keyboard is sized as a fraction
-## of the viewport, exactly as it has shipped. Given a real number, the keys are
-## sized in points instead and come out the same size against a thumb as they do
-## on a phone. See `KEY_W_PT`.
 ##
-## Only tablets pass it. Phones could — the two paths agree to within a third of
-## a unit on a 393pt handset, which is the arithmetic confirming that `KEY_W_PT`
-## and friends really were measured off this layout and not guessed — but the
-## proportional path is the one that has shipped and been tuned against real
-## thumbs, and a keyboard is not the place to take a rewrite for tidiness.
-static func _metrics(size: Vector2, bottom: float, ppu := 0.0,
+## `form` only changes one number, the key width, and only because the two forms
+## divide the screen differently — see `SPLIT_HALF`. Everything else, including
+## the height, is shared: SPLIT is narrower than FULL, not shorter.
+static func _metrics(size: Vector2, bottom: float,
 		form := Form.FULL) -> Dictionary:
-	var gap: float
-	var key_h: float
-	var action_h: float
-	var kw: float
-	# SIDE stays unscaled in both paths. It is a margin against the edge of the
-	# glass rather than a finger-sized quantity, and the pixel it is worth
-	# either way is not one anybody is aiming at.
+	var s := ui_scale(size)
+	var gap: float = GAP * s
+	var key_h: float = KEY_H * s
+	var action_h: float = ACTION_H * s
+	# SIDE stays unscaled. It is a margin against the edge of the glass rather
+	# than a finger-sized quantity, and the pixel it is worth either way is not
+	# one anybody is aiming at.
 	var wide: float = size.x - SIDE * 2.0
-
-	if ppu > 0.0:
-		gap = GAP_PT / ppu
-		key_h = KEY_H_PT / ppu
-		action_h = ACTION_H_PT / ppu
-		kw = KEY_W_PT / ppu
-	else:
-		var s := ui_scale(size)
-		gap = GAP * s
-		key_h = KEY_H * s
-		action_h = ACTION_H * s
-		# Ten to a row is the widest row, so it sets the key width and every
-		# other row is centred against it. Rows of differing key sizes read as
-		# broken.
-		kw = (wide - gap * 9.0) / 10.0
-
-	# The two ends of the bottom row, at iOS's proportion for shift and
-	# backspace: half a letter wider than a letter. In FULL that lets the seven
-	# centred letters leave exactly one gap either side; in SPLIT it is simply
-	# the size a key that is not a letter gets.
-	var act_w: float = (kw * 3.0 + gap) * 0.5 if ppu <= 0.0 else kw * 1.5
+	var kw: float = _key_w(wide, gap, form)
 
 	return {
 		"gap": gap, "key_h": key_h, "action_h": action_h, "wide": wide,
-		"kw": kw, "act_w": act_w,
+		"kw": kw,
+		# The two ends of the bottom row, at iOS's proportion for shift and
+		# backspace: half a letter wider than a letter. In FULL that lets the
+		# seven centred letters leave exactly one gap either side; in SPLIT it
+		# is simply the size a key that is not a letter gets.
+		"act_w": (kw * 3.0 + gap) * 0.5,
 		# The widest row a cluster has to hold is five keys — see `SPLIT_ROWS`.
 		# The bottom rows are shorter in letters but carry an action key, so
 		# they run wider than this and are allowed to; they overhang *inward*,
 		# into the gap between the halves, which is the one direction with
-		# hundreds of units of nothing in it.
+		# room to spare.
 		"cluster_w": kw * 5.0 + gap * 4.0,
 		"top": bottom - action_h - gap - float(ROWS.size()) * (key_h + gap),
 	}
+
+
+## How much of the usable width one half of a split keyboard takes.
+##
+## The number that makes SPLIT a different shape rather than FULL with a seam in
+## it. FULL divides the width by ten because ten is the longest row; dividing by
+## five for a half would give each cluster the entire width back and the two
+## halves would meet in the middle, which is FULL with extra steps.
+##
+## 0.42 leaves a sixth of the screen between the clusters. That is wide enough
+## that neither thumb can reach across it — which is the whole point of the form,
+## and also what makes the dead-zone rule in `_key_at` worth having — while still
+## handing each half keys about four fifths the width of FULL's. The bottom rows
+## carry an action key and overhang inward past this; that is allowed and is what
+## the gap is for.
+const SPLIT_HALF := 0.42
+
+
+## Ten to a row is the widest row in FULL, so it sets the key width and every
+## other row is centred against it. Rows of differing key sizes read as broken.
+static func _key_w(wide: float, gap: float, form: int) -> float:
+	if form == Form.SPLIT:
+		return (wide * SPLIT_HALF - gap * 4.0) / 5.0
+	return (wide - gap * 9.0) / 10.0
+
+
+## One key's width, for a caller that needs the measurement without the layout.
+##
+## `_key_at` is the one: in SPLIT it refuses taps more than a key's width from
+## any key, so the lake between the halves stops typing letters, and it has to
+## ask for that distance in the same units the rectangles came back in.
+static func key_width(size: Vector2, form := Form.FULL) -> float:
+	return _key_w(size.x - SIDE * 2.0, GAP * ui_scale(size), form)
 
 
 ## Where the keys are, for a keyboard occupying the full width of `size` and
@@ -178,9 +181,8 @@ static func _metrics(size: Vector2, bottom: float, ppu := 0.0,
 ## bottom letter row now flanks ZXCVBNM the way iOS does — CLR where shift is,
 ## DEL where backspace is — and FIRE, freed of sharing, takes the whole action
 ## row. Every one of those is a bigger target than it was before.
-static func keys(size: Vector2, bottom: float, ppu := 0.0,
-		form := Form.FULL) -> Array:
-	var m := _metrics(size, bottom, ppu, form)
+static func keys(size: Vector2, bottom: float, form := Form.FULL) -> Array:
+	var m := _metrics(size, bottom, form)
 	if form == Form.SPLIT:
 		return _split_keys(size, m)
 
@@ -192,14 +194,10 @@ static func keys(size: Vector2, bottom: float, ppu := 0.0,
 	var act_w: float = m["act_w"]
 	# The block the ten-key row occupies, and where its left edge falls. CLR,
 	# DEL and FIRE are placed against these rather than against the edges of the
-	# screen, which is the same thing right up until it is not: on the
-	# proportional path `kw` is *derived* from the viewport width, so the block
-	# is the full width, `block_x` is `SIDE`, and every rectangle below comes out
-	# byte-identical to what the phone has always drawn. Size the keys in points
-	# instead and the ten of them only span two thirds of a tablet, at which
-	# point "the left edge of the screen" and "the left edge of the keyboard"
-	# are two hundred units apart — and CLR and DEL were being left stranded out
-	# at the first one, a thumb's journey from the letters they belong to.
+	# screen. `kw` is derived from the viewport width, so the block *is* the full
+	# width and `block_x` resolves to `SIDE` — the two are the same thing today,
+	# and the block is the one that stays true if the ten keys are ever given
+	# anything less than the whole of it.
 	var block: float = kw * 10.0 + gap * 9.0
 	var block_x: float = (size.x - block) * 0.5
 
@@ -323,25 +321,23 @@ static func _split_keys(size: Vector2, m: Dictionary) -> Array:
 ## which is a real cost, paid on every screen, for a control used a handful of
 ## times a match. So it hangs off the top of the band and is hit-tested ahead of
 ## the keyboard rather than as part of it.
-static func height(size: Vector2, ppu := 0.0, form := Form.FULL) -> float:
-	if ppu > 0.0:
-		# Both forms have three letter rows and one action row, so this is the
-		# same sum either way — SPLIT is narrower, not shorter.
-		return (float(ROWS.size()) * (KEY_H_PT + GAP_PT) + ACTION_H_PT + GAP_PT) / ppu
+##
+## Both forms have three letter rows and one action row, so this is the same sum
+## either way — SPLIT is narrower, not shorter, which is why `form` does not
+## appear. It is still taken, so that a caller cannot be written that asks about
+## the height of one form and is silently answered about the other.
+static func height(size: Vector2, _form := Form.FULL) -> float:
 	return (float(ROWS.size()) * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
 
 
 ## How much to multiply a type size by so the lettering tracks the keys.
 ##
-## `_draw_keyboard` used `ui_scale` for this, which was the same number as the
-## one sizing the keys right up until the keys started being sized in points.
-## Deriving it from the key height instead keeps the two locked together by
-## construction: a cap is a fixed fraction of the key it is printed on, whatever
-## decided how big that key is. On the proportional path this returns exactly
-## `ui_scale`, which is what makes the phone layout come out unchanged.
-static func type_scale(size: Vector2, ppu := 0.0, form := Form.FULL) -> float:
-	if ppu > 0.0:
-		return (KEY_H_PT / ppu) / KEY_H
+## The same number as `ui_scale`, because the keys are again sized by the same
+## number. It stays a function of its own so the two stay locked together by
+## construction — a cap is a fixed fraction of the key it is printed on, whatever
+## decides how big that key is — and so the ten callers that want "as big as the
+## keys got" do not have to know which that is.
+static func type_scale(size: Vector2, _form := Form.FULL) -> float:
 	return ui_scale(size)
 
 
@@ -364,10 +360,10 @@ const EMOTE_RISE := 10.0
 ## aligned to the right margin — so "right-aligned to P" resolves to the margin
 ## itself, and the rule that put this key in the corner on a phone puts it in
 ## the same corner on a tablet without being told about halves at all.
-static func emote_rect(size: Vector2, bottom: float, ppu := 0.0,
+static func emote_rect(size: Vector2, bottom: float,
 		form := Form.FULL) -> Rect2:
-	var m := _metrics(size, bottom, ppu, form)
-	var s := type_scale(size, ppu, form)
+	var m := _metrics(size, bottom, form)
+	var s := type_scale(size, form)
 	var kw: float = m["kw"]
 	var w: float = kw * 0.86
 	# Right-aligned to P rather than centred on it, so the key and the letter

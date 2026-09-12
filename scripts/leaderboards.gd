@@ -2,7 +2,7 @@ extends Node
 ## Autoload `Boards`. Today's daily score, on Game Center, and where it puts you.
 ##
 ## The daily is the one mode where a global ranking means anything: everybody
-## gets the same board, the same sixty seconds and one attempt, so two scores
+## gets the same board, the same clock and one attempt, so two scores
 ## from the same day are genuinely comparable. Nothing else in the game is —
 ## a versus score depends on who you drew.
 ##
@@ -97,6 +97,26 @@ func _ready() -> void:
 		_wake()
 		_wire_challenges()
 		refresh_challenges()
+
+
+## Whatever happened while the app was away.
+##
+## Two things can, and neither of them tells us. A challenge can arrive as a push
+## notification and be accepted from the notification itself, which opens Apple's
+## screen and not ours; and a score submitted while signed out or offline is
+## still sitting in `_pending` waiting for a network that may have come back.
+##
+## Both are cheap to re-ask and expensive to be wrong about — the first is the
+## difference between the challenge row existing and not — so coming back to the
+## foreground asks again rather than assuming.
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_RESUMED:
+		return
+	if not available() or not _signed_in():
+		return
+	_wake()
+	_sv_wake()
+	refresh_challenges()
 
 
 ## Whether this build can reach Game Center leaderboards at all.
@@ -534,6 +554,29 @@ func refresh_challenges() -> void:
 	GKChallenge.load_received_challenges(_on_challenges_loaded)
 
 
+## Why there is nothing to show, in one line.
+##
+## "No challenge appeared" has four causes that are indistinguishable from the
+## outside — not an Apple device, `GKChallenge` not in this plugin build, signed
+## out, or Apple genuinely has nothing waiting — and the last of those is the
+## only one that is not a bug. Written down so a device log answers the question
+## rather than starting it.
+func why_no_challenges() -> String:
+	if not MultiplayerManager.available():
+		return "challenges need an Apple device"
+	if DAILY_ID == "":
+		return "no leaderboard is configured in this build"
+	if not ClassDB.can_instantiate("GKChallenge"):
+		return "GKChallenge is not in this plugin build"
+	if not _signed_in():
+		return "not signed in to Game Center"
+	if pending == 0:
+		return "Apple reports no challenges waiting"
+	if challenge.is_empty():
+		return "%d waiting, none on a board this build knows" % pending
+	return ""
+
+
 func _on_challenges_loaded(challenges: Array, error) -> void:
 	_challenges_loading = false
 	if error != null:
@@ -544,12 +587,15 @@ func _on_challenges_loaded(challenges: Array, error) -> void:
 	var was := pending
 	var was_offer := challenge
 	pending = 0
+	var playable := 0
 	var best: Dictionary = {}
 	for c in challenges:
 		if c == null or int(c.state) != CHALLENGE_PENDING:
 			continue
 		pending += 1
 		var one := _playable_challenge(c)
+		if not one.is_empty():
+			playable += 1
 		# Newest wins. Several can be waiting at once, and the one somebody has
 		# just accepted on Apple's screen — which is the whole reason this is
 		# being refreshed — is the one most recently issued.
@@ -558,6 +604,14 @@ func _on_challenges_loaded(challenges: Array, error) -> void:
 		if best.is_empty() or float(one["issued"]) > float(best["issued"]):
 			best = one
 	challenge = best
+	# Said on every load, not only when something changed. The load that returns
+	# nothing is the one worth a line — it is the answer to "I sent a challenge
+	# and the game never mentioned it", and a silent no-op looks identical to a
+	# call that was never made.
+	print("[Boards] challenges: %d returned, %d pending, %d playable%s" % [
+		challenges.size(), pending, playable,
+		"" if challenge.is_empty() else " — offering %s on %s" % [
+			int(challenge.get("score", 0)), String(challenge.get("board", ""))]])
 	if pending != was or challenge != was_offer:
 		challenges_changed.emit()
 

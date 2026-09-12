@@ -170,6 +170,20 @@ func allowed() -> bool:
 	return available() and within_budget()
 
 
+## Whether an ask is in flight, so nothing else claims the screen on top of it.
+##
+## The rating prompt is a system sheet that arrives on its own schedule after
+## `generate_review_info`, and it lands on the same two moments an ad break does:
+## the end of a survival run, and now the end of a daily. Two full-screen things
+## racing for the same second is a rating dialog appearing over an advert, which
+## is the worst possible frame to ask somebody how much they like the game.
+##
+## `_wait_age` gives up after the timeout in `_process`, so this cannot get stuck
+## true and cost every break that follows.
+func asking() -> bool:
+	return _waiting
+
+
 ## Ask, if this is a moment worth spending one on.
 ##
 ## `reason` is for the log only. Nothing branches on it — the dialog is the
