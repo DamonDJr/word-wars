@@ -671,6 +671,18 @@ var winner := ""
 ## chases the real total rather than snapping to it, so the counter visibly
 ## climbs — half the pleasure of a big word is watching it land.
 var score_pops: Array = []
+## How a score pop gets out of the way of the one before it. See `_pop_score`.
+##
+## `FRESH` is how much life a pop has to have left to still count as occupying
+## the bottom of the stack — past that it has floated far enough that a new one
+## underneath it reads as a second number rather than as part of the first.
+## `STEP` has to clear the `note` line under the pop below it, which is drawn at
+## `size * 0.72` and where `size` tops out at 58 — so anything under 42 puts the
+## new number through the old one's caption, which is the same smear one step up.
+## `MAX` is three of those, which stops a salvo's worth marching off the board.
+const POP_STACK_FRESH := 0.62
+const POP_STACK_STEP := 44.0
+const POP_STACK_MAX := 132.0
 var score_shown := 0.0
 var score_kick := 0.0
 ## Power-word banners. Kept separate from the score pops because they are an
@@ -3230,11 +3242,31 @@ func _pop_power(name: String, bonus: int, tint: Color) -> void:
 ## A number where the eye already is: just under your own board, drifting up.
 func _pop_score(text: String, note: String, weight: int) -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
+	# Stepped up past whatever is still sitting near the board, rather than
+	# started in the same place as it.
+	#
+	# `_draw_score_pops` floats a pop upward on an ease-out, which is front
+	# loaded — but "front loaded" still means a pop is within a few units of
+	# where it started for the first tenth of a second, and two scoring events
+	# that close together are routine rather than exotic. A strike and the salvo
+	# it completed resolve in the same frame; a fast typist lands two words
+	# inside a tenth of a second. Both used to be drawn at one height, over a
+	# ±40 horizontal jitter that is narrower than the numbers are wide, and the
+	# result was one unreadable smear of digits with two `note` lines through it.
+	#
+	# Found in a store preview, where it is on screen for most of the video —
+	# but it is a thing that happens in ordinary play, to everybody, and the
+	# preview only made it impossible to keep ignoring.
+	var lift := 0.0
+	for old: Dictionary in score_pops:
+		if float(old["life"]) > POP_STACK_FRESH:
+			lift += POP_STACK_STEP
 	score_pops.append({
 		"text": text,
 		"note": note,
 		"at": Vector2(player.board.position.x + bw * 0.5 + randf_range(-40.0, 40.0),
-			BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 4.0),
+			BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 4.0
+			- minf(lift, POP_STACK_MAX)),
 		"life": 1.0,
 		"size": clampf(22.0 + weight / 44.0, 22.0, 58.0),
 	})

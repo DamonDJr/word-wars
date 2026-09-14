@@ -52,6 +52,7 @@ func _init() -> void:
 	_length_sets_a_floor()
 	_focus_needs_a_crowd()
 	_focus_stacks_with_attackers()
+	_pops_do_not_pile_up()
 
 	if done != SECTIONS:
 		fails += 1
@@ -247,6 +248,57 @@ func _focus_stacks_with_attackers() -> void:
 	_expect("a dead attacker stops counting",
 		game._focus_bonus(game.sides[1], game.sides[2]) == 1)
 	done += 1
+
+
+## Two payouts inside the same moment have to be two readable numbers.
+##
+## The bug: every pop started at one fixed height with a ±40 horizontal jitter,
+## which is narrower than the numbers are wide. A strike and the salvo it
+## completed resolve in the same frame, so the two were drawn on top of each
+## other and neither could be read. Caught in a store preview, where it was on
+## screen for most of the video, but it happens to everybody in ordinary play.
+func _pops_do_not_pile_up() -> void:
+	print("--- two payouts at once are two readable numbers ---")
+	game.start_match("Rookie", 1)
+	game.phase = game.Phase.PLAY
+	game.score_pops.clear()
+
+	game._pop_score("+480", "5x2 block", 480)
+	game._pop_score("+829", "SALVO", 829)
+	_expect("both are on screen", game.score_pops.size() == 2)
+	var a: Vector2 = (game.score_pops[0] as Dictionary)["at"]
+	var b: Vector2 = (game.score_pops[1] as Dictionary)["at"]
+	_expect("and they are not at the same height (%.0f vs %.0f)" % [a.y, b.y],
+		absf(a.y - b.y) >= game.POP_STACK_STEP)
+
+	# Far enough apart to actually be two lines rather than two overlapping
+	# ones. The `note` under a pop is drawn at `size * 0.72` below it, and the
+	# largest a pop gets is 58.
+	_expect("far enough apart to clear the note line under the first",
+		absf(a.y - b.y) > 58.0 * 0.72)
+
+	# A salvo can land a handful at once, and they must not march off the board.
+	for i in 8:
+		game._pop_score("+100", "", 100)
+	var top := 0.0
+	var base := 0.0
+	for p: Dictionary in game.score_pops:
+		var y: float = (p["at"] as Vector2).y
+		base = maxf(base, y)
+		top = minf(top, y) if top != 0.0 else y
+	_expect("a pile of them stays within the cap (%.0f of %.0f)"
+		% [base - top, game.POP_STACK_MAX], base - top <= game.POP_STACK_MAX)
+
+	# And a pop that has already floated clear stops pushing new ones up, or a
+	# long match would walk the stack off the top of the screen.
+	game.score_pops.clear()
+	game._pop_score("+100", "", 100)
+	(game.score_pops[0] as Dictionary)["life"] = 0.1
+	game._pop_score("+200", "", 200)
+	var fresh: Vector2 = (game.score_pops[0] as Dictionary)["at"]
+	var later: Vector2 = (game.score_pops[1] as Dictionary)["at"]
+	_expect("an old pop no longer holds the base slot",
+		is_equal_approx(fresh.y, later.y))
 
 
 func _expect(what: String, ok: bool) -> void:
