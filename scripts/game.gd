@@ -715,6 +715,20 @@ var lesson_done := false
 ## The last word the player fired, so the lesson can brand a block with their
 ## own tail rather than with an example.
 var _lesson_word := ""
+## What is left of the first-word prompt's exit, once a word has been typed.
+##
+## A countdown rather than a flag, so the prompt leaves on a fade instead of
+## vanishing on the frame the word lands — which would read as the prompt being
+## part of what just happened rather than as it having been answered.
+var _first_word_fade := 0.0
+## The player's word count when the current lesson step arrived, so a step can
+## ask for "three more" rather than for a total that carries the whole tutorial's
+## typing into it.
+var _lesson_mark := 0
+## Where the last step's RUN IT AGAIN button was drawn, or an empty rect when it
+## is not on screen. Set by `_draw_coaching` and read by the input handler, so a
+## button that was never drawn can never be pressed.
+var _lesson_restart := Rect2()
 ## Training pace, as an index into TRAINING_PACE.
 var train_pace := 1
 
@@ -1728,6 +1742,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	lesson = 0
 	lesson_age = 0.0
 	lesson_done = false
+	_first_word_fade = FIRST_WORD_OUT
 	difficulty = diff
 	# Cleared here rather than only where a rematch is agreed, so a request that
 	# arrived while the last summary was up cannot carry into the next match and
@@ -2413,6 +2428,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# the default arm, which is where letters are supposed to end up.
 		KEY_Q when paused:
 			_activate("leave_match")
+		# Guarded three ways for the reason the arm above is guarded at all: an
+		# unguarded `KEY_R:` would claim the letter R for the whole game, and R
+		# is in rather a lot of words. This only takes it on the tutorial's last
+		# step, while the button is actually drawn, and only with an empty line —
+		# which is the same condition SPACE finishes on, so the two keys offered
+		# by that step behave alike.
+		KEY_R when mode == Mode.TUTORIAL and _lesson_restart.has_area() \
+				and typed.is_empty():
+			_restart_lesson()
 		_:
 			# Modifiers and arrows report unicode 0; chr(0) builds a NUL string.
 			if k.unicode <= 0 or paused or not player.alive:
@@ -2680,6 +2704,8 @@ func _on_multiplayer_data(packet: Dictionary) -> void:
 			if phase == Phase.PLAY or phase == Phase.COUNTDOWN:
 				winner = "YOU"
 				_end_match(ai_side)
+		"final":
+			_on_net_final(payload)
 		"rematch":
 			_on_net_rematch()
 		"emote":
@@ -3607,6 +3633,10 @@ func _process(delta: float) -> void:
 					s.chain_fill = 0.0
 		if mode == Mode.TUTORIAL:
 			_lesson_tick(delta)
+		# Only once there is a word to have answered it. Before that the prompt
+		# is on the clock in `_draw_first_word_prompt` instead.
+		if player.words_played > 0 and _first_word_fade > 0.0:
+			_first_word_fade = maxf(0.0, _first_word_fade - delta)
 		_tick_focus()
 		_tick_danger(player)
 		_tick_pending(player, delta)
@@ -3852,20 +3882,19 @@ func _tick_bots(delta: float) -> void:
 # thing, so nobody is ever carried past a rule they have not got yet — and being
 # slow costs a first-time player nothing.
 
-## The chain the KEEP FIRING step asks for, and what it settles for.
+## How many words the NEVER STOP TYPING step wants to see.
 ##
-## It asked for four, which is four words fired inside the window each one
-## bought — about two and a half seconds for a short word — and that is a
-## typing-speed test sitting in the middle of a lesson about how the game works.
-## Players got stuck there and stopped, which costs the whole rest of the
-## tutorial to teach a rule they had already read.
+## Three, counted from wherever the player's total stood when the step arrived —
+## which is what `_lesson_mark` is for. Any three words: they do not have to
+## answer anything, they do not have to be fast, and there is no window.
 ##
-## So: three rather than four, and after `LESSON_CHAIN_EASE` seconds of trying,
-## two. Two is still a chain — it is the rule being demonstrated, which is the
-## only thing this step is for — and the card says which number is being asked
-## for, so nobody is quietly passed on a bar they can see they did not clear.
-const LESSON_CHAIN_GOAL := 3
-const LESSON_CHAIN_EASE := 30.0
+## That is the whole difference between this step and the KEEP FIRING step it
+## replaced. That one asked for a chain, which is three words inside the window
+## each one buys — about two and a half seconds apiece — and a first-time player
+## who has typed four words in their life cannot reliably do it. Players stopped
+## there, and stopping there costs the rest of the tutorial to teach a rule the
+## game teaches by itself within one real match.
+const LESSON_KEEP_WORDS := 3
 ## How much longer the chain window is held open during the lesson.
 ##
 ## Only during the lesson. The window is the game's core rhythm and this is not
@@ -3885,21 +3914,28 @@ func _lesson_begin() -> void:
 		return
 	player.pending.clear()
 
+	_lesson_mark = player.words_played
+
 	match String(step["id"]):
-		"tail":
-			# The block they are about to see is branded with the tail of the
-			# word they just played. That is the rule, demonstrated on their own
-			# word rather than on an example.
-			var tail := _lesson_word.substr(maxi(0, _lesson_word.length() - 3))
-			player.board.add_garbage(tail if tail != "" else "sh", 1, 2, 1)
 		"answer":
 			player.board.reset()
-			player.board.add_garbage("ship", 2, 2, 2)
-		"reach":
-			player.board.reset()
-			for i in 3:
-				player.board.add_garbage("al", 1, 1, 1)
-		"chain":
+			# Branded with the tail of the word they just played, rather than
+			# with an example. This is the one rule the game turns on and it is
+			# the one that reads as nonsense written down, so it is never
+			# written down — it is dealt onto the board with their own letters
+			# on it, one step after they typed them.
+			#
+			# It used to have a step of its own, YOUR ENDING IS THEIR BEGINNING,
+			# which said the rule and then waited a beat with nothing to do.
+			# Folded into this one, the block that demonstrates the rule is the
+			# same block they have to answer, so reading it and using it are the
+			# same action.
+			var tail := _lesson_word.substr(maxi(0, _lesson_word.length() - 3))
+			player.board.add_garbage(tail if tail != "" else "ship", 2, 2, 2)
+		"always":
+			# A clean board. This step is about the habit rather than about
+			# anything on the screen, and leaving rubble on it would make it
+			# look like another answering exercise.
 			player.board.reset()
 			player.chain = 0
 			player.chain_fill = 0.0
@@ -3924,43 +3960,29 @@ func _lesson_check() -> bool:
 	match String(step["id"]):
 		"fire":
 			return player.words_played >= 1
-		"tail":
-			# Purely something to look at, and it used to demand a second word
-			# anyway — which the card never asked for. So it sat on "watch the
-			# stamp" with nothing happening and fire doing nothing, which reads
-			# exactly like a game that has hung. A beat to read it, then the fire
-			# control moves it on the way every other reading step does.
-			return lesson_age > 1.2
 		"answer":
 			return player.board.blocks.is_empty()
-		"reach":
-			return player.board.blocks.is_empty()
-		"chain":
-			return player.chain >= _lesson_chain_goal()
 		"danger":
 			return player.board.stack_top() >= WWBoard.ROWS - 3
+		"always":
+			# Words, not a chain and not a clock. The habit being taught is
+			# "keep typing", and the moment it is checked against a window the
+			# step stops being about the habit and starts being about speed —
+			# which is what the KEEP FIRING step was, and what players stopped
+			# on. Three words at any pace, answering anything or nothing.
+			return player.words_played - _lesson_mark >= LESSON_KEEP_WORDS
 		"done":
 			return false     # ends on the key, not on a condition
 	return false
 
 
-## What the KEEP FIRING step is asking for right now. Eases off once the step has
-## been up long enough that the player is plainly not going to be hurried into
-## it; `lesson_age` is reset by `_lesson_begin`, so this is time spent on this
-## step rather than time in the tutorial.
-func _lesson_chain_goal() -> int:
-	if lesson_age >= LESSON_CHAIN_EASE:
-		return LESSON_CHAIN_GOAL - 1
-	return LESSON_CHAIN_GOAL
-
-
-## The line under the lesson body. Every step's is fixed copy except the chain,
-## whose target moves — and a hint saying "chain three words" while the board is
-## being satisfied by two would be the card lying about its own rule.
+## The line under the lesson body.
+##
+## Fixed copy for every step now. It used to compute the chain step's target,
+## which moved as that step was waited out — but the step it was written for is
+## gone, and a counter is the one thing the remaining steps do not need: every
+## one of them ends on something the player can see happen on the board.
 func _lesson_hint(step: Dictionary) -> String:
-	if String(step.get("id", "")) == "chain":
-		var goal := _lesson_chain_goal()
-		return "chain %s words without pausing" % ["two" if goal <= 2 else "three"]
 	return String(step.get("hint", ""))
 
 
@@ -3997,6 +4019,18 @@ func _fire_pressed() -> void:
 		_lesson_next()
 		return
 	_submit_player()
+
+
+## Back to step one, without leaving the tutorial.
+##
+## A fresh `start_match` rather than setting `lesson` to zero, because the steps
+## build boards and the first one assumes an empty playfield — rewinding the
+## counter over the pile the last step dealt would open the tutorial on a screen
+## the tutorial never produces.
+func _restart_lesson() -> void:
+	_lesson_restart = Rect2()
+	Sfx.play("count", 1.2)
+	start_match("Rookie", 0, [], Mode.TUTORIAL)
 
 
 func _lesson_next() -> void:
@@ -4338,6 +4372,24 @@ func _end_match(loser: SideState) -> void:
 			lives_left, "life" if lives_left == 1 else "lives", champion.dealt],
 			Color("#ffd166"))
 
+	# The numbers this device is the authority on, sent once the bonus above has
+	# been applied to them.
+	#
+	# Live state travels at `NET_STATE_HZ`, which is a sampling rate and not a
+	# guarantee: the last packet before the whistle can be most of a frame-time
+	# old, so the far end's copy of a score is behind by whatever was earned in
+	# that window. Live that is invisible and correct enough — a mirrored score
+	# ticking a sixteenth of a second late is not a thing anybody can see. On the
+	# scoreboard it is a different number next to somebody's name, on two phones,
+	# being compared by two people sitting next to each other.
+	#
+	# So the end of a match stops being sampled and becomes a statement. Each end
+	# sends its own finished row and the other assigns it verbatim — see
+	# `_on_net_final`. Nothing is recomputed from it, which is the point: the
+	# bonus is already in the number, so there is no second opinion to disagree
+	# with.
+	if net_active():
+		MultiplayerManager.send_event("final", _final_of(player))
 	Sfx.play("win" if winner == "YOU" else "lose")
 	Haptics.fire("win" if winner == "YOU" else "lose")
 	_log("%s wins" % winner, Color("#ffd166"))
@@ -4647,6 +4699,79 @@ const EMOTE_SHOW := 2.4
 const EMOTE_TILE := 62.0
 const EMOTE_TILE_GAP := 8.0
 
+# ------------------------------------------------- emotes on the scoreboard
+#
+# The one screen in this game where there is something to say and nothing to do.
+#
+# In a match an emote is a risk: sending one costs a hold, a slide and a
+# release, and the board carries on without you. So they are used less than they
+# are enjoyed, and the moment they are most wanted is the moment they were least
+# available — the end, when the result is in and one of you has something to be
+# unbearable about.
+#
+# The summary has the room and no clock. The whole set is laid out along the
+# bottom, one tap each, drawn larger than the fan's tiles because nothing here
+# is competing with a playfield for attention.
+#
+# The name tag is what makes it a conversation rather than a decoration. Two
+# emotes can be on screen at once — yours and theirs, which is the interesting
+# case and the whole reason `_emote_in` and `_emote_out` are separate slots —
+# and a pair of dancing robots with nobody's name on them is a screensaver.
+
+## One tile in the summary row, and the gap between them. Bigger than
+## `EMOTE_TILE`: that one is sized against a column that must not cover the
+## board, and this row has a footer to itself.
+const EMOTE_SUMMARY_TILE := 92.0
+const EMOTE_SUMMARY_GAP := 10.0
+## How many times a sent emote plays before it leaves, and how long it takes to
+## go once it has.
+##
+## Three, rather than a number of seconds, because the cycles are different
+## lengths — 24 frames for cheer and 18 for the rest — and a fixed duration
+## either cuts the long one off mid-gesture or leaves the short ones looping an
+## awkward two-and-a-bit times. Counting loops means every one of them finishes
+## on the frame it was drawn to finish on.
+const EMOTE_SUMMARY_LOOPS := 3
+const EMOTE_SUMMARY_FADE := 0.6
+## How big a sent one is drawn. Twice the row's tile, which is what "show it
+## bigger" is for — the row is a set of buttons and this is somebody talking.
+const EMOTE_SUMMARY_BUBBLE := 190.0
+
+
+## How long one cycle of an emote's animation takes, in seconds.
+func _emote_cycle(idx: int) -> float:
+	if not EMOTE_ANIM.has(idx):
+		# A still from an older build. It has no cycle, so it is given the
+		# length of the short ones and simply sits there for it.
+		return 1.5
+	return float(int(EMOTE_ANIM[idx]["frames"])) / EMOTE_FPS
+
+
+## How long a freshly sent emote should stay up.
+##
+## In a match that is `EMOTE_SHOW`, which is tuned against a board that is still
+## moving underneath it. On the summary nothing is moving, so it plays out its
+## three loops and fades.
+func _emote_life(idx: int) -> float:
+	if _summary_emotes_live():
+		return _emote_cycle(idx) * float(EMOTE_SUMMARY_LOOPS) + EMOTE_SUMMARY_FADE
+	return EMOTE_SHOW
+
+
+## Whether the summary is showing the emote row.
+##
+## Versus only, and a live one: the row is a thing you say to somebody, and the
+## daily, survival and a CPU match have nobody on the other end of it. The
+## rematch card is a question over the top of the screen and takes every press
+## while it is up, so the row stands down rather than sitting under it.
+func _summary_emotes_live() -> bool:
+	if phase != Phase.OVER or mode != Mode.NORMAL:
+		return false
+	if _rematch_popup():
+		return false
+	return net_active() or demo_emotes
+
+
 ## How solid an emote is when it is decoration rather than a message.
 ##
 ## The art is the only illustration in a UI otherwise made of rectangles and
@@ -4796,7 +4921,7 @@ func _send_emote(idx: int) -> void:
 	# claimed it and the body did not do it, so picking an emote spent the
 	# cooldown, made a noise and put nothing on the screen — indistinguishable
 	# from a control that is simply broken, and the first thing reported.
-	_emote_out = {"i": idx, "left": EMOTE_SHOW}
+	_emote_out = {"i": idx, "left": _emote_life(idx), "span": _emote_life(idx)}
 	Haptics.fire("power", 0.7)
 	Sfx.play("zap", 1.12)
 
@@ -4807,8 +4932,129 @@ func _send_emote(idx: int) -> void:
 func _on_net_emote(idx: int) -> void:
 	if idx < 0 or idx >= EMOTES.size():
 		return
-	_emote_in = {"i": idx, "left": EMOTE_SHOW}
+	_emote_in = {"i": idx, "left": _emote_life(idx), "span": _emote_life(idx)}
 	Haptics.fire("tap", 0.4)
+
+
+## The summary's emote row, laid out along the bottom of the screen.
+##
+## Returned in `EMOTE_MENU` order, which is the order the fan uses — a player who
+## has learned where ANGRY is in a match should not have to find it again here.
+##
+## Sized down to fit rather than wrapped. Seven tiles at the full size need 700
+## units and a phone has 720 minus margins, so on the narrowest screens this
+## comes out a little under `EMOTE_SUMMARY_TILE` and stays one row. Two rows
+## would push the buttons off the bottom of a screen that does not scroll.
+##
+## Placed under the summary's own buttons rather than pinned to the bottom of
+## the screen, and this is the part that was wrong first. Pinned, it overlapped
+## Rematch and Title in landscape — and `_action_at` answers with the buttons
+## before it reaches this row, so the overlapping tiles were not merely ugly,
+## they were four emotes that quietly pressed Rematch. Measured off the buttons
+## it cannot collide with them whatever the summary above it grows to.
+##
+## Returns nothing at all when there is no room left. A row squeezed to a size
+## no thumb can hit is worse than a row that is not offered: on the screens
+## where that happens the buttons are the thing that matters, and they are the
+## thing this would be sitting on.
+const EMOTE_SUMMARY_MIN := 44.0
+
+func _summary_emote_rects(size: Vector2) -> Array:
+	var n := EMOTE_MENU.size()
+	var floor_y := 0.0
+	for b: Dictionary in _menu_buttons():
+		floor_y = maxf(floor_y, (b["rect"] as Rect2).end.y)
+	var top: float = floor_y + 16.0
+	var bottom: float = size.y - safe_bottom - 14.0
+	var usable: float = size.x - GRID_MARGIN * 2.0
+	var tile: float = minf(EMOTE_SUMMARY_TILE,
+		(usable - EMOTE_SUMMARY_GAP * float(n - 1)) / float(n))
+	tile = minf(tile, bottom - top)
+	if tile < EMOTE_SUMMARY_MIN:
+		return []
+	var span: float = tile * float(n) + EMOTE_SUMMARY_GAP * float(n - 1)
+	var x: float = (size.x - span) * 0.5
+	# Sat on the floor of whatever room is left rather than floating in the
+	# middle of it, so the row reads as the bottom edge of the screen on every
+	# shape it is drawn at.
+	var y: float = bottom - tile
+	var out: Array = []
+	for i in n:
+		out.append(Rect2(x + float(i) * (tile + EMOTE_SUMMARY_GAP), y, tile, tile))
+	return out
+
+
+## The row, and whatever has been said with it.
+##
+## Drawn after the summary's own furniture and before the rematch card, which is
+## a question and owns the screen while it is up.
+func _draw_summary_emotes(size: Vector2) -> void:
+	if not _summary_emotes_live():
+		return
+	var rects := _summary_emote_rects(size)
+	var cooling: bool = _emote_cool > 0.0
+	for i in rects.size():
+		var r: Rect2 = rects[i]
+		_panel(r, Color("#111730", 0.85), Color("#2a3355"), 10.0, 1.0)
+		# Dimmed as one while the cooldown runs, so the row reads as unavailable
+		# rather than as seven buttons that individually did nothing.
+		_draw_emote(r.grow(-6.0), int(EMOTE_MENU[i]),
+			0.35 if cooling else EMOTE_MENU_ALPHA, false)
+
+	# What has been said, in the band above the scoreboard table.
+	#
+	# Not above the row it was sent from, which is where this went first and
+	# which was wrong for a reason worth writing down: the buttons live between
+	# the two, so a five-second emote sat on top of Rematch — the one control on
+	# this screen with somebody else waiting at the other end of it. Input was
+	# never affected, because `_action_at` answers with the buttons first, but a
+	# button you cannot read is a button you do not press.
+	#
+	# The band over the table is the only large piece of this screen with
+	# nothing in it, it is high enough to be the first thing seen, and what it
+	# covers when it overflows is a headline that has already been read.
+	var feet: float = _scoreboard_top() - 14.0
+	var pair: bool = not _emote_in.is_empty() and not _emote_out.is_empty()
+	var big: float = minf(EMOTE_SUMMARY_BUBBLE,
+		size.x * (0.30 if pair else 0.44))
+	if not _emote_out.is_empty():
+		var x: float = size.x * (0.28 if pair else 0.5)
+		_draw_summary_emote(_emote_out, Vector2(x, feet), big, "YOU")
+	if not _emote_in.is_empty():
+		var x2: float = size.x * (0.72 if pair else 0.5)
+		_draw_summary_emote(_emote_in, Vector2(x2, feet), big,
+			_show_name(ai_side.label))
+
+
+## One sent emote, with the name of whoever sent it over its head.
+##
+## `bottom` is where the character's feet go, so it grows upward out of the row
+## rather than centring on a point and overlapping it.
+func _draw_summary_emote(slot: Dictionary, bottom: Vector2, span: float,
+		who: String) -> void:
+	var left := float(slot.get("left", 0.0))
+	if left <= 0.0:
+		return
+	# Fades only at the end, and only over `EMOTE_SUMMARY_FADE`. Fading across
+	# the whole life would have it half gone by its second loop, which is the
+	# loop somebody is most likely to be looking at.
+	var alpha: float = clampf(left / EMOTE_SUMMARY_FADE, 0.0, 1.0)
+	var span_total := float(slot.get("span", left))
+	var age: float = maxf(0.0, span_total - left)
+	var at := Rect2(bottom.x - span * 0.5, bottom.y - span, span, span)
+	_draw_emote(at, int(slot.get("i", 0)), alpha, true, age)
+	# The tag. Drawn on a plate rather than as bare text, because it sits over
+	# whatever the summary put behind it and a name that is sometimes legible is
+	# worse than no name.
+	var label := who if who != "" else "THEM"
+	var size_pt := _read_size(14)
+	var w: float = _font_bold.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER,
+		-1, size_pt).x + 22.0
+	var tag := Rect2(bottom.x - w * 0.5, at.position.y - 30.0, w, 26.0)
+	_panel(tag, Color("#0b1020", 0.88 * alpha), Color(EMOTE_GLOW, 0.5 * alpha),
+		8.0, 1.0)
+	_otext(_font_bold, Vector2(bottom.x, tag.position.y + 18.0), label, size_pt,
+		Color("#e6ecff", alpha))
 
 
 ## Where the tiles sit when the menu is open: straight up from the key, nearest
@@ -6111,6 +6357,9 @@ func _draw_overlay() -> void:
 		# nothing at all.
 		if mode != Mode.NORMAL:
 			_draw_coaching(size)
+		# After the coaching card, so a tutorial step wins the middle of the
+		# board outright — the lesson is already telling them what to type.
+		_draw_first_word_prompt()
 		if paused:
 			_draw_pause(size)
 		elif not player.alive:
@@ -6141,6 +6390,10 @@ func _draw_overlay() -> void:
 			_draw_countdown(size)
 		elif phase == Phase.OVER:
 			_draw_gameover(size)
+			# Between the two on purpose: over the scoreboard, which it sits
+			# below anyway, and under the rematch card, which is a question and
+			# owns the screen while it is up.
+			_draw_summary_emotes(size)
 			# Over the summary rather than inside it, and last, so nothing the
 			# scoreboard draws lands on top of the question.
 			_draw_rematch_popup(size)
@@ -6950,6 +7203,81 @@ func _versus_busy() -> bool:
 		MultiplayerManager.State.HANDSHAKING]
 
 
+# ------------------------------------------------------- the first word
+#
+# The single most common thing a new player gets wrong, and it is not a rule
+# they got backwards — it is a rule they invented. They watch the board, wait
+# for a block with letters on it, and type a word that answers it. Which works,
+# and is a third of the game played at a third of the speed, and reads as a game
+# that is mostly waiting.
+#
+# Nothing on the screen ever told them otherwise. The board is the only thing
+# with letters on it, so the board looks like the input. That the whole
+# dictionary is available at every moment, blocks or no blocks, is the premise
+# the rest of the scoring is built on and it was never said out loud anywhere
+# except in a tutorial step that talks about something else.
+#
+# So it is said, once, in the middle of the board where it cannot be missed.
+
+## How long the prompt takes to arrive and to leave.
+##
+## It fades in rather than appearing, because the first second of a match is
+## already a countdown clearing and a board dealing, and one more thing snapping
+## into existence in the middle of that is noise. It leaves faster than it
+## arrives: by then it has either worked or been read.
+const FIRST_WORD_IN := 0.45
+const FIRST_WORD_OUT := 0.35
+## How long it stays if nothing is typed at all.
+##
+## Long enough to be read twice by somebody who is reading it, short enough that
+## it is gone before it becomes part of the furniture. A player who never types
+## has a bigger problem than this prompt can fix.
+const FIRST_WORD_HOLD := 6.0
+
+
+## The prompt over the middle of the board, while the player has yet to type.
+##
+## Self-limiting by construction, which is what makes it safe to show on every
+## match rather than only to somebody the profile thinks is new. It is keyed to
+## `words_played == 0`: a player who knows what they are doing types inside the
+## first second and never finishes reading it, and one who is waiting for
+## permission gets the sentence they were waiting for. Nobody is counted, nobody
+## is graduated, and there is no setting to get wrong.
+##
+## Never in the tutorial, which is a screen already dedicated to saying what to
+## do next and does not need a second voice over the top of it.
+func _draw_first_word_prompt() -> void:
+	if mode == Mode.TUTORIAL or not player.alive or paused:
+		return
+	if player.words_played > 0 and _first_word_fade <= 0.0:
+		return
+
+	var age := match_time
+	var alpha := clampf(age / FIRST_WORD_IN, 0.0, 1.0)
+	if player.words_played > 0:
+		# Typed. It goes on the word rather than on a clock, which is the whole
+		# point: the thing it was asking for has happened.
+		alpha = clampf(_first_word_fade / FIRST_WORD_OUT, 0.0, 1.0)
+	elif age > FIRST_WORD_HOLD:
+		alpha = clampf(1.0 - (age - FIRST_WORD_HOLD) / FIRST_WORD_OUT, 0.0, 1.0)
+	if alpha <= 0.01:
+		return
+
+	# Faded on purpose and faded twice over: the copy is under half opacity even
+	# at full strength, because this is drawn across a live playfield and a
+	# legible instruction is not worth a board you cannot read behind it.
+	var r := _board_rect(player)
+	var mid := r.get_center()
+	var wide: float = r.size.x * 1.25
+	var big := _read_size(22)
+	var small := _read_size(14)
+	_text_fit_overlay(_font_bold, Vector2(mid.x, mid.y - 12.0),
+		"TYPE ANY WORD", big, wide, Color("#e6ecff", 0.62 * alpha))
+	_text_fit_overlay(_font, Vector2(mid.x, mid.y + 18.0),
+		"you do not have to wait for blocks", small, wide,
+		Color("#7bdff2", 0.55 * alpha))
+
+
 ## The lesson card, and the live readout a practice run is for. Both sit in the
 ## centre column, which is empty in these modes because there is no rival.
 func _draw_coaching(size: Vector2) -> void:
@@ -7077,14 +7405,27 @@ func _draw_coaching(size: Vector2) -> void:
 	# Tall enough for what is in it. The card was a fixed 214 and the type it now
 	# carries does not fit in that on a phone.
 	var h: float = body_off + body_h + foot * 2.0 + (14.0 if portrait else 10.0)
-	# The card is placed where the rival board would be, because that is the one
-	# part of the screen a lesson can occupy without hiding anything that matters.
-	# On a phone there is no rival column, so it grows upward into the gap under
-	# the header instead of downward over the board — the playfield loses no more
-	# of itself to the bigger type than it did to the small type.
-	var top: float = 236.0
-	if portrait:
-		top = maxf(safe_top + 100.0, 450.0 - h)
+	# Straight across the middle of the board, which is a deliberate reversal.
+	#
+	# It used to be tucked wherever it could go without covering anything: the
+	# rival column in landscape, the gap under the header on a phone. That is
+	# the polite arrangement and it is the wrong one. A first-time player is
+	# looking at the board — it is the only thing on the screen that moves — and
+	# a lesson parked beside it is a lesson in their peripheral vision, being
+	# read second if at all. Several people worked out what to do by
+	# experimenting on the board while the card that said it sat unread above.
+	#
+	# There is nothing under this card worth protecting. Every step builds the
+	# board it wants in `_lesson_begin`, so what is hidden is a pile the lesson
+	# put there and is about to talk about; and the step ends when the player
+	# acts, which means they have to have read it.
+	var br := _board_rect(player)
+	var mid := br.get_center()
+	cx = mid.x
+	# Wider than the board, because a board is six cells across and a sentence is
+	# not. Held inside the screen with a margin either side.
+	wide = clampf(wide, br.size.x, size.x - GRID_MARGIN * 2.0)
+	var top: float = mid.y - h * 0.5
 	var r := Rect2(cx - wide * 0.5, top, wide, h)
 	_panel(r, Color("#111730"), Color("#90be6d", 0.4), 12.0, 2.0)
 	_otext(_font, Vector2(cx, top + step_off),
@@ -7105,7 +7446,7 @@ func _draw_coaching(size: Vector2) -> void:
 		_text_fit_overlay(_font, Vector2(cx, r.end.y - foot), _lesson_hint(step),
 			h_size, wide - 36.0, Color("#7c88ad"))
 
-	# A row of pips, so seven steps reads as a short thing with an end to it.
+	# A row of pips, so five steps reads as a short thing with an end to it.
 	var pip: float = 16.0 if portrait else 10.0
 	var pgap: float = 8.0 if portrait else 6.0
 	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * pgap
@@ -7113,6 +7454,33 @@ func _draw_coaching(size: Vector2) -> void:
 		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + pgap), r.end.y + 16.0,
 			pip, 6.0 if portrait else 4.0),
 			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
+
+	# The way back to the start, on the last step only.
+	#
+	# A tutorial is read once and understood at whatever rate it is understood,
+	# and the player who most needs a second run is exactly the one least likely
+	# to go looking for the door: they have just been told this is the whole
+	# game and they are not sure it was. Offering it here costs one button on one
+	# step, and the alternative is finding PRACTICE from a title screen you have
+	# not learned yet.
+	#
+	# Stored rather than recomputed for the hit test. The rect depends on where
+	# the body happened to wrap, and the one thing worse than a button that is
+	# hard to find is a button whose target is not where it is drawn.
+	_lesson_restart = Rect2()
+	if String(step["id"]) != "done":
+		return
+	var bw: float = minf(wide * 0.62, 420.0)
+	var bh: float = 64.0 if portrait else 40.0
+	var bar := Rect2(cx - bw * 0.5, r.end.y + 34.0, bw, bh)
+	_lesson_restart = bar
+	# No hover state: `_hover_action` is a menu idea and this is drawn during
+	# PLAY, where `_action_at` is never consulted. A steady border rather than
+	# one that pretends to respond.
+	_panel(bar, Color("#141b33"), Color("#7bdff2", 0.45), 10.0, 2.0)
+	_text_fit_overlay(_font_bold, bar.get_center() + Vector2(0.0, 6.0),
+		"RUN IT AGAIN" if portrait else "R — RUN IT AGAIN",
+		_read_size(15), bw - 24.0, Color("#7bdff2"))
 
 
 ## Who you are lining up against. Deliberately shaped like the versus lobby:
@@ -10182,6 +10550,7 @@ func _on_net_state(payload: Dictionary) -> void:
 	# Defaulted to what is already held rather than to zero, so a payload from an
 	# older build leaves these alone instead of blanking them every tick.
 	ai_side.score = int(payload.get("sc", ai_side.score))
+	ai_side.dealt = int(payload.get("dl", ai_side.dealt))
 	ai_side.best_chain = int(payload.get("bc", ai_side.best_chain))
 	ai_side.best_combo = int(payload.get("bk", ai_side.best_combo))
 	ai_side.powers_fired = int(payload.get("pw", ai_side.powers_fired))
@@ -10193,6 +10562,52 @@ func _on_net_state(payload: Dictionary) -> void:
 	ai_side.respite = float(payload.get("rs", 0.0))
 	ai_side.life_flash = float(payload.get("lf", 0.0))
 	ai_side.alive = bool(payload.get("al", true))
+
+
+## Everything the scoreboard prints about one side, after the match has finished
+## with it.
+##
+## Deliberately the same field names as `_state_of` so the two cannot drift into
+## meaning different things, and deliberately a smaller set: no board, no pending
+## queue, no chain timers. None of that is drawn on a summary, and sending the
+## blocks of a board that has just been detonated would be describing a playfield
+## neither player is looking at any more.
+func _final_of(who: SideState) -> Dictionary:
+	return {
+		"sc": who.score, "dl": who.dealt, "w": who.words_played,
+		"cl": who.blocks_cleared, "bc": who.best_chain, "bk": who.best_combo,
+		"pw": who.powers_fired, "sv": who.salvos, "lw": who.longest_word,
+		"wm": _wpm(), "lv": who.lives, "al": who.alive,
+	}
+
+
+## The other end's finished row, taken as read.
+##
+## Assigned rather than added, which is what makes it safe to arrive at any
+## point. This device has usually already applied a victory bonus to its mirror
+## of that side by the time this lands — `_end_match` runs the moment a topout is
+## known, and this packet is a round trip behind it — and the number in here
+## already includes the real one. Assignment replaces a good guess with the
+## truth; addition would pay the bonus twice.
+##
+## Guarded on the phase for the same reason the rematch handshake is: a packet
+## that arrives while a *new* match is being played would otherwise overwrite a
+## live opponent with the corpse of the last one.
+func _on_net_final(payload: Dictionary) -> void:
+	if phase != Phase.OVER or ai_side == null:
+		return
+	ai_side.score = int(payload.get("sc", ai_side.score))
+	ai_side.dealt = int(payload.get("dl", ai_side.dealt))
+	ai_side.words_played = int(payload.get("w", ai_side.words_played))
+	ai_side.blocks_cleared = int(payload.get("cl", ai_side.blocks_cleared))
+	ai_side.best_chain = int(payload.get("bc", ai_side.best_chain))
+	ai_side.best_combo = int(payload.get("bk", ai_side.best_combo))
+	ai_side.powers_fired = int(payload.get("pw", ai_side.powers_fired))
+	ai_side.salvos = int(payload.get("sv", ai_side.salvos))
+	ai_side.longest_word = String(payload.get("lw", ai_side.longest_word))
+	ai_side.wpm = float(payload.get("wm", ai_side.wpm))
+	ai_side.lives = int(payload.get("lv", ai_side.lives))
+	ai_side.alive = bool(payload.get("al", ai_side.alive))
 
 
 func _push_state(delta: float) -> void:
@@ -10232,6 +10647,17 @@ func _state_of(who: SideState, own: int) -> Dictionary:
 		# nothing. A CPU looked right because a CPU is simulated on this machine.
 		"sc": who.score, "bc": who.best_chain, "bk": who.best_combo,
 		"pw": who.powers_fired, "sv": who.salvos, "lw": who.longest_word,
+		# Cells this side has dealt, which is not a cosmetic number: the victory
+		# bonus is partly `dealt * WIN_DAMAGE_STEP`, and until this was sent the
+		# far end computed that term from zero.
+		#
+		# It cannot be derived at the receiving end either, which is the trap.
+		# `_strike` credits `attacker.dealt` on the machine the word was typed
+		# on; `_on_net_attack` at the other end only builds the incoming block
+		# and never credits the sender. So a mirrored rival dealt nothing all
+		# match, and the loser's scoreboard quoted the winner a bonus that was
+		# short by the whole damage term.
+		"dl": who.dealt,
 		# Typing speed is measured from keystrokes, which only exist on the
 		# machine they were typed on — so unlike every other column this one
 		# cannot be derived at the far end and has to travel.
@@ -11170,6 +11596,29 @@ func _unhandled_input(event: InputEvent) -> void:
 			_press_back()
 			return
 
+	# The tutorial's RUN IT AGAIN button, which is the one control this game
+	# draws over a live playfield. Taken here because the PLAY branch below
+	# returns early and never reaches the menu handling — and taken before the
+	# keyboard, though in practice they cannot collide: the rect sits over the
+	# board and `_key_at` refuses anything above the key band.
+	#
+	# Fires on the press rather than the release. It is not in a scrollable menu,
+	# there is nothing to drag it out of the way of, and the press is what the
+	# rest of this screen's controls answer to.
+	# The phase and mode are checked as well as the rect, and not for tidiness.
+	# `_draw_coaching` is the only thing that clears this, and it stops being
+	# called the moment the tutorial ends — so the rect outlives the screen it
+	# was drawn on, and without these two a tap in the middle of the title screen
+	# would start the tutorial over.
+	if mode == Mode.TUTORIAL and phase == Phase.PLAY \
+			and _lesson_restart.has_area() and event is InputEventMouseButton:
+		var rb := event as InputEventMouseButton
+		if rb.pressed and rb.button_index == MOUSE_BUTTON_LEFT \
+				and _lesson_restart.grow(8.0).has_point(
+						get_viewport().get_mouse_position()):
+			_restart_lesson()
+			return
+
 	# Dragging a menu. Taken before anything else a press could mean, and a press
 	# only becomes a drag once it has moved far enough that it cannot have been
 	# a tap — otherwise every button press would scroll a little.
@@ -11286,6 +11735,15 @@ func _action_at(p: Vector2) -> String:
 	for b: Dictionary in _menu_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
+	# The summary's emote row. Routed through `_action_at` rather than hit-tested
+	# on its own so it inherits the press-then-release discipline every other
+	# button on this screen has — a finger that lands on CHEER and slides off is
+	# a finger that changed its mind.
+	if _summary_emotes_live():
+		var tiles := _summary_emote_rects(get_viewport_rect().size)
+		for i in tiles.size():
+			if (tiles[i] as Rect2).has_point(p):
+				return "emote:%d" % int(EMOTE_MENU[i])
 	if phase == Phase.SOLO:
 		var seats := _solo_seat_rects()
 		for i in range(1, seats.size()):
@@ -11359,6 +11817,12 @@ func _activate(action: String) -> void:
 			_lobby_bot = AiOpponent.ROSTER.pick_random()
 		phase = Phase.LOBBY
 		Sfx.play("count", 1.2)
+	elif action.begins_with("emote:"):
+		# The wire index, not a position in the row — `_action_at` converted it
+		# on the way out, so nothing downstream has to know the menu order.
+		# `_send_emote` owns the cooldown and the refusal, so a press during one
+		# is quietly nothing rather than a second packet.
+		_send_emote(int(action.substr(6)))
 	elif action == "share":
 		# Not awaited. `_activate` is called from the input handler and the card
 		# takes a frame to render; blocking here would hold the press open across

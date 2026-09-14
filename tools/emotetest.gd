@@ -240,6 +240,87 @@ func _bubbles(game) -> void:
 	_expect("and it stays clear of the board's own bottom edge",
 		bottom.end.y <= size.y)
 
+	_summary_row(game, size)
+
+
+## The row on the scoreboard, which is the same set said at the one moment there
+## is something to say and nothing to do.
+func _summary_row(game, size: Vector2) -> void:
+	print("--- and the whole set is offered on the scoreboard ---")
+
+	# Versus only. A daily or a survival summary has nobody on the other end of
+	# it, and a row of things to say to nobody is furniture.
+	game.phase = game.Phase.OVER
+	game.mode = game.Mode.DAILY
+	_expect("no row on a daily summary", not game._summary_emotes_live())
+	game.mode = game.Mode.NORMAL
+	game.demo_emotes = true
+	_expect("but there is one on a versus summary", game._summary_emotes_live())
+
+	var tiles: Array = game._summary_emote_rects(size)
+	_expect("every emote in the menu is offered (%d)" % tiles.size(),
+		tiles.size() == game.EMOTE_MENU.size())
+	if tiles.is_empty():
+		return
+	# One row, on screen, and bigger than the in-match tile — which is the whole
+	# reason this is a separate size rather than a reuse of `EMOTE_TILE`.
+	var first: Rect2 = tiles[0]
+	var last: Rect2 = tiles[tiles.size() - 1]
+	_expect("the row fits sideways (%.0f to %.0f)" % [first.position.x, last.end.x],
+		first.position.x >= 0.0 and last.end.x <= size.x)
+	_expect("it is one row", is_equal_approx(first.position.y, last.position.y))
+	_expect("and the tiles are bigger than the fan's (%.0f vs %.0f)"
+		% [first.size.x, game.EMOTE_TILE], first.size.x > game.EMOTE_TILE)
+	_expect("the row is on screen vertically", last.end.y <= size.y)
+
+	# Pressed through the same door every other button on this screen uses, so
+	# it gets the press-then-release handling for free.
+	#
+	# Asked against the *viewport* rather than against `size`, and the difference
+	# matters. Everything above is checked at the phone's design size, because a
+	# row that fits the 1280x720 desktop viewport this suite actually runs in
+	# would pass a phone-shaped bug. But `_action_at` has no `size` to be handed
+	# and reads the viewport itself, so a hit test built on the other number is
+	# testing two different screens against each other and fails for a reason
+	# that has nothing to do with the code.
+	var vp: Vector2 = game.get_viewport_rect().size
+	var live: Array = game._summary_emote_rects(vp)
+	var hit: String = game._action_at((live[0] as Rect2).get_center())
+	_expect("a tile answers to _action_at: '%s'" % hit,
+		hit == "emote:%d" % int(game.EMOTE_MENU[0]))
+	# And the buttons on the same screen still win where they overlap, which is
+	# the one collision that would silently eat a Rematch press.
+	for b: Dictionary in game._menu_buttons():
+		var r: Rect2 = b["rect"]
+		for t in live:
+			_expect("the %s button is clear of the row" % String(b["action"]),
+				not r.intersects(t as Rect2))
+
+	# Three loops, counted rather than timed — the cycles are different lengths
+	# and a fixed duration cuts the long one off mid-gesture.
+	for idx in game.EMOTE_MENU:
+		var cycle: float = game._emote_cycle(int(idx))
+		var life: float = game._emote_life(int(idx))
+		_expect("emote %d plays three times before it goes (%.2fs of %.2fs)"
+			% [int(idx), life, cycle],
+			is_equal_approx(life, cycle * game.EMOTE_SUMMARY_LOOPS
+				+ game.EMOTE_SUMMARY_FADE))
+
+	# And in a match it is still the short one, or every bubble mid-board would
+	# now outstay the rally it was sent during.
+	game.phase = game.Phase.PLAY
+	_expect("but in play it is still EMOTE_SHOW",
+		is_equal_approx(game._emote_life(0), game.EMOTE_SHOW))
+	game.phase = game.Phase.OVER
+
+	# The rematch card is a question and owns the screen while it is up.
+	game.rematch_offered = true
+	if game._rematch_popup():
+		_expect("the row stands down under the rematch card",
+			not game._summary_emotes_live())
+	game.rematch_offered = false
+	game.demo_emotes = false
+
 
 ## The two the fan dropped are still drawable, because somebody else's phone
 ## can still send one.

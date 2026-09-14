@@ -309,6 +309,10 @@ func find_match() -> void:
 	if state != State.READY:
 		return
 	invited = ""
+	# Starting a search is a decision to stop waiting on Apple's screen. The flag
+	# is what the handshake holds for, and left standing after a sheet that never
+	# appeared it would make the next match wait `SHEET_GRACE` for nothing.
+	_native_sheet_up = false
 	_set_state(State.MATCHMAKING, "finding an opponent")
 	_mm().find_match(_request(), _on_found_match)
 
@@ -353,6 +357,17 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 	if state != State.READY:
 		print("[GC] native: refused — state is %s, not READY" % State.keys()[state])
 		return
+	# Asked for twice, and allowed. It is tempting to refuse here — a second
+	# controller over the first, with the first one's signals still connected,
+	# is not tidy — but refusing is how this button goes dead. If the sheet did
+	# not come up, `_native_sheet_up` is true and wrong, and a guard on it turns
+	# the one press that could recover into another press that does nothing.
+	#
+	# Stacking is survivable: the old controller is RefCounted and goes when the
+	# reference below is replaced, and `_on_native_match` already refuses a
+	# second delivery of a match it is holding.
+	if _native_sheet_up:
+		print("[GC] native: a sheet was already asked for — asking again")
 
 	_native_vc = GKMatchmakerViewController.create_controller(_request())
 	if _native_vc == null:
@@ -368,7 +383,27 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 	invited = ""
 	_native_sheet_up = true
 	_sheet_age = 0.0
-	_set_state(State.MATCHMAKING, "Game Center is asking")
+	# Deliberately still READY, and this is the fix for a bug that read as the
+	# wrong door entirely.
+	#
+	# This used to go to MATCHMAKING the instant `present()` was called. But
+	# `present()` is fire-and-forget: it returns nothing, and if the sheet does
+	# not actually come up, not one of `did_find_match`, `cancelled` or
+	# `failed_with_error` will ever fire. There is no timeout on MATCHMAKING —
+	# `_process` returns before reaching any clock unless the state is CONNECTING
+	# or HANDSHAKING — so the game sat in a search that was not running, behind a
+	# sheet that was not there, forever. From the sofa that is indistinguishable
+	# from having pressed Quick Match, which is exactly what it was reported as.
+	#
+	# Staying READY costs nothing when the sheet does appear, because the sheet is
+	# covering this screen anyway and Apple's own callbacks move the state on the
+	# moment anything happens. And when the sheet does *not* appear, the lobby is
+	# still a lobby: three live doors and an honest line, rather than a Stop
+	# button for a search nobody started.
+	# Phrased as the ask rather than the result, because this line is only ever
+	# read in the case where the result did not happen: if the sheet is up it is
+	# covering the screen this is drawn on.
+	_set_state(State.READY, "asked Game Center to open its own screen")
 	print("[GC] native: presenting (mode %d)" % mode)
 	_native_vc.present()
 	print("[GC] native: present() returned — sheet should be up")

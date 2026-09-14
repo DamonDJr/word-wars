@@ -19,6 +19,7 @@ func _init() -> void:
 	_cannot_be_lost()
 	_banks_nothing()
 	_lesson_runs_through()
+	_the_lesson_can_be_run_again()
 	_lesson_advances_on_touch()
 	_normal_still_works()
 
@@ -59,13 +60,20 @@ func _lesson_advances_on_touch() -> void:
 	_expect("a typed word is still fired, not swallowed",
 		game.lesson == held)
 
-	# The phone wording must not name a key the phone has not got.
-	var touch: Dictionary = Tutorial.step(0, true)
-	var desk: Dictionary = Tutorial.step(0, false)
-	_expect("touch copy avoids SPACE: '%s'" % String(touch.get("body", "")),
-		not String(touch.get("body", "")).contains("SPACE"))
-	_expect("desktop copy keeps it: '%s'" % String(desk.get("body", "")),
-		String(desk.get("body", "")).contains("SPACE"))
+	# The phone wording must not name a key the phone has not got — anywhere, in
+	# any step, in any field. Checked across the whole lesson rather than on step
+	# one's body, which is where the control happened to be named when this was
+	# written and is not where it is named now.
+	var said_space := false
+	for i in Tutorial.count():
+		var touch: Dictionary = Tutorial.step(i, true)
+		var desk: Dictionary = Tutorial.step(i, false)
+		for key in ["title", "body", "hint"]:
+			_expect("step %d's %s says nothing about SPACE on a phone" % [i + 1, key],
+				not String(touch.get(key, "")).contains("SPACE"))
+			if String(desk.get(key, "")).contains("SPACE"):
+				said_space = true
+	_expect("and the desktop lesson names the key somewhere", said_space)
 
 
 func _cannot_be_lost() -> void:
@@ -137,6 +145,49 @@ func _lesson_runs_through() -> void:
 		game.phase == game.Phase.TITLE and game.mode == game.Mode.NORMAL)
 	var p = Engine.get_main_loop().root.get_node("Profile")
 	_expect("and it is remembered as taught", bool(p.pref("taught")))
+
+	# Short enough to be worth finishing. The two steps that went were the two
+	# players stopped on — a six-letter word and a timed chain — and the guard
+	# against them coming back is a number rather than an argument.
+	_expect("the lesson is five steps (%d)" % Tutorial.count(),
+		Tutorial.count() == 5)
+
+	# Every step has to be one `_lesson_begin` knows how to set up and
+	# `_lesson_check` knows how to finish, or a rename leaves a step that can
+	# never be satisfied — which is a tutorial nobody can leave.
+	var known := ["fire", "answer", "danger", "always", "done"]
+	for i in Tutorial.count():
+		var id := String(Tutorial.step(i).get("id", ""))
+		_expect("step %d's id is one the game handles: '%s'" % [i + 1, id],
+			known.has(id))
+
+
+## The last step offers a way back to the first, and the key it offers must not
+## eat a letter to do it.
+func _the_lesson_can_be_run_again() -> void:
+	print("--- and it can be run again ---")
+	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+	game.phase = game.Phase.PLAY
+
+	# Not drawn before the last step, and the input handler reads the same rect
+	# it is drawn into — so an undrawn button cannot be pressed.
+	_expect("no restart button on step one", not game._lesson_restart.has_area())
+
+	game.lesson = Tutorial.count() - 1
+	game._lesson_begin()
+	_expect("the last step is the one that offers it",
+		String(Tutorial.step(game.lesson).get("id", "")) == "done")
+
+	# R is in rather a lot of words, so it may only be claimed while the button
+	# is up and the line is empty. Faked here, because the rect is set by the
+	# draw pass and this test does not draw.
+	game._lesson_restart = Rect2(0.0, 0.0, 10.0, 10.0)
+	game.typed = "ru"
+	game._restart_lesson()
+	_expect("restarting goes back to step one", game.lesson == 0)
+	_expect("and stays in the tutorial", game.mode == game.Mode.TUTORIAL)
+	_expect("and takes the button down with it",
+		not game._lesson_restart.has_area())
 
 
 ## The guards must not have leaked into ordinary play.

@@ -310,6 +310,7 @@ func _summary_fits_a_phone() -> void:
 	_the_summary_uses_the_phone()
 	_a_loss_says_how_close_it_was()
 	_the_scoreboard_agrees_with_the_result()
+	_both_phones_agree_on_the_score()
 	game.phase = game.Phase.TITLE
 
 
@@ -367,6 +368,66 @@ func _the_scoreboard_agrees_with_the_result() -> void:
 		+ 0 * Scoring.LIFE_BONUS + 450 * Scoring.WIN_DAMAGE_STEP)
 	_expect("a hard-fought win outpays an easy one (%s vs %s)" % [grind, walkover],
 		grind > walkover)
+
+
+## Two phones, one scoreboard, and it has to say the same thing on both.
+##
+## The bug this pins was reported from a sofa: the loser's summary quoted the
+## winner a lower score than the winner's own summary did, and it was wrong
+## twice over.
+##
+## The bonus was the big half. `_strike` credits `attacker.dealt` on the machine
+## the word was typed on, and `_on_net_attack` at the far end builds the incoming
+## block without crediting anybody — so a mirrored rival had dealt nothing all
+## match, and `dealt * WIN_DAMAGE_STEP` came out as zero on one of the two
+## phones. The base score was the small half: live state is sampled at
+## `NET_STATE_HZ`, so the mirror is always a fraction of a second behind, which
+## is invisible in play and is a different number on a scoreboard.
+func _both_phones_agree_on_the_score() -> void:
+	print("--- and both ends print the same scoreboard ---")
+
+	# The mirror has to carry `dealt` at all. This is the field whose absence was
+	# the whole bonus discrepancy.
+	game.player.dealt = 250
+	game.player.score = 67974
+	var packet: Dictionary = game._state_of(game.player, 0)
+	_expect("the live state carries dealt", packet.has("dl"))
+	_expect("and it is the real number", int(packet["dl"]) == 250)
+
+	# Applied at the far end rather than dropped on the floor.
+	game.ai_side.dealt = 0
+	game._on_net_state(packet)
+	_expect("the far end credits it", game.ai_side.dealt == 250)
+
+	# A payload from a build that predates the field leaves what is held alone
+	# rather than blanking it, which is the rule every other column here follows.
+	game._on_net_state({"sc": 100})
+	_expect("and an older peer's packet does not blank it",
+		game.ai_side.dealt == 250)
+
+	# The finished row. Same field names as the live one on purpose — two
+	# spellings of the same number is how they drift apart.
+	game.player.score = 97192
+	var final: Dictionary = game._final_of(game.player)
+	for key in ["sc", "dl", "w", "cl", "bc", "bk", "pw", "sv", "lw", "wm"]:
+		_expect("the final row carries %s" % key, final.has(key))
+	_expect("and the score in it is the finished one", int(final["sc"]) == 97192)
+
+	# Taken as read, not recomputed. The sending end has already put its victory
+	# bonus in that number; adding anything to it here pays the bonus twice.
+	game.phase = game.Phase.OVER
+	game.ai_side.score = 40000
+	game._on_net_final(final)
+	_expect("the far end takes the finished score verbatim",
+		game.ai_side.score == 97192)
+
+	# And it is ignored outside a finished match, or a packet chasing the last
+	# game overwrites a live opponent in the next one.
+	game.phase = game.Phase.PLAY
+	game.ai_side.score = 5
+	game._on_net_final(final)
+	_expect("but not while a match is being played", game.ai_side.score == 5)
+	game.phase = game.Phase.OVER
 
 
 ## The whole result used to arrive in the top third of a phone, because every Y

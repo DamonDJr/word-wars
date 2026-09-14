@@ -35,58 +35,59 @@ class_name Tutorial
 ## the rule and stop. What was cut was never the rule — it was the aside about
 ## the rule, which is what the game itself is about to demonstrate anyway.
 
+## Five steps, down from seven, and the two that went were the two a first-time
+## player was most likely to stop on.
+##
+## LONGER WORDS REACH FURTHER asked for a six-letter word to clear three blocks,
+## which is a vocabulary test. KEEP FIRING asked for a chain of three inside the
+## window each word buys, which is a typing-speed test. Both are real rules and
+## neither is a rule you need in order to start playing — they are things the
+## game teaches by being played, and putting them in front of somebody who has
+## typed four words in their life is how a tutorial becomes the thing between a
+## player and the game rather than the way in.
+##
+## What is left is the shortest path to "I can play this": one word, what it
+## does to the other person, what comes back, what happens if you let it pile
+## up, and the one habit that makes all of it work.
 const STEPS := [
 	{
 		"id": "fire",
 		"title": "TYPE A WORD",
-		"body": "Any word at all. Press SPACE to fire it.",
-		"body_touch": "Any word at all. Tap FIRE to send it.",
-		"hint": "three letters or more",
-	},
-	{
-		"id": "tail",
-		"title": "YOUR ENDING IS THEIR BEGINNING",
-		"body": "Its LAST letters are now stamped on a block — "
-			+ "and that block has been dropped on you.",
-		"hint": "watch the stamp",
+		"body": "Any word at all. Its LAST letters land on your opponent "
+			+ "as a block.",
+		"body_touch": "Any word at all. Its LAST letters land on your "
+			+ "opponent as a block.",
+		"hint": "three letters or more — press SPACE to fire",
+		"hint_touch": "three letters or more — tap FIRE to send",
 	},
 	{
 		"id": "answer",
-		"title": "ANSWER IT",
+		"title": "AND THEIRS COME BACK",
 		"body": "Type a word that STARTS with the letters on the block. "
-			+ "It is the only way to clear garbage.",
+			+ "It is the only way to clear it.",
 		"hint": "attacking will not save you",
 	},
 	{
-		"id": "reach",
-		"title": "LONGER WORDS REACH FURTHER",
-		"body": "One word clears one block per two letters. "
-			+ "Three blocks need a six-letter word.",
-		"hint": "clear all three",
-	},
-	{
-		"id": "chain",
-		"title": "KEEP FIRING",
-		"body": "Fire again before the bar under your board runs out. "
-			+ "A chain makes everything you send bigger.",
-		# Replaced at draw time with the goal actually being asked for, which
-		# eases off if this step is taking a while — see `_lesson_chain_goal`.
-		"hint": "chain three words",
-	},
-	{
 		"id": "danger",
-		"title": "FILLING UP COSTS A LIFE",
-		"body": "Top out and you lose a life and the whole board — but not the "
-			+ "match. Clear this lot before it reaches the top.",
+		"title": "YOU GET THREE CHANCES",
+		"body": "Let the stack reach the top and you lose a life and the whole "
+			+ "board — but not the match. You have three.",
 		"hint": "get the stack down",
+	},
+	{
+		"id": "always",
+		"title": "NEVER STOP TYPING",
+		"body": "You do not have to wait for blocks. Every word you fire is "
+			+ "points, damage, and one less thing to answer.",
+		"hint": "keep firing — anything counts",
 	},
 	{
 		"id": "done",
 		"title": "THAT IS THE WHOLE GAME",
-		"body": "Power words, salvos and the chain ladder are all built on those "
-			+ "four rules.",
-		"hint": "press SPACE to finish",
-		"hint_touch": "tap FIRE to finish",
+		"body": "Power words, salvos and chains are all built on those rules. "
+			+ "Go and play one.",
+		"hint": "press SPACE to start · R to run through it again",
+		"hint_touch": "tap FIRE to start · tap RESTART to run it again",
 	},
 ]
 
