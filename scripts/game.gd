@@ -10462,19 +10462,26 @@ func _daily_peer_rows() -> Array:
 	var top_n := mini(page.size(), room - (1 if not me.is_empty() else 0))
 	top_n = maxi(top_n, 0)
 
+	# A Game Center display name is somebody else's free text — the one thing on
+	# this screen the game did not write — so it goes through the same filter
+	# every other name the game repeats back does. The boards screen has always
+	# done this; putting a second list of other people's names on the summary
+	# without it would have been a new way for an unfiltered name to reach a
+	# player, on the one screen every daily run ends at.
 	var out: Array = []
 	for i in top_n:
 		var row: Dictionary = page[i]
 		out.append({
 			"rank": int(row["rank"]),
-			"label": String(row["name"]),
+			"label": "YOU" if bool(row.get("me", false))
+				else _show_name(String(row["name"])),
 			"score": int(row["score"]),
 			"mine": bool(row.get("me", false)),
 		})
 	if not me.is_empty():
 		out.append({
 			"rank": int(me["rank"]),
-			"label": String(me["name"]),
+			"label": "YOU",
 			"score": int(me["score"]),
 			"mine": true,
 		})

@@ -22,7 +22,7 @@ extends SceneTree
 var game: Node
 var fails := 0
 var done := 0
-const SECTIONS := 6
+const SECTIONS := 7
 ## Set in `_init`, once there is a frame and the autoloads exist.
 var WWB: GDScript
 
@@ -44,6 +44,7 @@ func _init() -> void:
 	_a_full_board_tops_out()
 	_length_decides_the_block()
 	_a_salvo_is_not_one_word()
+	_other_peoples_names_are_filtered()
 
 	if done != SECTIONS:
 		fails += 1
@@ -252,6 +253,47 @@ func _a_salvo_is_not_one_word() -> void:
 			_expect("%s: '%s' is answerable" % [source, s],
 				bank.is_answerable(String(s), game.STAMP_MIN_VALID,
 					game.STAMP_MIN_COMMON) or String(s).length() == 1)
+	done += 1
+
+
+## Other people's names reach two screens now, and both have to filter them.
+##
+## The boards screen always did. The daily summary grew a second list of them in
+## 0.48.0 and did not, which would have been a new route for an unfiltered Game
+## Center display name to arrive in front of a player — on the screen every
+## daily run ends at, rather than one they have to go looking for.
+func _other_peoples_names_are_filtered() -> void:
+	print("--- somebody else's name is somebody else's free text ---")
+	var boards := get_root().get_node("Boards")
+	boards.view_board = boards.DAILY_ID
+	boards.view_time = boards.TODAY
+	boards.view_state = boards.ViewState.READY
+	boards.view_total = 900
+	# A name the filter has to do something about, alongside an ordinary one.
+	boards.view_rows = [
+		{"rank": 1, "name": "shit", "score": 5000, "me": false},
+		{"rank": 2, "name": "Marguerite", "score": 4000, "me": false},
+	]
+	boards.view_me = {"rank": 9, "name": "Damon", "score": 100, "me": true}
+
+	game.phase = game.Phase.OVER
+	game.mode = game.Mode.DAILY
+	game.fx_censor = true
+	var rows: Array = game._daily_peer_rows()
+	_expect("the summary drew the peer board", rows.size() >= 1)
+	var raw := false
+	for r: Dictionary in rows:
+		if String(r["label"]) == "shit":
+			raw = true
+	_expect("a rude name does not reach the summary unfiltered", not raw)
+	# And your own row is never somebody's name at all.
+	var mine_ok := true
+	for r: Dictionary in rows:
+		if bool(r["mine"]) and String(r["label"]) != "YOU":
+			mine_ok = false
+	_expect("your own row says YOU", mine_ok)
+	boards.view_rows = []
+	boards.view_me = {}
 	done += 1
 
 
