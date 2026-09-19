@@ -50,6 +50,10 @@ signal match_started
 signal match_ended(reason: String)
 signal data_received(packet: Dictionary)
 
+## Somebody's invitation is in hand and waiting on an answer. See the invite
+## section below for why this is a signal rather than a join.
+signal invite_offered(who: String)
+
 enum State { OFF, AUTHENTICATING, READY, MATCHMAKING, CONNECTING, HANDSHAKING, PLAYING }
 
 ## How long to keep repeating the hello before giving up on the other end. The
@@ -177,6 +181,15 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	# Before every early return below, because an invitation is held across all
+	# of these states and the clock on it belongs to the sender rather than to
+	# whatever this device happens to be doing. See `INVITE_HOLD`.
+	if _held_invite != null:
+		_invite_age += delta
+		if _invite_age >= INVITE_HOLD:
+			print("[GC] invite from '%s' expired unanswered" % invite_from)
+			_clear_invite()
+
 	if state == State.CONNECTING:
 		_wait_age += delta
 		# Poll rather than trust `player_changed` alone: if both players were
@@ -516,18 +529,119 @@ func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
 	invite_players(recipients)
 
 
+# ------------------------------------------------------- an invite arriving
+#
+# ## GameKit will not tell us an invitation arrived
+#
+# It is worth being plain about this, because the obvious feature — a banner in
+# the game the moment somebody invites you — cannot be built, and the reason is
+# not ours. Apple's `GKInviteEventListener` has exactly two callbacks:
+# `didAccept` and `didRequestMatchWithRecipients`. There is no "an invite is
+# waiting" event in the protocol, and the plugin's `GKLocalPlayer` exposes no
+# such signal because there is none to expose. iOS draws its own banner when an
+# invitation lands on a foregrounded app; tapping it is what reaches us, and by
+# then the player has already said yes.
+#
+# ## So the question we ask is the one we are actually entitled to ask
+#
+# What the player said yes to is "open Word Wars and join this". What they were
+# not asked, and could not have been, is whether the run currently on screen is
+# worth abandoning for it — and this is the first and only point at which the
+# game knows both halves. It used to answer for them: `leave_match()` on the
+# spot, mid-daily, mid-match, with the score gone. A tap on a system banner is
+# not consent to throw away a run that was three words from a personal best.
+#
+# So the invitation is held rather than taken, and `game.gd` decides. On a title
+# screen it is taken immediately — there is nothing to interrupt, and a
+# confirmation over an empty screen is friction for its own sake. Mid-run it
+# becomes a banner with the sender's name on it, which is as close to the thing
+# that cannot be built as the API allows.
+#
+# ## It is held on a clock, because the other end is waiting
+#
+# A `GKInvite` is not a message that sits in a queue. The sender is in Apple's
+# matchmaker watching a spinner, and an invitation nobody answers fails on their
+# device rather than ours. So the hold is short and it expires by itself: better
+# to drop the banner and let them try again than to take an invite that died
+# while the question was on screen.
+
+## How long an unanswered invitation is kept. Short on purpose — see above; the
+## person who sent it is looking at a spinner for every second of this.
+const INVITE_HOLD := 20.0
+
+## The invitation in hand, if any, and who sent it. `invite_from` is kept
+## separately because it is what a banner prints, and reading a name off a
+## `GKInvite` from drawing code would put a GameKit class in `game.gd`.
+var _held_invite: GKInvite = null
+var invite_from := ""
+var _invite_age := 0.0
+
+
+## Whether there is an invitation waiting on an answer.
+func invite_waiting() -> bool:
+	return _held_invite != null
+
+
+## How much of the hold is left, for a banner to run a bar off. Zero when there
+## is nothing waiting.
+func invite_left() -> float:
+	if _held_invite == null:
+		return 0.0
+	return maxf(0.0, INVITE_HOLD - _invite_age)
+
+
 ## Somebody accepted an invitation — from a notification, or by tapping a link
 ## Apple's screen texted them. This is the whole of the receiving end and it has
 ## no sheet in it: the invitee never sees Apple's matchmaker, only the match.
 func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
 	if not available() or invite == null:
 		return
-	# An invite can arrive at any moment, including mid-match — accepting one
-	# from the notification banner is a decision to abandon whatever is running.
+	# A second invitation while one is already held replaces it. Two banners is
+	# not a thing this game draws, and the newer one is the one whose sender is
+	# still waiting.
+	_held_invite = invite
+	_invite_age = 0.0
+	invite_from = ""
+	if invite.sender != null:
+		invite_from = String(invite.sender.display_name)
+	print("[GC] invite held from '%s' — waiting on an answer" % invite_from)
+	invite_offered.emit(invite_from)
+
+
+## Take it. Whatever was running is dropped here rather than by the caller, so
+## there is no window in which the match is gone and the invite has not been
+## acted on.
+func accept_invite() -> void:
+	if _held_invite == null:
+		return
+	var invite := _held_invite
+	_clear_invite()
+	if not available():
+		return
 	if current_match != null:
 		leave_match()
 	_set_state(State.MATCHMAKING, "joining the invite")
 	_mm().match_for_invite(invite, _on_found_match)
+
+
+## Leave it. The sender is not told — there is no reject call on this path, only
+## on a lobby invite — so from their side this is indistinguishable from nobody
+## picking up, which is what it is.
+func decline_invite() -> void:
+	if _held_invite == null:
+		return
+	print("[GC] invite from '%s' declined" % invite_from)
+	_clear_invite()
+
+
+## There is deliberately no "invite closed" signal to go with `invite_offered`.
+## Every screen reads `invite_waiting()` as it draws, so an invitation that ages
+## out simply stops being drawn — a second copy of that fact, delivered late,
+## is the thing that goes stale.
+func _clear_invite() -> void:
+	_held_invite = null
+	invite_from = ""
+	_invite_age = 0.0
 
 
 ## The whole of what Apple said, for the log. `str()` on a `GKError` prints the

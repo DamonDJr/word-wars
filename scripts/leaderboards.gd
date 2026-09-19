@@ -995,6 +995,27 @@ func _on_submitted(error) -> void:
 		_set_state(State.FAILED, "Game Center: %s" % str(error))
 		return
 	_load_ranks()
+	_reread_daily_page()
+
+
+## Ask for today's page again, if today's page is what is on screen.
+##
+## The daily summary opens its page in the same breath as it submits the score,
+## because waiting for the submission would leave the screen blank for the
+## second or two Apple takes — and a summary that arrives empty and fills in is
+## better than one that arrives late. The cost of that order is that the first
+## page comes back without the run on it: the player is looking at today's board
+## with themselves missing from it, which reads as the score having been lost.
+##
+## So the submission re-asks when it lands. Guarded on the board and the window
+## rather than fired blind, because the player can be on the board *screen*
+## looking at survival, or at the daily for a different scope, and replacing
+## what they chose to look at because a score posted elsewhere is a screen
+## changing under somebody's hands.
+func _reread_daily_page() -> void:
+	if view_board != DAILY_ID or view_time != TODAY:
+		return
+	refresh_view()
 
 
 func _load_ranks() -> void:

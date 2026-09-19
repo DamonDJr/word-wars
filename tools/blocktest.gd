@@ -22,7 +22,7 @@ extends SceneTree
 var game: Node
 var fails := 0
 var done := 0
-const SECTIONS := 4
+const SECTIONS := 6
 ## Set in `_init`, once there is a frame and the autoloads exist.
 var WWB: GDScript
 
@@ -42,6 +42,8 @@ func _init() -> void:
 	_reach_is_the_limit()
 	_nothing_is_special()
 	_a_full_board_tops_out()
+	_length_decides_the_block()
+	_a_salvo_is_not_one_word()
 
 	if done != SECTIONS:
 		fails += 1
@@ -149,6 +151,107 @@ func _a_full_board_tops_out() -> void:
 	_expect("and then refuses", topped)
 	_expect("having taken no more than it holds",
 		fitted <= int(WWB.COLS) * int(WWB.ROWS))
+	done += 1
+
+
+## How hard a word hits is supposed to be a question about the word as well as
+## about the run it sits in. It was only ever half of that.
+##
+## Two things were wrong and both were invisible from a standing start, which is
+## the only place anyone would have thought to look:
+##
+##   * the ladder had two steps, at seven and ten, so every word from three to
+##     six letters threw the same block and so did every word from ten upwards;
+##   * the two ladders combined with `maxi`, and the chain's overtakes the
+##     word's by the third word — so mid-run, which is most of a match, length
+##     stopped counting for anything at all.
+##
+## Written against the shape rather than the constants: the exact steps are
+## tuning and will move, but "longer never throws less, and somewhere in the
+## middle of a run a long word still beats a short one" is the rule.
+func _length_decides_the_block() -> void:
+	print("--- a longer word throws a bigger block ---")
+
+	# Never backwards, at every chain worth testing. This is the one that has to
+	# hold whatever the ladder is retuned to.
+	var rising := true
+	var flat_at := []
+	for chain in [1, 2, 3, 4, 5, 7]:
+		var last := -1
+		for n in range(3, 15):
+			var word := "a".repeat(n)
+			var cells: int = game._cells(mini(game._base_tier(chain, word),
+				game.TIERS.size() - 1))
+			if cells < last:
+				rising = false
+			last = cells
+		# And somewhere in that range it has to actually move, or the ladder is
+		# doing nothing at this chain length.
+		var low: int = game._cells(mini(game._base_tier(chain, "cat"),
+			game.TIERS.size() - 1))
+		var high: int = game._cells(mini(game._base_tier(chain, "onomatopoeia"),
+			game.TIERS.size() - 1))
+		if low >= high:
+			flat_at.append(chain)
+	_expect("length never throws a smaller block", rising)
+	_expect("and a long word beats a short one at every chain (%s)"
+		% ("flat at %s" % str(flat_at) if not flat_at.is_empty() else "none flat"),
+		flat_at.is_empty())
+
+	# The dead zones, named. Three to six used to be one block and ten upwards
+	# used to be another.
+	_expect("six letters beats three",
+		game._cells(game._base_tier(1, "planet"))
+			> game._cells(game._base_tier(1, "cat")))
+	_expect("twelve letters beats ten",
+		game._cells(game._base_tier(1, "onomatopoeia"))
+			> game._cells(game._base_tier(1, "technology")))
+
+	# The chain is still the bigger lever — the whole reason the two ladders are
+	# not simply added. A short word deep in a run must still out-throw a long
+	# word from cold.
+	_expect("rhythm still beats vocabulary",
+		game._cells(mini(game._base_tier(7, "cat"), game.TIERS.size() - 1))
+			>= game._cells(mini(game._base_tier(1, "onomatopoeia"),
+				game.TIERS.size() - 1)))
+	done += 1
+
+
+## A salvo is ten or more single cells, and the point of it is that they are ten
+## separate problems. Stamped the same they are one problem typed once.
+##
+## Measured: before the fix, eleven blocks off CAT came back with six branded
+## `cat`, and off SHIPMENTS six branded `ment`. The avoid set was a x0.15 weight
+## rather than a refusal, which on a pool of four fragments is barely a
+## preference at all.
+func _a_salvo_is_not_one_word() -> void:
+	print("--- a salvo is not one word repeated ---")
+	var defender = game.ai_side
+	# Short words are the hard case: CAT offers about four answerable fragments
+	# and a salvo wants eleven stamps out of it.
+	for source in ["cat", "be", "running", "shipments", "technology"]:
+		defender.pending.clear()
+		game.recent_stamps.clear()
+		var stamps: Array = game._salvo_stamps(source, 11, defender)
+		var counts := {}
+		for s in stamps:
+			counts[String(s)] = int(counts.get(s, 0)) + 1
+		var most := 0
+		for k in counts:
+			most = maxi(most, int(counts[k]))
+		_expect("%s: eleven stamps, eleven blocks" % source, stamps.size() == 11)
+		# The number that matters: how much of the salvo one word clears.
+		_expect("%s: no stamp lands more than twice (worst %d)" % [source, most],
+			most <= 2)
+		_expect("%s: and most of it is distinct (%d of 11)" % [source, counts.size()],
+			counts.size() >= 8)
+		# Autoloads are not bound as identifiers in a `--script` run, so the bank
+		# comes off the root the way every other suite here reaches it.
+		var bank := get_root().get_node("WordBank")
+		for s in stamps:
+			_expect("%s: '%s' is answerable" % [source, s],
+				bank.is_answerable(String(s), game.STAMP_MIN_VALID,
+					game.STAMP_MIN_COMMON) or String(s).length() == 1)
 	done += 1
 
 

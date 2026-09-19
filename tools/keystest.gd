@@ -68,7 +68,24 @@ func _shortcuts_still_work() -> void:
 
 	game.paused = true
 	_press(KEY_Q, "q")
-	_expect("Q while paused leaves the match", game.phase != game.Phase.PLAY)
+	# Q raises the leave card rather than leaving outright — a match abandoned
+	# banks nothing, and one keystroke should not be all that stands between a
+	# player and that. The key still belongs to Q; what changed is what it opens.
+	_expect("Q while paused asks about leaving", game._confirm_up())
+	_expect("and the match is still there to go back to",
+		game.phase == game.Phase.PLAY)
+	# ENTER and ESC are the card's two keys, and while it is up they are its
+	# alone: ENTER fires a word during play, so a card that let it through would
+	# be answered by the keystroke still in flight from the match underneath.
+	_press(KEY_ESCAPE, "")
+	_expect("ESC backs out of it", not game._confirm_up())
+	_expect("leaving the match alone", game.phase == game.Phase.PLAY)
+	_press(KEY_Q, "q")
+	game.typed = ""
+	_press(KEY_A, "a")
+	_expect("letters do not reach the board behind the card", game.typed == "")
+	_press(KEY_ENTER, "")
+	_expect("ENTER answers it, and the match ends", game.phase != game.Phase.PLAY)
 
 	game.start_match("Rookie", 1)
 	game.phase = game.Phase.PLAY
@@ -159,11 +176,16 @@ func _rect(id: String) -> Rect2:
 	return Rect2()
 
 
+## `ch` is what the key would type, and an empty string is a key that types
+## nothing — ESC, ENTER, the arrows. Godot reports those with unicode 0, which
+## is also what the game's default arm tests for, so passing "" has to produce a
+## zero rather than reaching into an empty string for a character that is not
+## there.
 func _press(code: int, ch: String) -> void:
 	var ev := InputEventKey.new()
 	ev.pressed = true
 	ev.keycode = code
-	ev.unicode = ch.unicode_at(0)
+	ev.unicode = 0 if ch.is_empty() else ch.unicode_at(0)
 	game._unhandled_key_input(ev)
 
 

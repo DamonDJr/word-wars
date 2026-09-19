@@ -272,6 +272,80 @@ func _rematch_follows_the_opponent() -> void:
 ## The summary was laid out in a 720-tall landscape window and then handed a
 ## phone twice that height. Its foot is measured rather than drawn, so the rows
 ## and the measurement have to grow together.
+## An invitation arriving over a run in progress.
+##
+## GameKit only tells the app about an invite *after* the player has accepted
+## it — there is no "an invite is waiting" callback in the whole protocol — so
+## what used to happen was that tapping iOS's own banner tore down whatever was
+## running, on the spot, with the score gone. The tap said "open Word Wars"; it
+## did not say "abandon the daily I am three words from a personal best on".
+##
+## `GKInvite` cannot be constructed off an Apple platform, so the invitation
+## itself is not reachable from here. What *is* reachable is the decision — who
+## gets asked and who does not — and that is the part that was wrong.
+func _an_invite_asks_before_it_takes_the_screen() -> void:
+	print("--- an invite arriving mid-run ---")
+	_orient(false)
+
+	# Nothing to interrupt: the invitation is taken without a word, which is the
+	# behaviour every screen outside a run should keep.
+	game.phase = game.Phase.TITLE
+	_expect("an invite on the title is taken straight away", game._invite_is_free())
+	game.phase = game.Phase.LOBBY
+	_expect("and so is one in the lobby", game._invite_is_free())
+
+	# A run with something in it is asked about instead.
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	_expect("but a daily is not interrupted silently", not game._invite_is_free())
+	game.start_match("Survival", 0, [], game.Mode.SURVIVAL)
+	game.phase = game.Phase.PLAY
+	_expect("nor is a survival run", not game._invite_is_free())
+	game.start_match("Rookie", 1, [], game.Mode.NORMAL)
+	game.phase = game.Phase.PLAY
+	_expect("nor a match", not game._invite_is_free())
+	# Including the countdown, which is a run that has started as far as the
+	# board is concerned even though no word has been typed into it.
+	game.phase = game.Phase.COUNTDOWN
+	_expect("nor the countdown into one", not game._invite_is_free())
+
+	# Practice is the exception, for the same reason it is exempt from the leave
+	# card: there is nothing to lose, and a question about nothing teaches
+	# people to stop reading the questions.
+	game.start_match("Rookie", 1, [], game.Mode.TRAINING)
+	game.phase = game.Phase.PLAY
+	_expect("practice is interrupted without asking", game._invite_is_free())
+
+	# The banner itself. Driven through `demo_invite` because the real path
+	# needs a `GKInvite`; everything below it is the game's own drawing and
+	# hit-testing, which is what can actually be wrong on a device.
+	game.phase = game.Phase.TITLE
+	_expect("no banner without an invitation", not game._invite_banner_up())
+	_expect("and no buttons either", game._invite_banner_buttons().is_empty())
+	game.demo_invite = "Marguerite"
+	_expect("an invitation raises one", game._invite_banner_up())
+	var buttons: Array = game._invite_banner_buttons()
+	_expect("with two answers on it", buttons.size() == 2)
+	var banner: Rect2 = game._invite_banner_rect()
+	for b: Dictionary in buttons:
+		_expect("%s sits inside the banner" % b["action"],
+			banner.encloses(b["rect"] as Rect2))
+		_expect("%s is reachable by a tap" % b["action"],
+			game._action_at((b["rect"] as Rect2).get_center()) == String(b["action"]))
+	# The one thing that separates this from the two cards: it does not swallow
+	# the screen. A press that misses it reaches whatever is underneath.
+	_expect("a press beside it is not eaten",
+		game._action_at(Vector2(banner.position.x - 40.0, banner.end.y + 200.0))
+			!= "invite_join")
+	# And it does not cover the corner button it is drawn next to.
+	_orient(true)
+	_expect("portrait: it clears the back button",
+		not game._invite_banner_rect().intersects(game._back_rect()))
+	_orient(false)
+	game.demo_invite = ""
+	_expect("and it goes when the invitation does", not game._invite_banner_up())
+
+
 func _summary_fits_a_phone() -> void:
 	print("--- the summary fits a phone ---")
 	game.phase = game.Phase.OVER
@@ -534,6 +608,7 @@ func _init() -> void:
 	_every_door_is_hittable()
 	_rematch_follows_the_opponent()
 	_summary_fits_a_phone()
+	_an_invite_asks_before_it_takes_the_screen()
 
 	print("--- what the title says with Game Center off ---")
 	print("  %s" % game._versus_sub())

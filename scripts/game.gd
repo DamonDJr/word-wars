@@ -113,12 +113,32 @@ const CHAIN_TIER_AT := [1, 2, 3, 5, 7, 9]
 ## twelve-letter answer is the hardest thing the game asks for, and it now has a
 ## floor of its own that no amount of not-finding one can reach.
 ##
-## Two steps, at the same seven letters `Scoring.LONG_WORD_AT` already pays a
-## bonus at, so the game has one idea of what makes a word long rather than two.
-## Deliberately smaller than the chain can give: rhythm is still the bigger
-## lever, and this is a floor under a good word, not a replacement for playing
-## well.
-const LENGTH_TIER_AT := [7, 10]
+## Two steps at 7 and 10 was the first attempt at that and it only half worked.
+## It fixed the standing start and left two holes either side of it:
+##
+##   * **Everything under seven letters was one block.** CAT, SHIP, BEACH and
+##     PLANET all sent the same 1x1. Four letters of extra effort bought
+##     nothing, which is most of the words anybody actually plays.
+##   * **Everything over ten was one block too.** The ladder stopped at 2x2, so
+##     ONOMATOPOEIA sent what UNDERSTAND sent. The hardest thing the game asks
+##     for had a ceiling two tiers below what a chain can reach.
+##
+## Three steps, and the spacing was measured rather than chosen. Sampling four
+## thousand words the bank actually deals — which are mostly six to eight
+## letters, not the evenly spread lengths a ladder looks balanced against on
+## paper — a step every two letters from five upwards more than *doubled* the
+## damage an average word throws from a standing start. That is not a gradient,
+## it is a different game.
+##
+## At 6/9/12 the same sample throws about a quarter more at a standing start and
+## a seventh more mid-run, while still doing both jobs: six letters now beats
+## five, and twelve now beats ten. Held deliberately coarse at the short end —
+## three, four and five letters stay one block — because the chain is meant to
+## be the bigger lever and most words played are short ones.
+##
+## If play says this is too gentle, the next step out is [6, 8, 11, 14], which
+## measured at +45% cold and +26% mid-run against the same sample.
+const LENGTH_TIER_AT := [6, 9, 12]
 
 ## What one word is worth to that ladder.
 ##
@@ -825,11 +845,43 @@ var _hover_action := ""
 var _press_action := ""
 
 
+## The app going away with a daily run still open.
+##
+## This is the bigger half of the reroll the pause menu's Leave button used to
+## offer, and it was the one nobody had to find: swipe the app away mid-run and
+## nothing was banked, so the same board could be played again from a cold
+## start. Closing the button and leaving this open would only have taught people
+## to force-quit instead, which is a worse version of the same exploit and one
+## the game cannot even see happen.
+##
+## So a suspend banks the run exactly as an ending does — quietly, because there
+## is no screen to report it on and iOS is about to take the frame. See
+## `_end_daily`, whose `quiet` argument is this call and nothing else.
+##
+## Only the daily. Survival already pays as it goes through
+## `_bank_survival_time`, a versus match is ended by the peer noticing the
+## connection drop, and neither practice nor the tutorial banks anything at all.
+##
+## `NOTIFICATION_APPLICATION_PAUSED` rather than `FOCUS_OUT`: focus is lost to a
+## notification banner or the control centre, which is not leaving the game, and
+## banking a run for a pulled-down notification shade would be a far worse bug
+## than the one this fixes. `cloud.gd` takes both because writing a save file
+## twice costs nothing; this ends a run and has to be sure.
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_PAUSED:
+		return
+	if phase != Phase.PLAY or mode != Mode.DAILY:
+		return
+	print("[Daily] suspended mid-run — banking %d" % player.score)
+	_end_daily(true, true)
+
+
 func _ready() -> void:
 	MultiplayerManager.match_started.connect(_on_match_started)
 	MultiplayerManager.match_ended.connect(_on_match_ended)
 	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
+	MultiplayerManager.invite_offered.connect(_on_invite_offered)
 	Ads.finished.connect(_on_ad_finished)
 	# Re-queue the reminders from what is true now.
 	#
@@ -1761,6 +1813,14 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	# start a third one nobody asked for.
 	rematch_asked = false
 	rematch_offered = false
+	# A fact about the last run's ending, and it outlives the summary it was
+	# drawn on: left standing, the next daily would report itself as walked out
+	# of before a word had been typed in it.
+	daily_quit = false
+	# And the question about that ending, in case the run ended underneath it.
+	# `_confirm_up` already refuses to draw a card outside PLAY, so this is the
+	# second of the two guards rather than the only one.
+	confirm_action = ""
 	# Every run starts unchallenged. `_start_challenge` sets this immediately
 	# after calling through here — the order matters, and this is why: a run
 	# started from the DAILY door on a day somebody happens to have challenged
@@ -2374,6 +2434,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# cost, and it should take a deliberate click rather than a letter.
 		match k.keycode:
 			KEY_ESCAPE: _activate("title")
+			# The daily's two boards, on the arrows. Safe to add to a screen that
+			# deliberately refuses letters: an arrow reports unicode 0, so it is
+			# not a key anybody's hands are still typing a word with.
+			KEY_LEFT, KEY_A when mode == Mode.DAILY: _activate("dtab:0")
+			KEY_RIGHT, KEY_D when mode == Mode.DAILY: _activate("dtab:1")
 		return
 
 	if phase == Phase.TITLE:
@@ -2407,6 +2472,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	# Nothing to type until GO.
 	if phase == Phase.COUNTDOWN:
+		return
+
+	# The leave card owns the keyboard while it is up. Two keys and nothing else
+	# — every letter is swallowed rather than falling through to the typing arm
+	# underneath, which would have the player building a word into a board they
+	# have just been asked whether they are leaving.
+	if _confirm_up():
+		match k.keycode:
+			KEY_ENTER, KEY_KP_ENTER: _activate("confirm_yes")
+			KEY_ESCAPE: _activate("confirm_no")
 		return
 
 	match k.keycode:
@@ -2602,12 +2677,7 @@ func _play_word(attacker: SideState, word: String) -> void:
 	var spent := attacker.tier_bonus
 	attacker.tier_bonus = 0
 	var focus := _focus_bonus(attacker, defender)
-	# The bigger of what the rhythm earned and what the word is worth on its own,
-	# rather than the sum: a long word inside a long run should not stack two
-	# ladders into an instant 4x3. Whichever of the two you did better is the
-	# floor, and combos and bonuses build from there.
-	var base_tier := maxi(_chain_tier(attacker.chain), _length_tier(word))
-	var out_tier := clampi(base_tier + combo + spent + focus,
+	var out_tier := clampi(_base_tier(attacker.chain, word) + combo + spent + focus,
 		0, TIERS.size() - 1)
 
 	earned += _strike(attacker, defender, word, out_tier, DROP_DELAY,
@@ -2852,6 +2922,337 @@ func _rematch_sub() -> String:
 	if rematch_offered:
 		return "they want to go again"
 	return "ask for another"
+
+
+# ------------------------------------------------------------- leaving a run
+#
+# Leave is the one button on the pause menu that cannot be taken back, and until
+# now it was also the one with nothing between the press and the consequence.
+# What the press actually costs depends on the mode, and in one of them it was
+# not a cost at all — it was a loophole:
+#
+#   * **Versus.** The opponent is told you have gone and the match is over for
+#     both of you.
+#   * **Survival.** The run banks no record. The time is still charged.
+#   * **The daily.** Nothing was banked, so `daily_done` stayed false and the
+#     same board could be played again. Leave was the fastest way to reroll a
+#     bad run, which is the exact thing `_end_daily` exists to prevent — and the
+#     prevention only ever covered the clock running out.
+#
+# So there is a card in front of it now, and it names which of those is about to
+# happen rather than asking "are you sure" about nothing in particular. It is
+# deliberately built out of the same pieces as the rematch card: a question over
+# a dimmed screen with two answers under it, because that is an object a player
+# of this game has already learnt to read.
+#
+# Practice and the tutorial get no card. Nothing is banked in either, so there is
+# nothing to warn about, and a confirmation over an empty consequence is how a
+# player learns to dismiss the one that matters without reading it.
+
+## What the card is standing in front of: the action `_activate` will be handed
+## if the answer is yes. Empty when no card is up.
+var confirm_action := ""
+
+
+## Phase-guarded as well as flag-guarded, the way `_rematch_popup` is.
+##
+## The card is raised from the pause menu and answered there, but the run
+## underneath it can end while it is up: a versus opponent leaves, or the clock
+## runs out on a match that was only paused on this screen. Left to the flag
+## alone the card would still be swallowing every press on the summary that
+## replaced it, which is a frozen screen with no way off it.
+func _confirm_up() -> bool:
+	return confirm_action != "" and phase == Phase.PLAY
+
+
+## Whether walking out of this run costs anything worth stopping for. Empty
+## means it does not, and the press goes straight through.
+func _leave_costs() -> bool:
+	return mode == Mode.DAILY or mode == Mode.SURVIVAL or mode == Mode.NORMAL
+
+
+## What the card says, per mode. Three keys: the question, the sentence under it
+## naming the cost, and what the yes button is called.
+##
+## The daily's yes says "Post and leave" rather than "Leave" because posting is
+## the part that is not obvious and is the part that cannot be undone. A button
+## that says only "Leave" next to a sentence about posting is a button somebody
+## presses having read the first word.
+func _confirm_lines() -> Dictionary:
+	if mode == Mode.DAILY:
+		return {
+			"title": "LEAVE THE DAILY?",
+			"note": "%s goes to the board as it stands — there is one run a day"
+				% _commas(player.score),
+			"yes": "Post and leave",
+		}
+	if mode == Mode.SURVIVAL:
+		return {
+			"title": "END THE RUN?",
+			"note": "a run walked out of takes no record, however long it lasted",
+			"yes": "End it",
+		}
+	if net_active():
+		return {
+			"title": "FORFEIT THE MATCH?",
+			"note": "%s is told you left, and the match is over" % (
+				_show(ai_side.label).to_upper() if ai_side != null else "THEY"),
+			"yes": "Forfeit",
+		}
+	return {
+		"title": "LEAVE THE MATCH?",
+		"note": "an unfinished match banks no score and no XP",
+		"yes": "Leave",
+	}
+
+
+func _confirm_rect() -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
+	var h: float = 250.0
+	return Rect2(size.x * 0.5 - w * 0.5, size.y * 0.5 - h * 0.5, w, h)
+
+
+func _confirm_buttons() -> Array:
+	if not _confirm_up():
+		return []
+	var card := _confirm_rect()
+	var bw: float = (card.size.x - 60.0 - 16.0) * 0.5
+	var by: float = card.end.y - 30.0 - 66.0
+	# The destructive one on the left and lit in the warning colour, with the way
+	# out beside it in grey. Same seats as the rematch card's pair, so the button
+	# under the thumb is in the place the last card put it.
+	return [
+		{"rect": Rect2(card.position.x + 30.0, by, bw, 66.0), "key": "ENTER",
+			"label": String(_confirm_lines()["yes"]), "sub": "", "note": "",
+			"rating": 0, "accent": Color("#ff6b6b"), "action": "confirm_yes"},
+		{"rect": Rect2(card.position.x + 30.0 + bw + 16.0, by, bw, 66.0),
+			"key": "ESC", "label": "Keep playing", "sub": "", "note": "",
+			"rating": 0, "accent": PLAYER_ACCENT, "action": "confirm_no"},
+	]
+
+
+func _draw_confirm(size: Vector2) -> void:
+	if not _confirm_up():
+		return
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.86), true)
+	var r := _confirm_rect()
+	_panel(r, Color("#111730"), Color("#ff6b6b", 0.75), 14.0, 3.0)
+	var cx := r.get_center().x
+	var lines := _confirm_lines()
+	_otext(_font, Vector2(cx, r.position.y + 40.0), "HOLD ON", 14,
+		Color("#ff6b6b", 0.85))
+	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + 84.0),
+		String(lines["title"]), 30, r.size.x - 50.0, Color("#e6ecff"), 17)
+	_text_fit_overlay(_font, Vector2(cx, r.position.y + 122.0),
+		String(lines["note"]), 16, r.size.x - 50.0, Color("#ffd166"), 11)
+	for b: Dictionary in _confirm_buttons():
+		_draw_menu_button(b)
+
+
+## Bank whatever the open run owes before it is walked away from.
+##
+## Split out of `_do_leave_match` because leaving is not the only way a run gets
+## abandoned — taking an invitation mid-daily is the other, and it must post the
+## score for exactly the same reason. One function, so a third exit cannot be
+## added that quietly forgets.
+##
+## `quiet` is passed straight through to `_end_daily`: the invite path is on its
+## way into somebody else's match, and an ad break or a permission dialog
+## arriving over the top of that is worse than not having it.
+func _bank_open_run(quiet: bool) -> void:
+	if mode == Mode.SURVIVAL:
+		_bank_survival_time()
+	elif mode == Mode.DAILY:
+		_end_daily(true, quiet)
+
+
+# ---------------------------------------------------------- an invite arriving
+#
+# The banner an invitation raises mid-run, and the two answers under it. Why it
+# appears after iOS's own banner rather than instead of it — and why the game is
+# never told an invitation arrived, only that one was accepted — is written out
+# in `multiplayer_manager.gd`, which holds the invite this draws.
+#
+# Deliberately a banner and not a card. The rematch and leave cards are
+# questions the game asked, so they own the screen; this one is an interruption
+# from outside, arriving over a run the player is in the middle of. Taking the
+# screen away from them to relay somebody else's message is the same rudeness as
+# joining the match without asking, one step smaller.
+
+## How tall the banner is, and how far in from the edges it sits.
+const INVITE_BANNER_H := 92.0
+const INVITE_BANNER_PAD := 14.0
+
+
+## A name to put a banner up for with no Apple device behind it, so the layout
+## can be looked at from Linux. Same purpose and same rules as `demo_emotes`:
+## nothing in the game sets it, and the two buttons under it still go through
+## `MultiplayerManager`, where they find no invitation and do nothing.
+##
+## Worth having rather than testing this on a phone only. `GKInvite` cannot be
+## constructed off an Apple platform — the stub refuses — so without a way in
+## from outside, the one screen in this game that arrives unannounced over a
+## live board could never be looked at until it turned up in front of a player.
+var demo_invite := ""
+
+
+## Whether the banner is up. The invitation lives in `MultiplayerManager`, so
+## this is a read rather than a flag of our own — there is no second copy to go
+## stale when it expires on its own clock.
+func _invite_banner_up() -> bool:
+	return MultiplayerManager.invite_waiting() or demo_invite != ""
+
+
+## Who is asking, and how much of the hold is left as a fraction. Both fall back
+## to the demo so the drawing has one source rather than two branches.
+func _invite_who() -> String:
+	if demo_invite != "":
+		return demo_invite
+	return MultiplayerManager.invite_from
+
+
+func _invite_fraction() -> float:
+	if demo_invite != "":
+		return 0.62
+	return MultiplayerManager.invite_left() / MultiplayerManager.INVITE_HOLD
+
+
+func _invite_banner_rect() -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(660.0, size.x - GRID_MARGIN * 2.0)
+	# Near the top, which is where a notification would have been and therefore
+	# where somebody is already looking for one — but under the back button
+	# rather than over it. At full width this banner spans the whole phone, and
+	# parked at `safe_top` it covered the corner chevron completely: a button
+	# still live underneath a panel that hides it, which is the one arrangement
+	# worse than a button that does nothing.
+	var y: float = _back_rect().end.y + INVITE_BANNER_PAD if portrait \
+		else safe_top + INVITE_BANNER_PAD
+	return Rect2(size.x * 0.5 - w * 0.5, y, w, INVITE_BANNER_H)
+
+
+## Join on the left, dismiss on the right — the same seats the leave card uses,
+## so the button under the thumb does not move between the two things that
+## interrupt a run.
+func _invite_banner_buttons() -> Array:
+	if not _invite_banner_up():
+		return []
+	var r := _invite_banner_rect()
+	var bw: float = 118.0
+	var bh: float = 44.0
+	var by: float = r.get_center().y - bh * 0.5
+	return [
+		{"rect": Rect2(r.end.x - bw * 2.0 - 20.0, by, bw, bh), "key": "",
+			"label": "Join", "sub": "", "note": "", "rating": 0,
+			"accent": PLAYER_ACCENT, "action": "invite_join"},
+		{"rect": Rect2(r.end.x - bw - 10.0, by, bw, bh), "key": "",
+			"label": "Not now", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "invite_no"},
+	]
+
+
+func _draw_invite_banner(size: Vector2) -> void:
+	if not _invite_banner_up():
+		return
+	var r := _invite_banner_rect()
+	_panel(r, Color("#141d3c"), Color(PLAYER_ACCENT, 0.85), 12.0, 2.0)
+
+	# Apple hands over a sender with no display name often enough to plan for —
+	# a player who never set one — and "invited you" with a blank in front of it
+	# reads as a bug rather than as a person. Stripped as well as tested for
+	# empty, the way `Boards._view_row` handles the same field: a name that is
+	# one space leaves the same gap as a name that is nothing.
+	var who := _invite_who().strip_edges()
+	var line := "%s invited you to a match" % who if who != "" \
+		else "somebody invited you to a match"
+	var text_w: float = r.size.x - 270.0
+	_otext_left(_font, Vector2(r.position.x + 16.0, r.position.y + 28.0),
+		"GAME CENTER", 11, Color(PLAYER_ACCENT, 0.8))
+	_otext_left(_font_bold, Vector2(r.position.x + 16.0, r.position.y + 54.0),
+		line, _fitted_size(_font_bold, line, 18, text_w, 12), Color("#e6ecff"))
+
+	# The hold, as a bar rather than a number. It is not a countdown the player
+	# is supposed to race — it is there so a banner that vanishes on its own is
+	# visibly about to, rather than appearing to have been dismissed by a
+	# mis-tap. See `INVITE_HOLD`.
+	var bar := Rect2(r.position.x + 16.0, r.end.y - 12.0,
+		(r.size.x - 32.0) * _invite_fraction(), 3.0)
+	if bar.size.x > 0.0:
+		_overlay.draw_rect(bar, Color(PLAYER_ACCENT, 0.45), true)
+
+	for b: Dictionary in _invite_banner_buttons():
+		_draw_menu_button(b)
+
+
+## Whether an invitation can simply be taken without asking.
+##
+## True everywhere there is nothing to interrupt, which is every screen that is
+## not a run in progress — and also a run that banks nothing, because a
+## confirmation protecting a practice board is a confirmation that teaches
+## people to tap through the one protecting a daily.
+func _invite_is_free() -> bool:
+	if phase != Phase.PLAY and phase != Phase.COUNTDOWN:
+		return true
+	return not _leave_costs()
+
+
+func _on_invite_offered(_who: String) -> void:
+	if _invite_is_free():
+		_take_invite()
+		return
+	# Left for the banner to carry. Loud enough to notice over a board being
+	# typed at, which is the whole difficulty with an interruption that is not
+	# allowed to take the screen.
+	Sfx.play("count", 1.4)
+	Haptics.fire("tap")
+
+
+## Take the invitation, banking whatever the abandoned run owes on the way.
+func _take_invite() -> void:
+	_bank_open_run(true)
+	confirm_action = ""
+	paused = false
+	_hover_action = ""
+	Link.leave()
+	# `accept_invite` drops the Game Center match itself, so there is no window
+	# where the old match is gone and the invite has not been acted on.
+	MultiplayerManager.accept_invite()
+	net_status = ""
+	_lobby_search = 0.0
+	# The lobby rather than the title: it is the screen that says what
+	# matchmaking is doing, and joining an invite is matchmaking.
+	phase = Phase.LOBBY
+	Sfx.play("count", 1.2)
+
+
+## Actually go, once the card has been answered or found unnecessary.
+##
+## The daily does not walk back to the title from here. It banks the run and
+## opens its own summary, the same one the clock produces — leaving is an ending
+## now, and an ending this game reports is an ending the player gets to see. It
+## is also the only way the score they are being told about is a score they can
+## check.
+func _do_leave_match() -> void:
+	paused = false
+	_hover_action = ""
+	# Charged and banked first, while there is still a run to charge for — and
+	# through the one function both exits share, so the survival clock and the
+	# daily's score cannot drift apart. It is also what puts the daily's summary
+	# up, which is why the branch at the bottom has nothing left to do.
+	_bank_open_run(false)
+	Link.leave()
+	# `Link` is the dead netfox transport, so on its own this walked back to
+	# the title with the Game Center match still open: the opponent never
+	# heard you go, and `net_active()` stayed true so the next match refused
+	# to start.
+	MultiplayerManager.leave_match()
+	if mode == Mode.DAILY:
+		return
+	phase = Phase.TITLE
+	Sfx.play("back")
 
 
 # ------------------------------------------------------------------ the break
@@ -3309,6 +3710,41 @@ func _voice_attack(attacker: SideState, cleared: int, intercepted: int, out_tier
 ## cells, staggered so they rain in. Individually trivial to answer, collectively
 ## a mess — they land unevenly and clog the board in a way one big slab does not.
 ## Then the chain goes back to zero, so nobody rides a single run to victory.
+## The stamps a salvo lands under, all minted before the first one falls.
+##
+## A salvo is ten or more blocks and they are single cells on purpose —
+## individually trivial, collectively a mess. That only holds if they are a mess
+## of *different* things. Branded the same they are not ten problems, they are
+## one word typed once, which is the easiest thing on the board rather than the
+## hardest.
+##
+## The cashing word is the first source, because a salvo should still read as
+## having come from the word that earned it. But a word's answerable fragments
+## run out fast — CAT offers about four — and past that the choice is a repeat
+## or somebody else's word. Repeats are what this exists to stop, so once the
+## word is spent the rest are minted from fresh common words.
+##
+## `used` is threaded through rather than relying on `defender.pending`, which
+## the caller has not appended to yet: the whole flight is decided here, before
+## a single block exists to be seen by the avoid check inside `_mint_stamp`.
+func _salvo_stamps(word: String, count: int, defender: SideState) -> Array:
+	var out: Array = []
+	var used := {}
+	for i in count:
+		var s := _mint_stamp(word, STAMP_WANT, defender, used)
+		# `_mint_stamp` refuses a used stamp while it has any other candidate, so
+		# getting one back means the word is spent rather than unlucky. One
+		# retry, then a different word — retrying the same exhausted pool is how
+		# a loop like this turns into a stutter.
+		if used.has(s):
+			s = _mint_stamp(WordBank.random_common(), STAMP_WANT, defender, used)
+		if used.has(s):
+			s = _mint_stamp(WordBank.random_common(), STAMP_WANT, defender, used)
+		used[s] = true
+		out.append(s)
+	return out
+
+
 func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: int) -> void:
 	var power := SALVO_BLOCKS + combo
 
@@ -3323,11 +3759,12 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 			MultiplayerManager.send_event("salvo", {"word": word, "count": power})
 			defender.flash = 1.0
 		else:
+			var stamps := _salvo_stamps(word, power, defender)
 			for i in power:
 				var p := Pending.new()
 				p.from = _entity_of(attacker)
 				p.tier = 0
-				p.prefix = _mint_stamp(word, STAMP_WANT, defender)
+				p.prefix = String(stamps[i])
 				p.cells = 1
 				p.timer = DROP_DELAY + i * 0.10
 				defender.pending.append(p)
@@ -3403,7 +3840,6 @@ func _chain_gain(word: String) -> float:
 	return 1.0 + CHAIN_GAIN_PER_CHAR * float(maxi(0, word.length() - MIN_WORD_LEN))
 
 
-## Highest tier a chain of this length has earned on its own.
 ## The tier a word earns on its own length, ignoring everything else.
 func _length_tier(word: String) -> int:
 	var n := word.length()
@@ -3412,6 +3848,31 @@ func _length_tier(word: String) -> int:
 		if n >= int(at):
 			t += 1
 	return t
+
+
+## What a word throws before combos, owed tiers and focus are added: the better
+## of the two ladders, plus half of the other one.
+##
+## It used to be the bigger of the two and nothing else, to stop a long word
+## inside a long run stacking into an instant 4x3. That guard worked and it cost
+## the thing it was guarding. The chain ladder overtakes the length one by the
+## third word, so from chain 3 onwards `maxi` returned the chain's tier for every
+## word — and CAT and ONOMATOPOEIA sent the identical block. Length only ever
+## mattered from a standing start, which is the one moment nobody has a long word
+## ready.
+##
+## Half, rounded down, so the two still do not simply add: a good word inside a
+## good run is worth more than either alone and less than both, and reaching the
+## top needs a twelve-letter answer *and* a five-word run rather than one of them
+## twice.
+##
+## Named rather than left inline because it is the whole of what "how hard did
+## that hit" means, and it was previously three lines in the middle of `_attack`
+## that nothing could ask a question of.
+func _base_tier(chain: int, word: String) -> int:
+	var chain_t := _chain_tier(chain)
+	var len_t := _length_tier(word)
+	return maxi(chain_t, len_t) + mini(chain_t, len_t) / 2
 
 
 func _chain_tier(chain: int) -> int:
@@ -3434,13 +3895,19 @@ func _tier_name(tier: int) -> String:
 
 ## Brand a block with the tail of `word`, steering away from stamps this player
 ## is already staring at or has just been hit with.
-func _mint_stamp(word: String, want: int, defender: SideState) -> String:
+func _mint_stamp(word: String, want: int, defender: SideState,
+		also_avoid: Dictionary = {}) -> String:
 	var avoid := {}
 	for s: String in defender.board.prefixes():
 		avoid[s] = true
 	for p: Pending in defender.pending:
 		avoid[p.prefix] = true
 	for s: String in recent_stamps:
+		avoid[s] = true
+	# Whatever the caller is part-way through handing out and has not attached to
+	# anything yet. A salvo mints its whole flight before the first block lands,
+	# so without this the run is invisible to the check above until it is over.
+	for s: String in also_avoid:
 		avoid[s] = true
 
 	var stamp := WordBank.stamp_from_tail(word, want, STAMP_MIN_VALID, STAMP_MIN_COMMON, avoid)
@@ -4079,17 +4546,49 @@ func _lesson_next() -> void:
 ## Banked before the summary is drawn, and banked whichever way it ended, so
 ## quitting out of a bad run is not a way to get a second go at the same board.
 func _finish_daily() -> void:
+	_end_daily(false, false)
+
+
+## True while the summary is reporting a run that was given up rather than
+## played out. Read by the headline and by the sound the summary arrives under —
+## a walkout is not a loss and is certainly not "TIME", and calling it either
+## would be the screen lying about what just happened.
+var daily_quit := false
+
+
+## The daily, banked and closed, whichever of the three ways it ended.
+##
+## `quit` is a run walked out of — the pause menu, or the app going away — and it
+## is the reason this function exists at all. Until it did, the only path that
+## banked a daily was the clock running out, so quitting at forty seconds left
+## `daily_done` false and the same board could be played again for a better
+## score. The docstring above claimed otherwise for months. It is true now
+## because every exit routes through here.
+##
+## `quiet` is the app suspending under us, where there is a run to bank and no
+## screen to report it on. It skips the two things that need somebody looking:
+## the permission dialog, which iOS only ever offers once and would spend on a
+## backgrounded app, and the ad break, which would be an interstitial thrown at
+## a player who has already put the phone in their pocket. The score is banked
+## and sent exactly as it would have been; only the theatre is dropped.
+func _end_daily(quit: bool, quiet: bool) -> void:
+	daily_quit = quit
 	phase = Phase.OVER
 	over_age = 0.0
 	typed = ""
 	_hover_action = ""
+	paused = false
 	_clear_hitstop()
 	tracers.clear()
 	# There is nobody to beat, so this is not "did you win" — it is "did you last
 	# the minute". Everything downstream reads it: the tint, the confetti, the
 	# music the summary comes up under. A run that burned all three lives with
 	# twenty seconds still on the clock used to get the victory fanfare.
-	var survived: bool = player.lives > 0
+	#
+	# A walkout is never survival, however many lives were still in hand. The
+	# whole point of banking it is that leaving is an ending, and an ending that
+	# arrives under the victory fanfare is an invitation to do it again.
+	var survived: bool = player.lives > 0 and not quit
 	winner = "YOU" if survived else ""
 	Profile.record_daily(daily_key(), player.score, int(round(_wpm())),
 		player.words_played, player.best_chain)
@@ -4098,9 +4597,15 @@ func _finish_daily() -> void:
 	# `submit_daily` is a no-op off an Apple device and holds the score when
 	# signed out, so there is nothing to check here.
 	Boards.submit_daily(player.score)
+	# And ask for the page the summary now draws, rather than only the one-line
+	# rank it used to. `submit_daily` is still in flight at this point, so this
+	# first page can come back without today's run on it — `Boards` re-asks when
+	# the submission lands, and the summary repaints from whatever is in hand.
+	Boards.open_view(Boards.DAILY_ID, Boards.GLOBAL, Boards.TODAY)
 	earned = {}
-	Sfx.play("win" if survived else "lose")
-	Haptics.fire("win" if survived else "life")
+	if not quiet:
+		Sfx.play("win" if survived else "lose")
+		Haptics.fire("win" if survived else "life")
 	WordBank.free_run()
 	# The first moment a reminder has anything true to say. The player has now
 	# seen the board, knows there is one a day, and — after this run is banked —
@@ -4108,7 +4613,7 @@ func _finish_daily() -> void:
 	# iOS offers the permission dialog once per install and never again, and a
 	# dialog put up before any of that is a dialog about nothing. `offer_after_daily`
 	# is a no-op on every call after the first.
-	var asked_to_notify: bool = Notify.offer_after_daily()
+	var asked_to_notify: bool = false if quiet else Notify.offer_after_daily()
 	Notify.refresh()
 	# Finishing today's board with a streak going is one of the three good moments
 	# in this game. See `review.gd` for why the bar is this high.
@@ -4131,7 +4636,12 @@ func _finish_daily() -> void:
 	# will ever give us to ask, and an advert arriving over the top of the dialog
 	# would cost the answer as well as the frame. The counter keeps its place and
 	# the next run takes the break.
-	if not asked_to_notify:
+	#
+	# And never on a suspend. The app is on its way to the background; an
+	# interstitial fired at it either arrives over the home screen or is waiting
+	# on top of the summary whenever the player comes back, neither of which is
+	# a break in anything.
+	if not asked_to_notify and not quiet:
 		_try_ad_break()
 
 
@@ -6396,6 +6906,10 @@ func _draw_overlay() -> void:
 			_draw_pause(size)
 		elif not player.alive:
 			_draw_spectating(size)
+		# Over the pause menu, because it is a question about the button on it.
+		# Outside the `paused` branch on purpose: the card outlives nothing, but
+		# drawing it from inside would tie it to a menu it is meant to cover.
+		_draw_confirm(size)
 	else:
 		if phase == Phase.SPLASH:
 			# The menu assembles underneath while the art dissolves off the top of
@@ -6435,6 +6949,12 @@ func _draw_overlay() -> void:
 		if portrait:
 			_draw_scrollbar(size)
 			_draw_back_button()
+
+	# Over every screen, for the same reason the curtain is: an invitation can
+	# arrive on any of them, and a banner drawn per-branch is a banner missing
+	# from whichever branch nobody thought of. Under the curtain, because an ad
+	# break covers the game and the banner is part of the game.
+	_draw_invite_banner(size)
 
 	# Over absolutely everything, playfield and menus alike. The `return` that
 	# used to end the PLAY branch is an `else` now for exactly this: the curtain
@@ -8729,7 +9249,12 @@ func _draw_gameover(size: Vector2) -> void:
 	# on the clock or on the last life, so it is not even reporting the run.
 	var headline := "YOU WIN" if win else "YOU LOSE"
 	if mode == Mode.DAILY:
-		headline = "TIME" if win else "TOPPED OUT"
+		# Three endings, not two. "TOPPED OUT" is a run that burned its lives and
+		# "TIME" is one that lasted the minute, and a run walked out of is
+		# neither — it is a score that stopped. Saying so is the honest half of
+		# banking it, and the summary is where the player finds out that leaving
+		# posted the number rather than discarding it.
+		headline = "LEFT EARLY" if daily_quit else ("TIME" if win else "TOPPED OUT")
 	# The clock, because in survival the clock is the score. "YOU LOSE" is true
 	# of every run ever played here and says nothing about this one; how long you
 	# lasted is the entire result, and it belongs in the biggest type on the
@@ -8831,6 +9356,12 @@ func _draw_gameover(size: Vector2) -> void:
 		difficulty.to_upper() if not net_active() else "VERSUS"]
 	if mode == Mode.DAILY:
 		subtitle = "DAILY SPRINT  ·  %s  ·  %d wpm" % [daily_key(), int(round(_wpm()))]
+		# Said plainly, once, on the screen where it can still be acted on
+		# tomorrow. A player who left at forty seconds needs to know the number
+		# went to the board — otherwise the first they hear of it is a rank they
+		# cannot explain, and the natural conclusion is that the game cheated.
+		if daily_quit:
+			subtitle = "DAILY SPRINT  ·  posted as it stood  ·  %s" % daily_key()
 	elif mode == Mode.SURVIVAL:
 		# The headline is already the time, so this carries what to measure it
 		# against. A first run has nothing to beat and says so rather than
@@ -8849,6 +9380,11 @@ func _draw_gameover(size: Vector2) -> void:
 		_draw_daily_board(size, _over_foot() - _daily_board_h(), tint)
 
 	for b: Dictionary in _menu_buttons():
+		# The daily board's tabs are in this list so they can be pressed, and
+		# they are painted by `_draw_daily_board` inside the block they belong
+		# to. Drawing them here as well would put two empty plates over them.
+		if String(b["action"]).begins_with("dtab:"):
+			continue
 		_draw_menu_button(b)
 
 	if mode == Mode.DAILY:
@@ -8886,6 +9422,8 @@ func _draw_gameover(size: Vector2) -> void:
 		var keys := "click Rematch to go again      ESC — title"
 		if mode == Mode.DAILY:
 			keys = "ESC — title"
+			if _daily_tabs_up():
+				keys = "LEFT / RIGHT — today's board or your own      ESC — title"
 		elif mode == Mode.SURVIVAL:
 			keys = "click Again for a fresh run      ESC — title"
 		_otext(_font, Vector2(cx, strip_bottom + 26.0), keys, 13, Color("#4d5878"))
@@ -9740,25 +10278,216 @@ const DAILY_HEAD_H := 30.0
 const DAILY_BOARD_RESERVE := 180.0
 
 
-## How many rows there is actually room for, which is not the same question as
-## how many there are. Zero is a real answer and means the board is left out.
-func _daily_board_fit() -> int:
+## Which half of the board the summary is showing: 0 is today's leaderboard,
+## 1 is your own past runs.
+##
+## Today's board is the default, and that is a change of mind about what this
+## screen is for. The comment above still describes what was here before —
+## a personal history, chosen because it works on a plane and on a machine that
+## has never heard of Game Center — and that reasoning was sound about
+## *availability* and wrong about what the player wants to know. The daily is
+## the one mode where everybody plays the same board once, which makes it the
+## one mode where a ranking against other people means anything at all. Ranking
+## somebody against their own last fortnight, on the one screen where a real
+## comparison exists, was answering a question nobody had asked.
+##
+## So the peers come first and the history is a tab away, and the fallback is
+## unchanged: no account, no network, no board — the history is all there is and
+## it is what gets drawn, with no tabs over it to advertise the half that is
+## missing. Held across runs rather than reset per summary, so a player who
+## prefers their own history is not made to ask for it every day.
+var daily_board_tab := 0
+
+
+## Whether Game Center has handed over a page of today's board worth drawing.
+##
+## The board and the window are checked as well as the rows, because `Boards`
+## has exactly one set of `view_*` and the board *screen* shares it. Without
+## this the summary would happily draw whatever that screen was last looking at
+## — survival, all-time — under a heading that says today.
+func _daily_peers_ready() -> bool:
+	if not _daily_page_is_todays():
+		return false
+	return not Boards.view_rows.is_empty() or not Boards.view_me.is_empty()
+
+
+## Whether `Boards` is holding — or fetching — a page of the board this screen
+## is about.
+func _daily_page_is_todays() -> bool:
+	return Boards.view_board == Boards.DAILY_ID and Boards.view_time == Boards.TODAY
+
+
+## Whether the peers tab is worth offering at all, which is true a beat before
+## it has anything on it.
+##
+## The difference between this and `_daily_peers_ready` is the second or so
+## Apple takes to answer, and it is the whole reason both exist. Without it the
+## summary draws the history with no tabs, the page lands, and the block
+## silently becomes a different board half a row taller — with the buttons
+## underneath moving to meet it, under a thumb that was already on its way down.
+## Claiming the space up front costs an empty panel for a moment and keeps
+## everything below it still.
+##
+## LOADING only. A desktop build has no Game Center and `open_view` leaves the
+## state at OFF; a signed-out phone leaves it FAILED. Neither is a page on its
+## way, and neither should put a tab on this screen advertising a board the
+## player cannot see.
+func _daily_peers_live() -> bool:
+	if _daily_peers_ready():
+		return true
+	return _daily_page_is_todays() \
+		and Boards.view_state == Boards.ViewState.LOADING
+
+
+## What stands in for the rows when the peers tab has none: the wait, or the
+## reason there will not be any. Empty when there are rows to draw instead.
+func _daily_message() -> String:
+	if not _daily_showing_peers() or not Boards.view_rows.is_empty() \
+			or not Boards.view_me.is_empty():
+		return ""
+	if Boards.view_state == Boards.ViewState.LOADING:
+		return "reading today's board…"
+	if Boards.view_state == Boards.ViewState.EMPTY:
+		return "nobody else has played today's board yet"
+	return Boards.view_status if Boards.view_status != "" \
+		else "today's board is out of reach"
+
+
+## How much room the peers tab takes when it has a sentence on it rather than
+## rows. Two rows' worth: enough for the message to sit in the middle of, and
+## enough that the first couple of rows arrive into space that was already
+## there.
+const DAILY_WAIT_H := 60.0
+
+
+## Whether the history tab has anything behind it. A first-ever daily has one
+## run on file — today's — which is a board of one row and still worth drawing,
+## because tomorrow it is two.
+##
+## Reads the dictionary rather than calling `daily_ranked`, which duplicates
+## every row and sorts them. This is asked several times a frame by the layout
+## measurements below, and the answer it needs is only "is there anything".
+func _daily_mine_ready() -> bool:
+	return not Profile.daily.is_empty()
+
+
+## Whether both halves exist, which is the only case that earns a pair of tabs.
+## One half on its own is simply the board, drawn under its own heading.
+func _daily_tabs_up() -> bool:
+	return _daily_peers_live() and _daily_mine_ready()
+
+
+func _daily_showing_peers() -> bool:
+	if not _daily_peers_live():
+		return false
+	if not _daily_mine_ready():
+		return true
+	return daily_board_tab == 0
+
+
+## The header, which is taller in portrait when it has to carry a pair of tabs
+## under the heading. Every height below is measured off this rather than off the
+## constant, or the first row lands on the tabs the moment they appear.
+##
+## Landscape gets no extra height and the tabs go *in* the header line instead —
+## see `_daily_tab_rects`. The 720-tall design space has about forty pixels
+## spare under the score table once `DAILY_BOARD_RESERVE` has had its share,
+## which is one row of board; a tab row of its own took that row and left the
+## summary with a heading, two tabs and nothing under them. Portrait has 1440 and
+## can afford the cleaner arrangement, so it keeps it.
+func _daily_head_h() -> float:
+	if not _daily_tabs_up() or not portrait:
+		return DAILY_HEAD_H * _over_fill()
+	return (DAILY_HEAD_H + 34.0) * _over_fill()
+
+
+## How many rows fit, with or without a row given up to the footnote. Split from
+## the two functions below so neither has to ask the other and recurse.
+func _daily_fit_for(with_foot: bool) -> int:
 	var fill := _over_fill()
 	var avail: float = get_viewport_rect().size.y - safe_bottom \
 		- DAILY_BOARD_RESERVE - _over_table_foot() \
-		- (DAILY_HEAD_H + 16.0) * fill
-	if _daily_has_global():
+		- _daily_head_h() - 16.0 * fill
+	if with_foot:
 		avail -= DAILY_ROW_H * fill
 	return maxi(0, int(floor(avail / ((DAILY_ROW_H + 4.0) * fill))))
 
 
-## The rows to draw: the best few runs, plus today's wherever it landed.
+## Whether the footnote gets a row of its own, which it only does once there is
+## a board above it to be a footnote to.
+##
+## Landscape has never had room for both, and this is where that showed up. A
+## 720-tall window leaves about fifty pixels under the score table once
+## `DAILY_BOARD_RESERVE` has taken the buttons' share — one row of board, or one
+## line of footnote, and not the two. The footnote used to take it silently, so
+## a desktop summary with a Game Center rank on it drew the heading, the rank,
+## and no board at all. The rows win now: a comment on a list that is not there
+## is not worth the row it is printed on.
+func _daily_foot_up() -> bool:
+	return _daily_footnote() != "" and _daily_fit_for(true) > 0
+
+
+## How many rows there is actually room for, which is not the same question as
+## how many there are. Zero is a real answer and means the board is left out.
+func _daily_board_fit() -> int:
+	return _daily_fit_for(_daily_foot_up())
+
+
+## The rows to draw, whichever tab is up.
+##
+## Both halves are flattened to the same four keys — `rank`, `label`, `score`,
+## `mine` — so there is one draw loop rather than two that have to be kept
+## looking alike. They already looked alike: the board screen's rows and this
+## one's were the same panel language by design, and the only real difference
+## between a peer board and a history is whether the left-hand column is a name
+## or a date.
+func _daily_rows() -> Array:
+	return _daily_peer_rows() if _daily_showing_peers() else _daily_mine_rows()
+
+
+## Today's board, as far down it as there is room for, with your own row
+## appended when the page does not already carry it.
+##
+## `Boards` has already done the hard half of this — `view_me` is exactly the
+## "you are not on this page" case — so this is a trim rather than a ranking.
+func _daily_peer_rows() -> Array:
+	var room := _daily_board_fit()
+	if room <= 0:
+		return []
+	var page: Array = Boards.view_rows
+	var me: Dictionary = Boards.view_me
+	# Your own row is the one that must survive the squeeze, the same way today's
+	# run does on the history tab: a board that ranks four strangers and leaves
+	# out where *you* came has answered the wrong question.
+	var top_n := mini(page.size(), room - (1 if not me.is_empty() else 0))
+	top_n = maxi(top_n, 0)
+
+	var out: Array = []
+	for i in top_n:
+		var row: Dictionary = page[i]
+		out.append({
+			"rank": int(row["rank"]),
+			"label": String(row["name"]),
+			"score": int(row["score"]),
+			"mine": bool(row.get("me", false)),
+		})
+	if not me.is_empty():
+		out.append({
+			"rank": int(me["rank"]),
+			"label": String(me["name"]),
+			"score": int(me["score"]),
+			"mine": true,
+		})
+	return out
+
+
+## The best few runs on file, plus today's wherever it landed.
 ##
 ## Today is always on the board even when it was a bad run, because "where did I
 ## come today" is the question the screen is being asked. A run that missed the
 ## cut is appended at its real rank rather than promoted into the list, so the
 ## numbers down the left stay honest and the gap says what it means.
-func _daily_board_rows() -> Array:
+func _daily_mine_rows() -> Array:
 	var all := Profile.daily_ranked()
 	if all.is_empty():
 		return []
@@ -9779,13 +10508,24 @@ func _daily_board_rows() -> Array:
 
 	var out: Array = []
 	for i in top_n:
-		var row: Dictionary = (all[i] as Dictionary).duplicate()
-		row["rank"] = i + 1
-		out.append(row)
+		var row: Dictionary = all[i]
+		var day := String(row["day"])
+		out.append({
+			"rank": i + 1,
+			# TODAY rather than the date, on the one row where the date is a thing
+			# the player already knows and the word is what they are looking for.
+			"label": "TODAY" if day == key else _daily_short_day(day),
+			"score": int(row["score"]),
+			"mine": day == key,
+		})
 	if here > top_n:
-		var mine: Dictionary = (all[here - 1] as Dictionary).duplicate()
-		mine["rank"] = here
-		out.append(mine)
+		var mine: Dictionary = all[here - 1]
+		out.append({
+			"rank": here,
+			"label": "TODAY",
+			"score": int(mine["score"]),
+			"mine": true,
+		})
 	return out
 
 
@@ -9796,19 +10536,80 @@ func _daily_has_global() -> bool:
 	return Boards.rank > 0 or Boards.friend_rank > 0
 
 
+## The line under the board, which is a different sentence per tab.
+##
+## On the history tab it is the two Game Center placings, which are the only
+## thing on that tab connecting it to anybody else. On the peers tab those
+## placings are the list — you can see where you came by looking — so the line
+## carries what it would take to move up instead, which is the number that makes
+## a leaderboard a target rather than a verdict. See `_boards_climb`.
+func _daily_footnote() -> String:
+	if _daily_showing_peers():
+		return _boards_climb()
+	if not _daily_has_global():
+		return ""
+	var bits: Array = []
+	if Boards.rank > 0:
+		bits.append("GLOBAL #%s%s" % [_commas(Boards.rank),
+			(" of %s" % _commas(Boards.total)) if Boards.total > 0 else ""])
+	if Boards.friend_rank > 0:
+		bits.append("FRIENDS #%d%s" % [Boards.friend_rank,
+			(" of %d" % Boards.friend_total) if Boards.friend_total > 0 else ""])
+	return "      ".join(bits)
+
+
 ## How much room the whole block wants, and zero when it is not on screen. Every
 ## piece of the summary below the table hangs off `_over_foot`, so this has to
 ## agree with what `_draw_daily_board` actually draws or the buttons land on it.
 func _daily_board_h() -> float:
 	if phase != Phase.OVER or mode != Mode.DAILY:
 		return 0.0
-	var rows := _daily_board_rows()
+	var rows := _daily_rows()
+	var body := float(rows.size()) * (DAILY_ROW_H + 4.0) * _over_fill()
 	if rows.is_empty():
-		return 0.0
-	var h := (DAILY_HEAD_H + float(rows.size()) * (DAILY_ROW_H + 4.0)) * _over_fill()
-	if _daily_has_global():
+		# No rows and nothing to say about why is a board that is not on this
+		# screen at all — a first-ever daily on a desktop build, where there is
+		# neither a history nor a Game Center to have one.
+		if _daily_message() == "":
+			return 0.0
+		body = DAILY_WAIT_H * _over_fill()
+	var h := _daily_head_h() + body
+	if _daily_foot_up():
 		h += DAILY_ROW_H * _over_fill()
 	return h + 16.0 * _over_fill()
+
+
+## The tabs, as rectangles, in the order they are drawn. Empty when there is
+## only one board to show — see `_daily_tabs_up`.
+##
+## Built here rather than in `_menu_buttons` so the drawing and the hit-testing
+## read off one function, and handed *the same* `top` the board is drawn from.
+## The summary's block moves whenever the table above it changes height, and two
+## places computing that independently is how a tab ends up a row above the
+## thing it selects.
+func _daily_tab_rects(size: Vector2, top: float) -> Array:
+	if not _daily_tabs_up():
+		return []
+	var fill := _over_fill()
+	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
+	var x0: float = size.x * 0.5 - tw * 0.5
+	if not portrait:
+		# Inside the header line, centred in the gap between the heading on the
+		# left and the streak on the right. Narrower than the portrait pair
+		# because it is sharing a row rather than owning one, and the two labels
+		# are short enough to survive it.
+		var lw := 112.0
+		var lx: float = size.x * 0.5 - lw - 4.0
+		return [
+			Rect2(lx, top + 2.0, lw, 24.0),
+			Rect2(lx + lw + 8.0, top + 2.0, lw, 24.0),
+		]
+	var bw: float = minf(190.0 * fill, (tw - 8.0) * 0.5)
+	var y := top + (DAILY_HEAD_H - 4.0) * fill
+	return [
+		Rect2(x0, y, bw, 28.0 * fill),
+		Rect2(x0 + bw + 8.0, y, bw, 28.0 * fill),
+	]
 
 
 ## "2026-08-19" as "19 AUG". The year is the same for every row that matters and
@@ -9826,9 +10627,11 @@ func _daily_short_day(key: String) -> String:
 
 
 func _draw_daily_board(size: Vector2, top: float, tint: Color) -> void:
-	var rows := _daily_board_rows()
-	if rows.is_empty():
+	var rows := _daily_rows()
+	var message := _daily_message()
+	if rows.is_empty() and message == "":
 		return
+	var peers := _daily_showing_peers()
 	var key := daily_key()
 	var fill := _over_fill()
 	var tw: float = minf(760.0, size.x - GRID_MARGIN * 2.0)
@@ -9836,8 +10639,12 @@ func _draw_daily_board(size: Vector2, top: float, tint: Color) -> void:
 
 	# The header carries the streak, because the streak is a fact about this
 	# board rather than about today's run — and because it is the one number on
-	# the summary that a player can lose by not coming back tomorrow.
-	_otext_left(_font, Vector2(x0 + 4.0, top + 10.0 * fill), "YOUR DAILY BOARD",
+	# the summary that a player can lose by not coming back tomorrow. It stays on
+	# both tabs for that reason: it is about the habit, not about the ranking.
+	var heading := "TODAY'S BOARD" if peers else "YOUR DAILY BOARD"
+	if peers and Boards.view_total > 0:
+		heading = "TODAY'S BOARD  ·  %s PLAYING" % _commas(Boards.view_total)
+	_otext_left(_font, Vector2(x0 + 4.0, top + 10.0 * fill), heading,
 		_over_size(12), Color("#7c88ad"))
 	var streak: int = Profile.daily_streak(key)
 	if streak > 0:
@@ -9849,46 +10656,72 @@ func _draw_daily_board(size: Vector2, top: float, tint: Color) -> void:
 		_otext_left(_font_bold, Vector2(x0 + tw - m.x - 4.0, top + 10.0 * fill),
 			note, _over_size(12), Color("#ffd166"))
 
-	var y := top + DAILY_HEAD_H * fill
+	# The two tabs, when there are two boards to choose between. Drawn from the
+	# same rectangles `_menu_buttons` hit-tests, so a press and a highlight can
+	# never disagree about where they are.
+	var tabs := _daily_tab_rects(size, top)
+	if tabs.size() == 2:
+		var labels := ["TODAY", "YOUR RUNS"]
+		for i in 2:
+			var on: bool = (i == 0) == peers
+			var act := "dtab:%d" % i
+			var hot: bool = _hover_action == act
+			_panel(tabs[i], Color("#1b2444") if (on or hot) else Color("#101733"),
+				Color(Color("#ffd166"), 0.95 if on else (0.5 if hot else 0.18)),
+				6.0, 2.0 if on else 1.0)
+			_otext(_font_bold, (tabs[i] as Rect2).get_center(), labels[i],
+				_over_size(12), Color("#e6ecff") if on else Color("#8d99bd"))
+
+	var y := top + _daily_head_h()
+	# The wait, or the reason there is nothing to wait for, in the space the rows
+	# will land in. `_daily_board_h` has already reserved it — see `DAILY_WAIT_H`.
+	if rows.is_empty():
+		_text_fit_overlay(_font, Vector2(size.x * 0.5,
+			y + DAILY_WAIT_H * fill * 0.5), message, _over_size(13), tw,
+			Color("#7c88ad"), 10)
+		return
 	for row: Dictionary in rows:
-		var day := String(row["day"])
-		var mine: bool = day == key
+		var mine: bool = bool(row["mine"])
+		var rank := int(row["rank"])
 		var r := Rect2(x0, y, tw, DAILY_ROW_H * fill)
 		_panel(r, Color("#1b2444") if mine else Color("#121930"),
 			Color(tint if mine else Color("#2b3560"), 0.85 if mine else 0.5),
 			6.0, 2.0 if mine else 1.0)
 
 		var cy := r.get_center().y
-		_otext_left(_font_bold, Vector2(x0 + 12.0, cy), "#%d" % int(row["rank"]),
-			_over_size(13), Color("#ffd166") if int(row["rank"]) == 1
-				else Color("#7c88ad"))
-		# TODAY rather than the date, on the one row where the date is a thing
-		# the player already knows and the word is what they are looking for.
-		_otext_left(_font if not mine else _font_bold, Vector2(x0 + 58.0, cy),
-			"TODAY" if mine else _daily_short_day(day), _over_size(13),
-			Color("#e6ecff") if mine else Color("#8d99bd"))
-
+		# `_commas` on the rank as well as the score. The history tab counts in
+		# tens and the global board counts in tens of thousands, and "#14302" in
+		# a column of four-character ranks is the one number on this screen a
+		# player has to stop and parse.
+		_otext_left(_font_bold, Vector2(x0 + 12.0, cy), "#%s" % _commas(rank),
+			_over_size(13), Color("#ffd166") if rank == 1 else Color("#7c88ad"))
+		# Fitted rather than drawn at a fixed size: a date is five characters and
+		# a Game Center display name is whatever somebody typed into it. Cut to
+		# the space between the rank and the score, so a long name pushes on
+		# nothing and overlaps nothing.
+		var name_x := x0 + 58.0 * fill
 		var score := _commas(int(row["score"]))
 		var sm := _font_bold.get_string_size(score, HORIZONTAL_ALIGNMENT_LEFT, -1,
 			_over_size(15))
+		var name_w: float = tw - (name_x - x0) - sm.x - 24.0
+		_otext_left(_font_bold if mine else _font, Vector2(name_x, cy),
+			String(row["label"]),
+			_fitted_size(_font_bold if mine else _font, String(row["label"]),
+				_over_size(13), name_w, 9),
+			Color("#e6ecff") if mine else Color("#8d99bd"))
 		_otext_left(_font_bold, Vector2(x0 + tw - sm.x - 12.0, cy), score,
 			_over_size(15), Color("#ffd166") if mine else Color("#e6ecff"))
 		y += DAILY_ROW_H * fill + 4.0
 
-	if not _daily_has_global():
+	# A footnote to the board above rather than a row of it — it is about a
+	# different population on one tab and about a gap on the other, and neither
+	# is a placing in the list — so it is typed smaller and is not panelled.
+	# `_daily_foot_up` rather than the string, because on a short window the row
+	# it would need has been given to the board. See there.
+	if not _daily_foot_up():
 		return
-	# Two placings on one line. They are a footnote to the board above rather
-	# than rows of it — they rank a different population and can be absent — so
-	# they are typed smaller and are not panelled.
-	var bits: Array = []
-	if Boards.rank > 0:
-		bits.append("GLOBAL #%s%s" % [_commas(Boards.rank),
-			(" of %s" % _commas(Boards.total)) if Boards.total > 0 else ""])
-	if Boards.friend_rank > 0:
-		bits.append("FRIENDS #%d%s" % [Boards.friend_rank,
-			(" of %d" % Boards.friend_total) if Boards.friend_total > 0 else ""])
 	_text_fit_overlay(_font, Vector2(size.x * 0.5, y + DAILY_ROW_H * fill * 0.5),
-		"      ".join(bits), _over_size(12), tw, Color("#64dfdf"), 9)
+		_daily_footnote(), _over_size(12), tw, Color("#64dfdf"), 9)
 
 
 # --------------------------------------------------------- the board screen
@@ -10529,10 +11362,16 @@ func _on_net_salvo(word: String, count: int) -> void:
 	var side: SideState = player
 	if side == null:
 		return
-	for i in mini(count, 40):
+	# Minted here rather than sent over the wire — only the word and the count
+	# cross — so the same spread has to be applied on this end. Without it a
+	# networked salvo is the one that still arrives under six identical stamps,
+	# which is the half of the game nobody testing on one device would see.
+	var n := mini(count, 40)
+	var stamps := _salvo_stamps(word, n, side)
+	for i in n:
 		var p := Pending.new()
 		p.tier = 0
-		p.prefix = _mint_stamp(word, STAMP_WANT, side)
+		p.prefix = String(stamps[i])
 		p.cells = 1
 		p.timer = DROP_DELAY + i * 0.10
 		side.pending.append(p)
@@ -10998,6 +11837,21 @@ func _menu_buttons() -> Array:
 			s2["note"] = ""
 			s2["rating"] = 0
 			out.append(s2)
+
+		# The daily board's two tabs. Appended rather than drawn by
+		# `_draw_menu_button` — they are painted inside `_draw_daily_board`,
+		# which owns the block they sit in — so this is purely so a press and a
+		# hover find them. `_over_foot` minus the block's height is the same top
+		# the drawing uses; see `_daily_tab_rects` for why they must be one
+		# number rather than two.
+		if mode == Mode.DAILY:
+			var tabs := _daily_tab_rects(get_viewport_rect().size,
+				_over_foot() - _daily_board_h())
+			for i in tabs.size():
+				out.append({
+					"rect": tabs[i], "key": "", "label": "", "sub": "", "note": "",
+					"rating": 0, "accent": Color("#ffd166"),
+					"action": "dtab:%d" % i})
 	return out
 
 
@@ -11568,6 +12422,27 @@ func _draw_decor() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _ad_paused():
 		return
+
+	# The invite banner, before anything else, because everything else is a
+	# screen and the banner is over all of them. In particular the PLAY branch
+	# further down returns having done nothing but pick a target, so a banner
+	# drawn over a live board would be visible, correct, and unpressable.
+	#
+	# Only the two buttons are taken. A press that lands anywhere else goes
+	# through to the board underneath, which is the difference between an
+	# interruption and a modal — see `_draw_invite_banner`.
+	if _invite_banner_up() and event is InputEventMouseButton:
+		var ib := event as InputEventMouseButton
+		if ib.button_index == MOUSE_BUTTON_LEFT:
+			var at := get_viewport().get_mouse_position()
+			for b: Dictionary in _invite_banner_buttons():
+				if not (b["rect"] as Rect2).has_point(at):
+					continue
+				# On the release, like every other button here: a menu that fired
+				# on the press could not be scrolled. See `_press_action`.
+				if not ib.pressed:
+					_activate(String(b["action"]))
+				return
 	# Two thumbs. Godot turns touches into mouse presses one at a time — the
 	# second finger down while the first is still held produces no event at all —
 	# and a keystroke that never arrives is indistinguishable, from the typist's
@@ -11756,6 +12631,21 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _action_at(p: Vector2) -> String:
+	# The banner is over everything, on every screen, so it is hit-tested before
+	# everything. Unlike the two cards it does *not* swallow presses that miss
+	# it: it is an interruption rather than a question, and the run underneath
+	# has to stay playable while it is up.
+	for b: Dictionary in _invite_banner_buttons():
+		if (b["rect"] as Rect2).has_point(p):
+			return String(b["action"])
+	# The leave card comes first for the same reason the rematch card does, and
+	# with more at stake: the pause menu is directly underneath it, and the
+	# button it is asking about is the one a stray press would land on.
+	if _confirm_up():
+		for b: Dictionary in _confirm_buttons():
+			if (b["rect"] as Rect2).has_point(p):
+				return String(b["action"])
+		return ""
 	# The rematch card is a question over the top of the summary, so it takes
 	# every press while it is up — including the ones that land outside it, which
 	# would otherwise reach the buttons showing through behind.
@@ -11816,22 +12706,30 @@ func _activate(action: String) -> void:
 		_hover_action = ""
 		Sfx.play("back", 0.9)
 	elif action == "leave_match":
-		paused = false
-		# Walking out of a survival run banks no record and earns no XP, the same
-		# as abandoning a match — but the time was still played, and leaving on
-		# the life you are losing must not be a way to play for free. Charged
-		# before the mode is cleared, while there is still a run to charge for.
-		if mode == Mode.SURVIVAL:
-			_bank_survival_time()
-		Link.leave()
-		# `Link` is the dead netfox transport, so on its own this walked back to
-		# the title with the Game Center match still open: the opponent never
-		# heard you go, and `net_active()` stayed true so the next match refused
-		# to start.
-		MultiplayerManager.leave_match()
-		phase = Phase.TITLE
+		# The press raises a question rather than answering one — except in the
+		# modes where there is nothing to ask about, which go straight through.
+		# See `_leave_costs`.
+		if _leave_costs():
+			confirm_action = "leave_match"
+			_hover_action = ""
+			Sfx.play("count", 0.9)
+		else:
+			_do_leave_match()
+	elif action == "confirm_yes":
+		var what := confirm_action
+		confirm_action = ""
+		if what == "leave_match":
+			_do_leave_match()
+	elif action == "confirm_no":
+		confirm_action = ""
 		_hover_action = ""
-		Sfx.play("back")
+		Sfx.play("back", 0.9)
+	elif action == "invite_join":
+		_take_invite()
+	elif action == "invite_no":
+		MultiplayerManager.decline_invite()
+		_hover_action = ""
+		Sfx.play("back", 0.9)
 	elif action == "versus":
 		paused = false
 		_hover_action = ""
@@ -12028,6 +12926,12 @@ func _activate(action: String) -> void:
 		# moment it is drawn — somebody else is playing right now — and the one
 		# refresh that matters is the one that happens because you opened it.
 		_open_board_view()
+		Sfx.play("count", 1.1)
+	elif action.begins_with("dtab:"):
+		# The daily summary's own tabs. Held on the node rather than reset per
+		# summary, so somebody who prefers their own history is not made to ask
+		# for it again every day — see `daily_board_tab`.
+		daily_board_tab = int(action.substr(5))
 		Sfx.play("count", 1.1)
 	elif action.begins_with("btab:"):
 		var want := int(action.substr(5))

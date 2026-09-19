@@ -38,6 +38,11 @@ const GAME_CONNECTIONS := {
 	"match_ended": "_on_match_ended",
 	"state_changed": "_on_net_status",
 	"data_received": "_on_multiplayer_data",
+	# An invitation the manager is holding rather than taking. The decision of
+	# what to do with it is `game.gd`'s because it is the only half of the game
+	# that knows whether there is a run worth interrupting — see the invite
+	# section in `multiplayer_manager.gd`.
+	"invite_offered": "_on_invite_offered",
 }
 
 ## Signals the manager emits that nothing in `game.gd` connects to, on purpose.

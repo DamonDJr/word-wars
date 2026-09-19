@@ -203,29 +203,45 @@ func stamp_from_tail(word: String, desired_len: int, min_valid: int, min_common:
 
 ## Longer is better, quadratically, but never certain — that spread is what keeps
 ## the same three suffixes off every block.
+##
+## `avoid` is a refusal, not a preference. It used to be a x0.15 weight, and on a
+## small pool that is not nearly the same thing: a three-letter word offers about
+## four fragments, so a salvo asking eleven times in a row for a stamp the
+## defender was not already looking at got the same one six times. Eleven blocks
+## under six identical stamps is one word to clear more than half a salvo, which
+## is the opposite of what a salvo is for.
+##
+## So anything already on the board, already falling, or just used is taken out
+## of the draw entirely while there is any other candidate — and the weighting
+## below runs on what is left. The fallback is the whole pool, because a board
+## busy enough to cover every fragment of a word still has to be sent something.
 func _weighted_stamp(pool: Array, avoid: Dictionary) -> String:
+	var fresh: Array = []
+	for c: Dictionary in pool:
+		if not avoid.has(c["s"]):
+			fresh.append(c)
+	var draw: Array = fresh if not fresh.is_empty() else pool
+
 	var weights: Array = []
 	var total := 0.0
-	for c: Dictionary in pool:
+	for c: Dictionary in draw:
 		var n: int = c["n"]
 		var wgt := float(n * n)
 		if not c["tail"]:
 			wgt *= 0.6
 		if n == 1:
 			wgt *= 0.5  # the merciful one-letter stamp stays a rarity
-		if avoid.has(c["s"]):
-			wgt *= 0.15
 		weights.append(wgt)
 		total += wgt
 	if total <= 0.0:
-		return pool[0]["s"]
+		return draw[0]["s"]
 
 	var roll := rng.randf() * total
-	for i in pool.size():
+	for i in draw.size():
 		roll -= weights[i]
 		if roll <= 0.0:
-			return pool[i]["s"]
-	return pool[pool.size() - 1]["s"]
+			return draw[i]["s"]
+	return draw[draw.size() - 1]["s"]
 
 
 ## Last resort when nothing else was answerable. Single letters cannot be rude,

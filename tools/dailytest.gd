@@ -35,6 +35,7 @@ func _init() -> void:
 	_the_seed_reproduces()
 	_the_day_is_stable()
 	_one_run_a_day()
+	_a_run_walked_out_of_is_still_a_run()
 	_a_broken_streak_knows_it()
 	_the_board_ranks_every_run()
 	_the_board_fits_the_screen()
@@ -115,6 +116,83 @@ func _one_run_a_day() -> void:
 	_expect("a gap starts the streak again", p.daily_streak("2026-05-09") == 1)
 	_expect("the best is still the best", p.daily_best == 6000)
 	_expect("and the longest run is remembered", p.daily_best_streak == 2)
+
+
+## The other half of "one run a day", and the half that was not true.
+##
+## Everything above tests `record_daily`, which is only ever reached when the
+## clock runs out. Every other way out of a daily — the pause menu's Leave, and
+## the app being swiped away mid-run — skipped it entirely, so `daily_done`
+## stayed false and the same board could be played again for a better score.
+## That is the exact thing this file exists to prevent, tested one level too
+## low to catch it.
+##
+## So this drives the two exits through `game.gd` rather than through `Profile`,
+## and asserts the thing a player would do next: that the board is spent.
+func _a_run_walked_out_of_is_still_a_run() -> void:
+	print("--- and leaving early is one of them ---")
+	var p = Engine.get_main_loop().root.get_node("Profile")
+	p.save_path = "user://profile-daily-leave-test.cfg"
+	var key: String = game.daily_key()
+
+	# Leaving from the pause menu. Two presses, because Leave is a question now:
+	# the first raises the card, the second answers it.
+	p.daily = {}
+	p.daily_best = 0
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.player.score = 7400
+	game.match_time = 22.0
+	game._activate("leave_match")
+	_expect("leaving a daily asks first", game._confirm_up())
+	_expect("and banks nothing until it is answered", not p.daily_done(key))
+	game._activate("confirm_yes")
+	_expect("answering yes banks the run", p.daily_done(key))
+	_expect("at the score it stood at",
+		int(p.daily_result(key)["score"]) == 7400)
+	_expect("and the board is spent", game._daily_is_spent())
+	# The summary rather than the title, so the player can see what was posted
+	# on their behalf.
+	_expect("it lands on the summary", game.phase == game.Phase.OVER)
+	_expect("which says the run was left", game.daily_quit)
+	# And it is not dressed up as having lasted the minute.
+	_expect("and does not call it a win", game.winner != "YOU")
+
+	# The app going away mid-run. The bigger loophole of the two: it needed no
+	# button at all, only a swipe.
+	p.daily = {}
+	p.daily_best = 0
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.player.score = 3300
+	game.match_time = 14.0
+	game._notification(game.NOTIFICATION_APPLICATION_PAUSED)
+	_expect("suspending banks the run too", p.daily_done(key))
+	_expect("at the score it stood at",
+		int(p.daily_result(key)["score"]) == 3300)
+	_expect("so a force-quit is not a second go", game._daily_is_spent())
+
+	# A suspend on any other screen is not a run ending. Without this the same
+	# handler would bank a zero every time the player checked a notification on
+	# the title screen, and spend the day's board without a run in it.
+	p.daily = {}
+	game.phase = game.Phase.TITLE
+	game._notification(game.NOTIFICATION_APPLICATION_PAUSED)
+	_expect("but a suspend off the board banks nothing", not p.daily_done(key))
+	# Nor is a lost focus, which is a notification banner rather than a leaving.
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game._notification(game.NOTIFICATION_APPLICATION_FOCUS_OUT)
+	_expect("and losing focus is not leaving", not p.daily_done(key))
+
+	# Practice has nothing to lose, so it must not grow a confirmation. A card
+	# in front of a free action is how people learn to tap through the one in
+	# front of a costly one.
+	game.start_match("Rookie", 1, [], game.Mode.TRAINING)
+	game.phase = game.Phase.PLAY
+	game._activate("leave_match")
+	_expect("practice leaves without being asked", not game._confirm_up())
+	_expect("and goes straight to the title", game.phase == game.Phase.TITLE)
 
 
 ## The streak is counted from the history rather than stored, because a stored
@@ -241,8 +319,16 @@ func _board_fits_at(p, g, stage: SubViewport, shape: String, tall: bool) -> void
 	g.earned = {}
 	g.win_spoils = 0
 
-	var rows: Array = g._daily_board_rows()
+	# The history half specifically, not `_daily_rows` — the summary leads with
+	# today's Game Center board now, and that one is empty on every machine this
+	# suite can run on. What is being tested here is the squeeze, which is the
+	# history's, and which the peers board delegates to the same `_daily_board_fit`.
+	var rows: Array = g._daily_mine_rows()
 	_expect("%s: the board has rows to show" % where, rows.size() > 0)
+	# And that the summary is in fact falling back to it, rather than drawing an
+	# empty peers tab with no Game Center behind it.
+	_expect("%s: with no Apple device it is the board on screen" % where,
+		not g._daily_showing_peers())
 
 	# The one row that must never be dropped. It went missing on a landscape
 	# window: the squeeze was measured against the row cap rather than against
@@ -252,11 +338,18 @@ func _board_fits_at(p, g, stage: SubViewport, shape: String, tall: bool) -> void
 	# it, depending on how it went and how much room there is — but wherever it
 	# is, the rank against it has to be its real standing rather than the row it
 	# happens to occupy.
+	# `mine` rather than the date: the rows carry a drawn label now, shared with
+	# the peers board so one loop can draw either, and today's is the word TODAY
+	# rather than a key to compare. The flag is what the highlight reads, so
+	# testing it is testing the thing on screen.
 	var mine := -1
 	for i in rows.size():
-		if String((rows[i] as Dictionary)["day"]) == today:
+		if bool((rows[i] as Dictionary)["mine"]):
 			mine = i
 	_expect("%s: today is on it, however tight it is" % where, mine >= 0)
+	if mine >= 0:
+		_expect("%s: and it is labelled as today" % where,
+			String((rows[mine] as Dictionary)["label"]) == "TODAY")
 	if mine >= 0:
 		_expect("%s: and at its real rank" % where,
 			int((rows[mine] as Dictionary)["rank"]) == p.daily_rank(today))

@@ -378,12 +378,29 @@ func _a_run_pays_as_it_goes() -> void:
 
 	# Walking out mid-life must not be a way to play for free. Nothing is banked
 	# as a record — that is the price of quitting — but the time is still time.
+	#
+	# Leave is a question now rather than a door, so this presses it twice: once
+	# to raise the card and once to answer it. The first press deliberately does
+	# nothing at all, and that is asserted rather than assumed — a Leave button
+	# that quietly went back to acting immediately would still pass every
+	# assertion below it.
 	P.clear_ad()
 	var runs_before: int = P.survival_runs
 	var best_before: float = P.survival_best_time
 	game.phase = game.Phase.PLAY
 	game.match_time = 180.0
 	game._activate("leave_match")
+	_expect("leaving asks first", game._confirm_up())
+	_expect("and charges nothing until it is answered",
+		is_equal_approx(P.play_since_ad, 0.0))
+	_expect("and the run is still on the board", game.phase == game.Phase.PLAY)
+	# Backing out leaves the run exactly where it was.
+	game._activate("confirm_no")
+	_expect("declining puts the card away", not game._confirm_up())
+	_expect("and the run carries on", game.phase == game.Phase.PLAY)
+
+	game._activate("leave_match")
+	game._activate("confirm_yes")
 	_expect("abandoning a run still pays for the time",
 		is_equal_approx(P.play_since_ad, 180.0))
 	_expect("but banks no run", P.survival_runs == runs_before)

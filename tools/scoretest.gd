@@ -188,18 +188,40 @@ func _winning_pays() -> void:
 ## not stack into an instant 4x3.
 func _length_sets_a_floor() -> void:
 	print("--- length is worth something by itself ---")
-	_expect("a short word earns no length tier", game._length_tier("one") == 0)
-	_expect("seven letters earns one", game._length_tier("shipment") == 1)
-	_expect("ten or more earns two", game._length_tier("onomatopoeia") == 2)
+	# Written against the shape rather than the step positions. The ladder is
+	# tuning and has moved once already; what must not move is that it climbs,
+	# that it climbs more than twice, and that it stops.
+	_expect("the shortest word earns no length tier", game._length_tier("one") == 0)
+	var climbs := 0
+	var last := 0
+	var backwards := false
+	for n in range(3, 20):
+		var t: int = game._length_tier("a".repeat(n))
+		if t > last:
+			climbs += 1
+		elif t < last:
+			backwards = true
+		last = t
+	_expect("it climbs at least three times (%d)" % climbs, climbs >= 3)
+	_expect("and never falls back", not backwards)
 	_expect("and it never runs past the table",
 		game._length_tier("a".repeat(40)) < game.TIERS.size())
 
-	# The floor is a maximum, not a sum: at a chain worth tier 2, a word worth
-	# tier 1 on length must not push it to 3.
+	# The two ladders combine as the better plus half the other, so that length
+	# keeps counting once the chain has overtaken it. It used to be the better
+	# and nothing else, which meant that from chain 3 onwards every word threw
+	# the same block whatever it was — see `game._base_tier`.
 	var chain_t: int = game._chain_tier(3)
-	var both: int = max(chain_t, game._length_tier("shipment"))
-	_expect("a long word inside a run takes the better, not both (%d)" % both,
-		both == max(chain_t, 1) and both <= chain_t + 1)
+	var short_t: int = game._base_tier(3, "cat")
+	var long_t: int = game._base_tier(3, "onomatopoeia")
+	_expect("a short word in a run is worth the run (%d)" % short_t,
+		short_t == chain_t)
+	_expect("a long word in the same run is worth more (%d vs %d)"
+		% [long_t, short_t], long_t > short_t)
+	# And still not both ladders added, or a good word in a good run would jump
+	# straight to the top of the table.
+	_expect("but not the two simply added (%d)" % long_t,
+		long_t < chain_t + game._length_tier("onomatopoeia"))
 
 
 func _focus_needs_a_crowd() -> void:
