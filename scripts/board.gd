@@ -41,6 +41,17 @@ class Blk extends RefCounted:
 	var vis := Vector2.ZERO
 	var vel := 0.0
 	var squash := 0.0
+	## A number that belongs to this block and never changes, for the block
+	## faces that carry a pattern — Magma's seams, Coral's bubbles, Nebula's
+	## stars, Neon's scan phase.
+	##
+	## It exists because the obvious alternative does not work. Seeding those
+	## patterns from where the block is drawn re-rolls them on every frame of a
+	## fall, since that is precisely what falling changes, and the result is a
+	## block whose surface boils on the way down. Grid position is no better:
+	## it is stable while the block sits still and jumps the moment a clear
+	## makes the stack settle.
+	var art := 0
 
 	func rect_cells(at_x: int, at_y: int) -> Array:
 		var cells: Array = []
@@ -79,6 +90,11 @@ var highlight_word := ""
 ## match would promise clears the word cannot deliver.
 var highlight_limit := 0
 var shake := 0.0
+## Hands out `Blk.art`. A counter rather than `randf`, so a board dealt from a
+## daily seed is identical down to the pattern on the blocks — and so nothing
+## here draws from the run's generator, which would shift every subsequent
+## stamp the seed was supposed to fix.
+var _art_next := 0
 
 var _font: Font
 var _font_bold: Font
@@ -159,6 +175,11 @@ func set_frame(c: Color, alpha: float, pulse := 0.0) -> void:
 ## into a lattice. Off for every theme that does not ask.
 func set_grid_nodes(on: bool) -> void:
 	grid_nodes = on
+
+
+func _next_art() -> int:
+	_art_next += 1
+	return _art_next
 
 
 func board_size() -> Vector2:
@@ -246,6 +267,7 @@ func cell_count() -> int:
 ## Drop a block in. Returns false when it cannot fully fit — that is a top-out.
 func add_garbage(prefix: String, tier: int, w: int, h: int) -> bool:
 	var b := Blk.new()
+	b.art = _next_art()
 	b.w = clampi(w, 1, COLS)
 	b.h = maxi(h, 1)
 	b.tier = clampi(tier, 0, TIER_COLORS.size() - 1)
@@ -701,7 +723,10 @@ func _draw_block(b: Blk, hot: bool) -> void:
 		# 42px cell and a shop preview, and the block you bought cannot look
 		# like one thing in the menu and another in the match.
 		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice":
-			ink = Cosmetics.draw_premium_face(self, rect, col, style, hot)
+			# `b.art` rather than the rect: see the note on `Blk.art`. Without
+			# it a falling block re-rolls its own pattern sixty times a second.
+			ink = Cosmetics.draw_premium_face(self, rect, col, style, hot,
+				float(b.art))
 		_:
 			draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
 			# Inner bevel so bigger blocks do not read as flat slabs.

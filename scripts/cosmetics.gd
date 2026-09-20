@@ -838,21 +838,31 @@ static func _face_rim(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
 		width + (1.0 if hot else 0.0))
 
 
-## A per-block constant in 0..1, taken from where the block sits. Two blocks of
-## the same tier should not be wearing identical grain or identical cracks, and
-## seeding off the position means a block does not redraw itself differently
-## every frame either.
-static func _face_seed(rect: Rect2, k: float) -> float:
-	return absf(fmod(sin(rect.position.x * 0.137 + rect.position.y * 0.311
-		+ k * 4.77) * 9137.3, 1.0))
+## A per-block constant in 0..1. `base` identifies the block and `k` salts it,
+## so one block can carry several independent numbers.
+##
+## `base` must be something that does not change while the block is on screen,
+## which is the whole reason it is a parameter rather than being taken from the
+## rect. This used to hash `rect.position`, and a falling block's rect position
+## is the one thing about it that changes every frame — so Magma's seams,
+## Coral's bubbles and Nebula's stars all re-rolled sixty times a second on the
+## way down, which read as the surface boiling. `board.gd` passes `Blk.art`;
+## the menu, where nothing moves, passes its rect and is none the wiser.
+static func _face_seed(base: float, k: float) -> float:
+	return absf(fmod(sin(base * 0.137 + k * 4.77) * 9137.3, 1.0))
 
 
 static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
-		style: String, hot: bool) -> Color:
+		style: String, hot: bool, key: float = -1.0) -> Color:
 	var t := Time.get_ticks_msec() / 1000.0
 	var w := rect.size.x
 	var h := rect.size.y
 	var mid := rect.get_center()
+	# Who this block is, for the patterned faces. A caller that has a stable id
+	# for the block passes it; one that does not falls back to where the block
+	# is, which is correct anywhere the block is not moving.
+	var base: float = key * 7.31 if key >= 0.0 \
+		else rect.position.x + rect.position.y * 2.27
 
 	match style:
 		# Forest. Heartwood with the grain running across it and a cut top edge,
@@ -892,7 +902,7 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 			# tier is a board that costs somebody the word they were about to
 			# type.
 			_face_body(node, rect, Color(col.darkened(0.46), 0.95))
-			var beat: float = 0.55 + 0.45 * sin(t * 1.9 + _face_seed(rect, 1.0) * TAU)
+			var beat: float = 0.55 + 0.45 * sin(t * 1.9 + _face_seed(base, 1.0) * TAU)
 			# Pulled toward lava rather than left as a lightened tier colour.
 			# `col.lightened(0.55)` on a cyan tier is very nearly white, and a
 			# white line across a block reads as a scratch, not as something
@@ -907,8 +917,8 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 			# Facets. Two wedges of crust at different darknesses, anchored to
 			# the corners so they read as plates rather than as blobs floating
 			# on the face.
-			var f0 := _face_seed(rect, 11.0)
-			var f1 := _face_seed(rect, 12.0)
+			var f0 := _face_seed(base, 11.0)
+			var f1 := _face_seed(base, 12.0)
 			node.draw_colored_polygon(PackedVector2Array([
 				rect.position,
 				rect.position + Vector2(w * (0.42 + f0 * 0.22), 0.0),
@@ -927,7 +937,7 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 			# Two seams that wander, one down the block and one across it, so a
 			# pair never reads as two parallel scratches.
 			for s in 2:
-				var sd := _face_seed(rect, 13.0 + float(s) * 3.0)
+				var sd := _face_seed(base, 13.0 + float(s) * 3.0)
 				var pts := PackedVector2Array()
 				var steps := 5
 				for k in steps + 1:
@@ -942,7 +952,7 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 						ay = h * (0.32 + sd * 0.36) + h * 0.22 * sin(u * 3.1 + sd * 6.0)
 					# The wander, hashed per point, so a seam has a shape that
 					# belongs to this block and does not redraw itself each frame.
-					var jig: float = _face_seed(rect, 30.0 + float(s) * 7.0 + float(k)) - 0.5
+					var jig: float = _face_seed(base, 30.0 + float(s) * 7.0 + float(k)) - 0.5
 					if s == 0:
 						ax += jig * w * 0.20
 					else:
@@ -977,7 +987,7 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 					rect.position.y + lobe * 0.55), lobe,
 					Color(col.lightened(0.28), 0.55))
 			for i in 3:
-				var hb := _face_seed(rect, 5.0 + float(i))
+				var hb := _face_seed(base, 5.0 + float(i))
 				var rise: float = fmod(t * (0.35 + hb * 0.30) + hb, 1.0)
 				var bx: float = rect.position.x + w * (0.18 + hb * 0.64)
 				var by: float = rect.end.y - h * 0.12 - rise * h * 0.72
@@ -998,8 +1008,8 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 				node.draw_circle(mid, minf(w, h) * (0.16 + f * 0.26),
 					Color(col.lightened(0.40), 0.13 * (1.0 - f)))
 			for i in 7:
-				var sx := _face_seed(rect, 7.0 + float(i))
-				var sy := _face_seed(rect, 17.0 + float(i))
+				var sx := _face_seed(base, 7.0 + float(i))
+				var sy := _face_seed(base, 17.0 + float(i))
 				var tw: float = 0.45 + 0.55 * sin(t * (1.4 + sx * 2.0) + float(i) * 1.7)
 				node.draw_circle(Vector2(rect.position.x + w * (0.12 + sx * 0.76),
 					rect.position.y + h * (0.12 + sy * 0.76)),
@@ -1017,7 +1027,7 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 			_face_body(node, rect, Color(col.darkened(0.55), 0.90))
 			_face_body(node, rect.grow(-minf(w, h) * 0.14), Color(col, 0.28))
 			var glow := col.lightened(0.35)
-			var sweep: float = fmod(t * 0.55 + _face_seed(rect, 9.0), 1.0)
+			var sweep: float = fmod(t * 0.55 + _face_seed(base, 9.0), 1.0)
 			var bar_h: float = maxf(2.0, h * 0.14)
 			node.draw_rect(Rect2(rect.position.x + 2.0,
 				rect.position.y + sweep * (h - bar_h), w - 4.0, bar_h),
@@ -1040,19 +1050,85 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 
 		# Clouds. The one soft face in the set, and the second of the two that
 		# print dark type — the body is too pale for white to survive on it.
+		#
+		# The first version was the flat body with three white circles sitting
+		# on top of it, and three circles on a rectangle is a diagram of a cloud
+		# rather than a cloud. What was missing was not more lobes, it was
+		# *light*: a cumulus is legible because it is bright where the sun hits
+		# the top and blue-grey underneath where it does not, and nothing in a
+		# ring of same-coloured discs says which way is up.
+		#
+		# So this is built as a lit object. A vertical ramp from shaded base to
+		# bright crown does most of the work, the lobes are cut into the top
+		# edge rather than stuck above it, and the underside carries a cool band
+		# that is the single strongest cue that the thing has volume.
 		"cloud":
-			# The softest face in the set and the one most at risk of losing its
-			# tier, because it sits on the palest board. So the body is nearly
-			# opaque and only the top of it is whitened — the puffs read as
-			# light catching the upper edge rather than as a wash over the whole
-			# block, and the hue survives underneath them.
-			_face_body(node, rect, Color(col, 0.82 if not hot else 0.92))
-			var puff: float = minf(w * 0.20, h * 0.26)
-			for i in 3:
-				node.draw_circle(Vector2(rect.position.x + w * (0.24 + float(i) * 0.26),
-					rect.position.y + puff * 0.70), puff, Color(1, 1, 1, 0.30))
-			node.draw_rect(Rect2(rect.position + Vector2(w * 0.10, h * 0.10),
-				Vector2(w * 0.80, h * 0.20)), Color(1, 1, 1, 0.18), true)
+			_face_body(node, rect, Color(col, 0.86 if not hot else 0.94))
+
+			# The ramp. Fourteen bands rather than six: at six the steps were
+			# plainly visible as stripes across the face, and stripes are the
+			# specific thing that made this read as cheap. Same total lift,
+			# spread thin enough that the eye reads a gradient.
+			for i in 14:
+				var f := float(i) / 13.0
+				node.draw_rect(Rect2(rect.position.x + 1.0,
+					rect.position.y + f * h, w - 2.0, h / 14.0 + 1.0),
+					Color(1, 1, 1, 0.115 * (1.0 - f) * (1.0 - f)))
+			# And the cool underside, which is what stops it reading as a tile
+			# with a gradient on it.
+			var under := Color(0.34, 0.45, 0.63)
+			for i in 6:
+				var f2 := float(i) / 5.0
+				node.draw_rect(Rect2(rect.position.x + 1.0,
+					rect.end.y - h * 0.34 + f2 * h * 0.34,
+					w - 2.0, h * 0.34 / 6.0 + 1.0),
+					Color(under, 0.035 + 0.075 * f2 * f2))
+
+			# Lobes along the top, each a disc sitting *on* the top edge so its
+			# lower half is inside the block and its upper half is the bulge.
+			#
+			# Every one is a different size and sits at a slightly different
+			# height, taken from the block's own seed. Evenly spaced discs of
+			# equal radius are a doily, not a cumulus, and that regularity was
+			# the other half of what looked cheap — a real one is lumpy, and
+			# the lumpiness has to belong to the block so it does not crawl
+			# while the block falls.
+			var lobe: float = clampf(minf(w * 0.19, h * 0.34), 3.5, 15.0)
+			var n := maxi(3, int(w / maxf(lobe * 1.15, 1.0)))
+			for i in n:
+				var u: float = (float(i) + 0.5) / float(n)
+				var hs := _face_seed(base, 40.0 + float(i))
+				var hv := _face_seed(base, 60.0 + float(i))
+				# Bigger in the middle of the block, as a mass piles up.
+				var rise: float = (0.70 + 0.30 * sin(u * 3.14159)) * (0.72 + hs * 0.56)
+				var at := Vector2(
+					rect.position.x + w * u + (hv - 0.5) * lobe * 0.30,
+					rect.position.y + lobe * (0.16 + hv * 0.34))
+				node.draw_circle(at, lobe * rise, Color(1, 1, 1, 0.24))
+				# A brighter cap on the upper half, which is the part a real one
+				# catches the light on.
+				node.draw_circle(at - Vector2(0.0, lobe * rise * 0.30),
+					lobe * rise * 0.58, Color(1, 1, 1, 0.22))
+
+			# A second, smaller row tucked below and between the first, so the
+			# top edge has depth instead of being one scalloped line.
+			for i in maxi(2, n - 1):
+				var u2: float = (float(i) + 1.0) / float(maxi(2, n - 1) + 1)
+				var hs2 := _face_seed(base, 80.0 + float(i))
+				node.draw_circle(
+					Vector2(rect.position.x + w * u2,
+						rect.position.y + lobe * (0.86 + hs2 * 0.30)),
+					lobe * (0.40 + hs2 * 0.26), Color(1, 1, 1, 0.13))
+
+			# And a couple bulging out of the base, so the silhouette is not a
+			# cloud sitting on a brick.
+			for i in 2:
+				var ub: float = 0.28 + float(i) * 0.44
+				var hb := _face_seed(base, 90.0 + float(i))
+				node.draw_circle(
+					Vector2(rect.position.x + w * ub, rect.end.y - lobe * 0.24),
+					lobe * (0.50 + hb * 0.34), Color(under, 0.13))
+
 			_face_rim(node, rect, Color(1, 1, 1, 0.80), hot)
 			return Color("#16324f")
 
