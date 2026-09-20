@@ -25,13 +25,15 @@ func _init() -> void:
 	P.since_ad = 0
 
 	_premium_is_unreachable_by_playing()
-	_buying_grants_all_three()
+	_buying_grants_the_pack()
 	_it_survives_a_save()
 	_ads_stop()
 	_the_gap_moves()
 	_the_test_grant_is_taken_back()
 	_free_themes_are_untouched()
 	_premium_theme_actually_differs()
+	_the_painted_boards_are_painted()
+	_the_faces_match_the_boards()
 	_the_menu_knows_every_block_style()
 
 	print("--- %s ---" % ("shop behaves" if fails == 0 else "%d FAILURES" % fails))
@@ -56,7 +58,7 @@ func _premium_is_unreachable_by_playing() -> void:
 	P.longest_word = "antidisestablishmentarianism"
 	P.powers = {"COUNTER": 99999, "COMBO": 99999, "PERFECT": 99999, "CLUTCH": 99999}
 
-	for pair in [["title", "founder"], ["theme", "prism"], ["victory", "supernova"]]:
+	for pair in _paid():
 		_expect("%s/%s stays locked at level %d" % [pair[0], pair[1], P.level()],
 			not P.is_unlocked(String(pair[0]), String(pair[1])))
 
@@ -66,23 +68,47 @@ func _premium_is_unreachable_by_playing() -> void:
 		P.is_unlocked("title", "centurion"))
 
 
-func _buying_grants_all_three() -> void:
-	print("--- buying grants exactly the three ---")
+## Everything in the catalogue that costs money, read off the catalogue rather
+## than listed here.
+##
+## It used to be three entries written out by hand, which was fine while it was
+## three. The painted boards took it to nineteen, and a hand-written list that
+## long is one somebody will forget to extend — at which point the test for
+## "no amount of playing earns it" quietly stops covering the thing that was
+## just added, and still passes.
+func _paid() -> Array:
+	var out: Array = []
+	for slot: String in P.SLOTS:
+		for e: Dictionary in P.entries(slot):
+			var need: Dictionary = e.get("need", {})
+			if need.has("buy"):
+				out.append([slot, String(e["id"])])
+	return out
+
+
+func _buying_grants_the_pack() -> void:
+	print("--- buying grants exactly what it says ---")
+	var paid := _paid()
+	# Nineteen: the title, the Prism board, the Supernova win, eight painted
+	# boards and the eight block faces drawn for them. Written down so that
+	# adding a paid entry without meaning to has to argue with this number.
+	_expect("the pack is nineteen entries", paid.size() == 19)
+
 	var before: Dictionary = P.unlocked_set()
 	P.grant(P.PACK_PREMIUM)
-	for pair in [["title", "founder"], ["theme", "prism"], ["victory", "supernova"]]:
+	for pair in paid:
 		_expect("%s/%s unlocks" % [pair[0], pair[1]],
 			P.is_unlocked(String(pair[0]), String(pair[1])))
 
-	# Nothing else may move. A pack that quietly unlocked a fourth thing would
-	# be a bug nobody reports.
+	# Nothing else may move. A pack that quietly unlocked something it does not
+	# advertise would be a bug nobody reports.
 	var after: Dictionary = P.unlocked_set()
 	var added := 0
 	for slot in after:
 		for id in after[slot]:
 			if not (before[slot] as Array).has(id):
 				added += 1
-	_expect("and nothing else changed", added == 3)
+	_expect("and nothing else changed", added == paid.size())
 
 	# Buying twice is not an error and does not stack.
 	P.grant(P.PACK_PREMIUM)
@@ -230,6 +256,12 @@ func _free_themes_are_untouched() -> void:
 		ok = ok and is_equal_approx(float(Cosmetics.theme_opt(id, "glow_a")), 0.0)
 		ok = ok and not bool(Cosmetics.theme_opt(id, "nodes"))
 		ok = ok and String(Cosmetics.theme_opt(id, "key_bg")) == "#141b33"
+		# And they stayed free of the painted boards' keys too. A free theme
+		# that picked up a backdrop would be the pack's headline feature given
+		# away, and it would happen by somebody pasting a row.
+		ok = ok and String(Cosmetics.theme_opt(id, "art")) == ""
+		ok = ok and String(Cosmetics.theme_opt(id, "motion")) == ""
+		ok = ok and is_equal_approx(float(Cosmetics.theme_opt(id, "frame_pulse")), 0.0)
 		_expect("%s still uses the stock paint" % id, ok)
 
 
@@ -254,6 +286,79 @@ func _premium_theme_actually_differs() -> void:
 	_expect("its grid has nodes", bool(Cosmetics.theme_opt("prism", "nodes")))
 	_expect("it owns its frame",
 		String(Cosmetics.theme_opt("prism", "frame")) != String(free_paint["frame"]))
+
+
+## The eight boards that carry a picture have to actually carry one.
+##
+## A theme naming a file that is not in the export is the failure this is here
+## for, and it is a nasty one: `_load_or_null` swallows it by design, so the
+## board still equips, still plays, and is silently just its wash — a paid
+## board that looks like a free one, reported as "it did nothing". Checked on
+## disk rather than by reading the table back at itself.
+const PAINTED := ["forest", "volcano", "ocean", "space", "cyber", "clouds",
+	"desert", "aurora"]
+
+
+func _the_painted_boards_are_painted() -> void:
+	print("--- the painted boards have their art ---")
+	var motions := {}
+	for id: String in PAINTED:
+		var art := String(Cosmetics.theme_opt(id, "art"))
+		_expect("%s names a backdrop" % id, art != "")
+		_expect("%s's backdrop is in the project" % id, ResourceLoader.exists(art))
+
+		var motion := String(Cosmetics.theme_opt(id, "motion"))
+		_expect("%s has something moving on it" % id, motion != "")
+		motions[motion] = true
+
+		# The dim is what keeps the clock legible over a sunlit photograph, and
+		# a board that forgot it is a board you cannot read your own score on.
+		_expect("%s dims for the HUD" % id,
+			float(Cosmetics.theme_opt(id, "art_dim")) > 0.0)
+		# Translucent, or the picture is behind an opaque slab and there was no
+		# point buying it.
+		_expect("%s lets the picture through the playfield" % id,
+			float(Cosmetics.theme_opt(id, "panel_a")) < 0.7)
+
+	# Eight boards, eight different effects. Two boards sharing one is the
+	# shortcut that turns a set into a palette swap with extra steps.
+	_expect("no two boards share an effect", motions.size() == PAINTED.size())
+
+	# And every effect a board names is one `draw_motion` actually dispatches.
+	# Its `match` has no fallback on purpose — an unrecognised kind draws
+	# nothing and says nothing, which is the same silent downgrade as a missing
+	# file, and `MOTIONS` is the list the match is kept in step with.
+	for id: String in PAINTED:
+		var kind := String(Cosmetics.theme_opt(id, "motion"))
+		_expect("%s's '%s' is an effect that exists" % [id, kind],
+			Cosmetics.MOTIONS.has(kind))
+	# The other direction, which catches an effect that was written, dropped
+	# from the theme that wanted it, and left behind costing a file to read.
+	for kind: String in Cosmetics.MOTIONS:
+		_expect("'%s' is on a board" % kind, motions.has(kind))
+
+
+## Each painted board was drawn with a block face to match, and the mastery
+## screen says which. Nothing enforces the pairing at runtime — the slot is
+## independent and stays that way — so the only thing that can go wrong is the
+## table lying: a style pointing at a board that does not exist, or a board
+## whose face was never added. Both print a wrong sentence under the preview
+## and neither would crash.
+func _the_faces_match_the_boards() -> void:
+	print("--- every painted board has a face drawn for it ---")
+	var claimed := {}
+	for style in Cosmetics.BLOCK_PAIRING:
+		var sid := String(style)
+		var board := String(Cosmetics.BLOCK_PAIRING[style])
+		_expect("%s is a style the game can draw" % sid,
+			Cosmetics.BLOCK_STYLES.has(sid))
+		_expect("%s is sold" % sid,
+			P.entry("blocks", sid).get("need", {}).has("buy"))
+		_expect("%s points at the %s board" % [sid, board], PAINTED.has(board))
+		claimed[board] = true
+	_expect("all eight boards are spoken for", claimed.size() == PAINTED.size())
+	_expect("and there are exactly eight faces",
+		Cosmetics.BLOCK_PAIRING.size() == PAINTED.size())
 
 
 ## The menu is built out of blocks now, so a block style has to reach it. The

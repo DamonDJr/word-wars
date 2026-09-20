@@ -245,6 +245,21 @@ var _fire_bg := Color("#1b2f4a")
 var _fire_edge := Color("#7bdff2")
 var _glow := Color.BLACK
 var _glow_a := 0.0
+## The painted boards. `_art` is null for every theme that is a wash, which is
+## the flag the whole backdrop path checks — there is no separate "is this a
+## premium board" question anywhere, because a theme either brought a picture
+## or it did not.
+var _art: Texture2D = null
+var _art_a := 1.0
+var _art_dim := 0.0
+var _motion := ""
+## What the motion layer is tinted with — the theme's own accent, so the embers
+## belong to Volcano rather than to whichever board slot the player happens to
+## be sitting in.
+var _motion_tint := Color("#7bdff2")
+## theme id -> its backdrop texture, or null for the ones that are a wash. Only
+## the shop preview uses it; see `_theme_art`.
+var _art_cache := {}
 
 ## The whole scene shifts when something heavy lands, so the background is drawn
 ## this far past the viewport on every side to keep the edges covered.
@@ -1152,7 +1167,8 @@ func _apply_theme() -> void:
 		# before, which meant the one part of the playfield with a hard edge on
 		# it looked the same whatever was equipped.
 		s.board.set_frame(Cosmetics.theme_tint(id, "frame", s.accent),
-			float(Cosmetics.theme_opt(id, "frame_a")))
+			float(Cosmetics.theme_opt(id, "frame_a")),
+			float(Cosmetics.theme_opt(id, "frame_pulse")))
 
 	# The keyboard is the largest single surface on a phone and was hardcoded, so
 	# a change of theme left forty percent of the screen untouched.
@@ -1163,6 +1179,17 @@ func _apply_theme() -> void:
 	_fire_edge = Cosmetics.theme_tint(id, "fire_edge", PLAYER_ACCENT)
 	_glow = Cosmetics.theme_tint(id, "glow", Color.BLACK)
 	_glow_a = float(Cosmetics.theme_opt(id, "glow_a"))
+
+	# The backdrop picture, if this theme has one. Through `_load_or_null` like
+	# every other piece of art in here: a build that somehow shipped without the
+	# file falls back to the theme's own wash, which is a duller board rather
+	# than a crash on the one screen the player cannot leave.
+	var art_path := String(Cosmetics.theme_opt(id, "art"))
+	_art = _load_or_null(art_path) as Texture2D if art_path != "" else null
+	_art_a = float(Cosmetics.theme_opt(id, "art_a"))
+	_art_dim = float(Cosmetics.theme_opt(id, "art_dim"))
+	_motion = String(Cosmetics.theme_opt(id, "motion")) if _art != null else ""
+	_motion_tint = Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)
 	queue_redraw()
 
 
@@ -1197,6 +1224,24 @@ func _load_or_null(path: String) -> Resource:
 	if not ResourceLoader.exists(path):
 		return null
 	return load(path)
+
+
+## A theme's backdrop picture, for the shop preview.
+##
+## Cached by id rather than fetched each frame. `load` is itself cached by the
+## engine, but `ResourceLoader.exists` underneath `_load_or_null` is a
+## filesystem question, and the mastery screen would be asking it sixty times a
+## second while somebody scrolls the list. A miss is stored as `null` so an
+## absent file is asked about once and not once per frame forever after.
+func _theme_art(id: String) -> Texture2D:
+	if _art_cache.has(id):
+		return _art_cache[id]
+	var path := String(Cosmetics.theme_opt(id, "art"))
+	var tex: Texture2D = null
+	if path != "":
+		tex = _load_or_null(path) as Texture2D
+	_art_cache[id] = tex
+	return tex
 
 
 ## Yours is drawn at full size on the left; rivals are the same board scaled down
@@ -5060,6 +5105,91 @@ func _log(text: String, color: Color) -> void:
 
 # --------------------------------------------------------------------- drawing
 
+## The painted boards' backdrop: the picture, the wash that keeps type readable
+## on top of it, and whatever that theme has moving.
+##
+## Does nothing at all for the five wash themes, which is why this sits behind a
+## single null check rather than behind a "premium?" question — the wash themes
+## are not a lesser case of this, they simply never brought a picture.
+##
+## ## Why the crop is done by region rather than by stretching
+##
+## The art is drawn for a phone held upright. Stretching it to fill a landscape
+## iPad would make a waterfall three times as wide as it is tall, so a centre
+## crop matching the screen's own aspect is taken out of the texture instead and
+## drawn at full size. A tablet in landscape sees a band through the middle of
+## the picture; a phone sees very nearly all of it. Neither sees it distorted.
+##
+## ## Why the dim is heaviest at the ends
+##
+## The clock, the pressure warning and the INCOMING/SENT labels sit in the top
+## strip with nothing behind them, and a white number on a sunlit waterfall is
+## a white number nobody can read. The middle — where the board is, and where
+## the board brings its own translucent panel — keeps its brightness, because
+## that is the part somebody paid to look at.
+func _draw_board_art(size: Vector2, m: float) -> void:
+	if _art == null:
+		return
+	var full := Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0)
+	var art := Vector2(_art.get_width(), _art.get_height())
+	var want: float = full.size.x / full.size.y
+	var have: float = art.x / art.y
+	var src := Rect2(Vector2.ZERO, art)
+	if have > want:
+		src.size.x = art.y * want
+		src.position.x = (art.x - src.size.x) * 0.5
+	else:
+		src.size.y = art.x / want
+		src.position.y = (art.y - src.size.y) * 0.5
+	draw_texture_rect_region(_art, full, src, Color(1, 1, 1, _art_a))
+
+	if _art_dim > 0.0:
+		draw_rect(full, Color(bg_top, _art_dim * 0.45), true)
+		# The two ramps are not scaled by `art_dim`, and that is deliberate.
+		#
+		# `art_dim` is an art decision — how much of this particular picture the
+		# board wants to give up. Legibility is not: the clock, the pressure
+		# warning and the INCOMING/SENT labels sit on bare picture in the top
+		# strip, and the word readout sits on it just above the keys. Those have
+		# to be readable on all eight boards, including the two whose art is a
+		# sunlit waterfall and a white sky, and a theme tuned a little light
+		# should come out slightly brighter rather than illegible.
+		#
+		# So the ends get a fixed floor with the theme's own dim added on top.
+		# Ocean and Clouds are what set the floor: at `art_dim * 0.85` the
+		# header on both of them was white type on white water.
+		var top_peak: float = minf(0.62 + _art_dim * 0.25, 0.92)
+		var bot_peak: float = minf(0.46 + _art_dim * 0.25, 0.85)
+		# Sixteen steps each end. Eight was enough over the old wash themes and
+		# is not enough over a photograph: a 36px step is invisible against a
+		# gradient of the same colour and plainly visible against Clouds' smooth
+		# sky, where it reads as banding in the art rather than as the dim it
+		# is. Sixteen draw calls is still cheaper than a shader.
+		const STEPS := 16
+		var top_band: float = size.y * 0.16
+		var bot_band: float = size.y * 0.22
+		# Eased rather than linear. A straight ramp is already half spent by the
+		# time it reaches the INCOMING/SENT labels a sixth of the way down, and
+		# those are the two that were hardest to read on Clouds. The curve holds
+		# the wash near full for the strip the type actually occupies and then
+		# drops away quickly, so the picture loses less than a linear ramp of
+		# the same strength would take.
+		for i in STEPS:
+			var f := float(i) / float(STEPS)
+			var ease: float = pow(1.0 - f, 0.55)
+			draw_rect(Rect2(full.position.x, -m + f * (top_band + m),
+				full.size.x, (top_band + m) / float(STEPS) + 1.0),
+				Color(bg_top, top_peak * ease))
+			draw_rect(Rect2(full.position.x,
+				size.y - bot_band + (1.0 - f) * (bot_band + m),
+				full.size.x, (bot_band + m) / float(STEPS) + 1.0),
+				Color(bg_top, bot_peak * ease))
+
+	if _motion != "":
+		Cosmetics.draw_motion(self, _motion, size,
+			Time.get_ticks_msec() / 1000.0, _motion_tint)
+
+
 func _draw() -> void:
 	var size := get_viewport_rect().size
 	var m := SHAKE_MARGIN
@@ -5070,7 +5200,8 @@ func _draw() -> void:
 		draw_rect(Rect2(-m, size.y * t, size.x + m * 2.0, size.y / 24.0 + 1.0),
 			bg_top.lerp(bg_bottom, t), true)
 	draw_rect(Rect2(-m, size.y, size.x + m * 2.0, m), bg_bottom, true)
-	
+	_draw_board_art(size, m)
+
 	_draw_keyboard_hitboxes()
 
 	# A bloom behind the playfield, for themes that carry one. Drawn as a few
@@ -8412,6 +8543,33 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					box.position.y + 2.0 + f * (box.size.y - 4.0),
 					box.size.x - 4.0, box.size.y / 12.0 + 1.0),
 					top.lerp(bot, f), true)
+			# And its picture, and its weather. A painted board previewed as a
+			# gradient would be the shop lying about the only thing that makes
+			# it worth the money.
+			var inner := box.grow(-2.0)
+			var pic := _theme_art(id)
+			if pic != null:
+				var asz := Vector2(pic.get_width(), pic.get_height())
+				var want: float = inner.size.x / inner.size.y
+				var src := Rect2(Vector2.ZERO, asz)
+				if asz.x / asz.y > want:
+					src.size.x = asz.y * want
+					src.position.x = (asz.x - src.size.x) * 0.5
+				else:
+					src.size.y = asz.x / want
+					src.position.y = (asz.y - src.size.y) * 0.5
+				_overlay.draw_texture_rect_region(pic, inner, src,
+					Color(1, 1, 1, float(Cosmetics.theme_opt(id, "art_a"))))
+				_overlay.draw_rect(inner,
+					Color(top, float(Cosmetics.theme_opt(id, "art_dim")) * 0.5), true)
+				var mk := String(Cosmetics.theme_opt(id, "motion"))
+				if mk != "":
+					# Drawn in the box's own space, so an effect written against
+					# a whole screen lands inside a preview panel unchanged.
+					_overlay.draw_set_transform(inner.position, 0.0, Vector2.ONE)
+					Cosmetics.draw_motion(_overlay, mk, inner.size, t,
+						Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT), true)
+					_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 			var ga: float = float(Cosmetics.theme_opt(id, "glow_a"))
 			if ga > 0.0:
 				var gcol := Cosmetics.theme_tint(id, "glow", Color.BLACK)
@@ -8454,15 +8612,28 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 			_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame",
 				PLAYER_ACCENT), false, 1.5)
 		"blocks":
-			# Three tiers, so a style is judged on more than one swatch.
+			# Three tiers, so a style is judged on more than one swatch — and so
+			# it is obvious that the tier colour survives whatever the style
+			# does to it, which is the rule the whole slot lives under.
+			var paired := String(Cosmetics.BLOCK_PAIRING.get(id, ""))
 			var w: float = box.size.x / 4.2
+			var row_y: float = mid.y - w * 0.4 + (8.0 if paired != "" else 0.0)
 			for i in 3:
 				var rr := Rect2(mid.x - w * 1.65 + float(i) * (w + 8.0),
-					mid.y - w * 0.4, w, w * 0.8)
+					row_y, w, w * 0.8)
 				var ink := Cosmetics.draw_block_face(_overlay, rr,
 					WWBoard.TIER_COLORS[i * 2], id, false)
 				_text_fit_overlay(_font_bold, rr.get_center(),
 					["AL", "SHIP", "ENT"][i], 15, rr.size.x - 8.0, ink)
+			# Said rather than done. The eight premium styles were each drawn
+			# against a board, and knowing which one turns eight names into a
+			# set — but it stays a note, because the slot is independent and
+			# nothing here is going to reach over and change what you equipped.
+			if paired != "":
+				_otext(_font, Vector2(mid.x, box.end.y - 16.0),
+					"drawn for the %s board" % String(
+						Profile.entry("theme", paired).get("name", paired)).to_upper(),
+					11, Color("#5d6a92"))
 		"victory":
 			match id:
 				"confetti":

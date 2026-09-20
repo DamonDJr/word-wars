@@ -68,6 +68,9 @@ var accent := Color("#7bdff2")
 var grid_color := Color(1.0, 1.0, 1.0, 0.035)
 var grid_nodes := false
 var _frame_owned := false
+var _frame_col := Color("#7bdff2")
+var _frame_a := 0.28
+var _frame_pulse := 0.0
 var style := "solid"
 var blocks: Array = []
 var bits: Array = []
@@ -137,8 +140,17 @@ func set_accent(c: Color) -> void:
 
 ## A frame colour the theme owns rather than the player accent. Once set, the
 ## accent stops driving the border — otherwise re-aiming would repaint it.
-func set_frame(c: Color, alpha: float) -> void:
+##
+## `pulse` is how far the frame's alpha travels either side of `alpha`, as a
+## fraction of it. Zero holds it still, which is what every wash theme wants and
+## what this did before the painted boards arrived. The painted ones breathe:
+## their frames are the bright neon edge in the concept art, and a neon edge
+## that sits at a constant brightness reads as a border rather than as a light.
+func set_frame(c: Color, alpha: float, pulse := 0.0) -> void:
 	_frame_owned = true
+	_frame_col = c
+	_frame_a = alpha
+	_frame_pulse = pulse
 	if _panel_sb:
 		_panel_sb.border_color = Color(c, alpha)
 
@@ -573,6 +585,17 @@ func _process(delta: float) -> void:
 
 	_step_bits(delta)
 	shake = maxf(0.0, shake - delta * 3.0)
+
+	# Off the wall clock rather than off accumulated `delta`, so the frame keeps
+	# its own rhythm through a hitstop — the whole point of that freeze is that
+	# the game holds still, and a frame that slowed down with it would be the
+	# one thing on screen advertising the trick.
+	if _frame_pulse > 0.0 and _panel_sb:
+		var beat: float = 0.5 + 0.5 * sin(Time.get_ticks_msec() / 620.0)
+		_panel_sb.border_color = Color(_frame_col,
+			clampf(_frame_a * (1.0 - _frame_pulse + _frame_pulse * 2.0 * beat),
+				0.0, 1.0))
+
 	queue_redraw()
 
 
@@ -672,6 +695,13 @@ func _draw_block(b: Blk, hot: bool) -> void:
 				draw_line(pad, out, Color(0, 0, 0, 0.30), 2.0)
 				draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
 			draw_circle(pad, 6.0, Color(0, 0, 0, 0.22))
+		# The eight that came with the painted boards. Unlike the four above,
+		# these are not written out a second time here: every number in them is
+		# a fraction of the rect they are handed, so the same painter serves a
+		# 42px cell and a shop preview, and the block you bought cannot look
+		# like one thing in the menu and another in the match.
+		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice":
+			ink = Cosmetics.draw_premium_face(self, rect, col, style, hot)
 		_:
 			draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
 			# Inner bevel so bigger blocks do not read as flat slabs.

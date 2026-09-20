@@ -57,6 +57,112 @@ const THEMES := {
 		# playfield read as a lattice instead of ruled paper.
 		"nodes": true,
 	},
+
+	# ----------------------------------------------------------- the eight
+	#
+	# Painted boards. Everything above this line is a palette; these carry a
+	# picture and something moving on top of it, and that is the whole of the
+	# difference — a wash can be argued about, but nobody mistakes a waterfall
+	# for a filter.
+	#
+	# `top` and `bottom` stay dark on every one of them, including Clouds. They
+	# are not only the backdrop: two dozen callsites in `game.gd` wash a menu in
+	# `Color(bg_top, 0.93)` and then print white type on it, so a light `top`
+	# would not brighten the game, it would erase every menu in it. The picture
+	# carries the brightness instead, and the menus keep their dark ground.
+	"forest": {
+		"top": "#08150c", "bottom": "#132a18", "panel": "#0b2412", "panel_a": 0.42,
+		"grid": "#bdf5c0", "grid_a": 0.10, "nodes": true,
+		"frame": "#7dd94f", "frame_a": 0.95, "frame_pulse": 0.10,
+		"accent": "#a7f04f",
+		"key_bg": "#12301a", "key_edge": "#7dd94f", "key_ink": "#e8ffe0",
+		"fire_bg": "#1d4a22", "fire_edge": "#a7f04f",
+		"glow": "#3fa02a", "glow_a": 0.18,
+		"art": "res://boards/forest.png", "art_a": 0.85, "art_dim": 0.30,
+		"motion": "leaves",
+	},
+	"volcano": {
+		"top": "#190704", "bottom": "#331008", "panel": "#260a05", "panel_a": 0.46,
+		"grid": "#ffb08a", "grid_a": 0.10, "nodes": true,
+		"frame": "#ff5722", "frame_a": 0.95, "frame_pulse": 0.28,
+		"accent": "#ff8c42",
+		"key_bg": "#2a0d07", "key_edge": "#ff6b2c", "key_ink": "#ffd9c2",
+		"fire_bg": "#5a1a0a", "fire_edge": "#ff8c42",
+		"glow": "#ff4500", "glow_a": 0.26,
+		"art": "res://boards/volcano.png", "art_a": 0.90, "art_dim": 0.34,
+		"motion": "embers",
+	},
+	"ocean": {
+		"top": "#041526", "bottom": "#0a2f4d", "panel": "#062033", "panel_a": 0.40,
+		"grid": "#b8f0ff", "grid_a": 0.11, "nodes": true,
+		"frame": "#29c5f6", "frame_a": 0.95, "frame_pulse": 0.14,
+		"accent": "#4dd0e1",
+		"key_bg": "#0a2438", "key_edge": "#29c5f6", "key_ink": "#dff7ff",
+		"fire_bg": "#0e3d5c", "fire_edge": "#4dd0e1",
+		"glow": "#1e88c7", "glow_a": 0.22,
+		"art": "res://boards/ocean.png", "art_a": 0.88, "art_dim": 0.30,
+		"motion": "caustics",
+	},
+	"space": {
+		"top": "#08041c", "bottom": "#1b0a3a", "panel": "#140a2e", "panel_a": 0.44,
+		"grid": "#d9b8ff", "grid_a": 0.12, "nodes": true,
+		"frame": "#b44cff", "frame_a": 0.95, "frame_pulse": 0.18,
+		"accent": "#c77dff",
+		"key_bg": "#1c1038", "key_edge": "#b44cff", "key_ink": "#f0e4ff",
+		"fire_bg": "#3a1a63", "fire_edge": "#c77dff",
+		"glow": "#7b2fd4", "glow_a": 0.28,
+		"art": "res://boards/space.png", "art_a": 0.90, "art_dim": 0.26,
+		"motion": "starfield",
+	},
+	"cyber": {
+		"top": "#060619", "bottom": "#140a33", "panel": "#0c0a24", "panel_a": 0.42,
+		"grid": "#7df5ff", "grid_a": 0.13, "nodes": true,
+		"frame": "#ff2fd0", "frame_a": 0.95, "frame_pulse": 0.24,
+		"accent": "#22e8ff",
+		"key_bg": "#12103a", "key_edge": "#ff2fd0", "key_ink": "#d8fbff",
+		"fire_bg": "#12385c", "fire_edge": "#22e8ff",
+		"glow": "#c81ce0", "glow_a": 0.26,
+		"art": "res://boards/cyber.png", "art_a": 0.90, "art_dim": 0.32,
+		"motion": "scanlines",
+	},
+	# The one bright board, and the only theme in the game that prints dark type
+	# on a light key. Everything that decides ink asks the theme for it, so this
+	# works — but it is the reason `key_ink` exists as a value rather than as an
+	# assumption, and a ninth board that forgets to set it gets the dark default
+	# and is unreadable rather than merely wrong.
+	"clouds": {
+		"top": "#0a1424", "bottom": "#14243d", "panel": "#dbe9fa", "panel_a": 0.26,
+		"grid": "#ffffff", "grid_a": 0.22, "nodes": false,
+		"frame": "#ffffff", "frame_a": 0.85, "frame_pulse": 0.08,
+		"accent": "#4fc3f7",
+		"key_bg": "#e8f1fb", "key_edge": "#4fc3f7", "key_ink": "#12305a",
+		"fire_bg": "#bfe0f7", "fire_edge": "#1f7fc4",
+		"glow": "#ffffff", "glow_a": 0.20,
+		"art": "res://boards/clouds.png", "art_a": 0.92, "art_dim": 0.12,
+		"motion": "drift",
+	},
+	"desert": {
+		"top": "#1a0c05", "bottom": "#35190a", "panel": "#2b1408", "panel_a": 0.42,
+		"grid": "#ffd9a0", "grid_a": 0.11, "nodes": true,
+		"frame": "#ff9e2c", "frame_a": 0.95, "frame_pulse": 0.12,
+		"accent": "#ffb74d",
+		"key_bg": "#2e1608", "key_edge": "#ff9e2c", "key_ink": "#ffeccd",
+		"fire_bg": "#5c3010", "fire_edge": "#ffb74d",
+		"glow": "#ff8f1f", "glow_a": 0.22,
+		"art": "res://boards/desert.png", "art_a": 0.88, "art_dim": 0.30,
+		"motion": "haze",
+	},
+	"aurora": {
+		"top": "#04121f", "bottom": "#0a2a3f", "panel": "#06202e", "panel_a": 0.40,
+		"grid": "#b6ffe8", "grid_a": 0.11, "nodes": true,
+		"frame": "#2ee6c0", "frame_a": 0.95, "frame_pulse": 0.20,
+		"accent": "#5eead4",
+		"key_bg": "#07222f", "key_edge": "#2ee6c0", "key_ink": "#dcfff5",
+		"fire_bg": "#0c3c4c", "fire_edge": "#5eead4",
+		"glow": "#1fd9a8", "glow_a": 0.22,
+		"art": "res://boards/aurora.png", "art_a": 0.90, "art_dim": 0.24,
+		"motion": "ribbons",
+	},
 }
 
 ## What a theme may set beyond the five originals, and what it falls back to.
@@ -80,6 +186,20 @@ const THEME_EXTRAS := {
 	"fire_bg": "#1b2f4a", "fire_edge": "",
 	"glow": "", "glow_a": 0.0,
 	"nodes": false,
+	# A picture behind the game, and how much of it survives to the screen.
+	# `art_a` is the alpha it is drawn at over the theme's own wash, so it
+	# doubles as the dim — 0.9 over a near-black `top` is a slightly darkened
+	# photograph, which is what keeps white HUD type legible on top of one.
+	# `art_dim` is the extra wash poured back over the top and bottom strips
+	# where the clock and the keyboard sit; the middle, where the board is,
+	# keeps its brightness.
+	"art": "", "art_a": 1.0, "art_dim": 0.0,
+	# Which of `draw_motion`'s effects runs over the picture. Empty is still.
+	"motion": "",
+	# How hard the board's frame breathes, as a fraction of its own alpha.
+	# Zero holds it at a constant brightness, which is what every painted-wash
+	# theme did and should keep doing.
+	"frame_pulse": 0.0,
 }
 
 
@@ -194,6 +314,332 @@ static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color
 	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
+# ------------------------------------------------------------ boards in motion
+#
+# What the painted boards do that the painted washes cannot.
+#
+# A still photograph behind a game looks like a wallpaper somebody set once.
+# These are the layer that makes it a place: embers going up off the lava,
+# light moving on the sea floor, a scan bar crawling down the city. Each is
+# small on purpose — the board is the thing being read, and a backdrop that
+# competes with it for attention is a backdrop that costs somebody a word.
+#
+# All of them are pure functions of `t`, on the same deterministic hash the
+# victory effects use. Nothing to seed, nothing to reset between matches, and a
+# board that has been on screen for an hour costs exactly what it did in the
+# first second. That matters more here than it did for the victory effects:
+# these run for the whole match rather than for the five seconds after it.
+#
+# Budget is a few dozen primitives each. `game.gd` redraws every frame, so this
+# is paid sixty times a second on a phone, and the ceiling is what keeps a
+# premium board from being the reason the thing stutters.
+
+
+## Every effect `draw_motion` dispatches, in the order they were written.
+##
+## The match below has no fallback — a theme naming an effect that does not
+## exist gets a still backdrop and no complaint, which is indistinguishable
+## from a theme that meant to be still. This list is what `shoptest` holds the
+## match against in both directions, so a typo in a theme's `motion` and an
+## effect nothing uses are both findable without anyone having to look at the
+## screen.
+const MOTIONS := ["leaves", "embers", "caustics", "starfield", "scanlines",
+	"drift", "haze", "ribbons"]
+
+
+## A stable pseudo-random in 0..1 for index `i`, salted by `k` so one index can
+## carry several independent numbers.
+static func _hash01(i: int, k: float) -> float:
+	return absf(fmod(sin(float(i) * 12.9898 + k * 78.233) * 43758.5453, 1.0))
+
+
+## Run a theme's backdrop effect. `kind` is the theme's `motion` value; an
+## unrecognised one draws nothing rather than falling back to something, because
+## a board quietly wearing another board's weather is harder to notice than a
+## board wearing none.
+##
+## Several of these are written to run off the edge of what they are given: a
+## leaf enters from above the screen, the heat bloom under Volcano is a disc
+## wider than the phone, the nebulae behind Space are cut off by the frame. That
+## is right on a screen, where the edge does the cropping, and wrong in a shop
+## preview, where there is no edge and the overflow lands on the panel next
+## door. `bound` is the second case. Immediate-mode drawing has no scissor, so
+## rather than clipping after the fact the effects are asked to stay inside:
+## the ambient washes that only exist to be cropped are dropped, and the
+## particles that wander in from off-screen wrap at the border instead.
+##
+## What survives `bound` is the part that matters — the things that move. A
+## preview showing the leaves and not the light shafts is a smaller version of
+## the board; a preview showing nothing is a lie about what was bought.
+static func draw_motion(node: CanvasItem, kind: String, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	match kind:
+		"leaves": _motion_leaves(node, size, t, tint, bound)
+		"embers": _motion_embers(node, size, t, tint, bound)
+		"caustics": _motion_caustics(node, size, t, tint)
+		"starfield": _motion_starfield(node, size, t, tint, bound)
+		"scanlines": _motion_scanlines(node, size, t, tint, bound)
+		"drift": _motion_drift(node, size, t, tint, bound)
+		"haze": _motion_haze(node, size, t, tint)
+		"ribbons": _motion_ribbons(node, size, t, tint)
+
+
+## Forest. Shafts of light coming through the canopy from the upper left, and
+## leaves turning over as they come down through them.
+static func _motion_leaves(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	for i in 3:
+		var x: float = size.x * (0.12 + float(i) * 0.26)
+		var sway: float = sin(t * 0.28 + float(i) * 1.3) * size.x * 0.035
+		var wide: float = size.x * (0.07 + 0.02 * float(i))
+		var a: float = 0.05 + 0.025 * sin(t * 0.45 + float(i))
+		var sky: float = 0.0 if bound else -20.0
+		node.draw_colored_polygon(PackedVector2Array([
+			Vector2(x + sway - wide * 0.4, sky),
+			Vector2(x + sway + wide * 0.4, sky),
+			Vector2(x + sway + wide * 1.7, size.y),
+			Vector2(x + sway + wide * 0.2, size.y),
+		]), Color(1.0, 1.0, 0.86, a))
+
+	# Off a screen a leaf falls in from above and out past the bottom; inside a
+	# panel it has to do its whole life within the frame or it pops.
+	var over: float = 0.0 if bound else 60.0
+	for i in 26:
+		var hx := _hash01(i, 1.0)
+		var hs := _hash01(i, 2.0)
+		var fall: float = 26.0 + hs * 42.0
+		var y: float = fmod(t * fall + hx * (size.y + 200.0),
+			size.y + over * 2.0) - over
+		# Drifting sideways as it falls, and a little faster than it tumbles, so
+		# no two leaves are ever in step.
+		var x: float = hx * size.x + sin(t * 0.7 + float(i) * 1.7) * size.x * 0.07
+		var w: float = 5.0 + hs * 7.0
+		# Squashed on its own cycle, which is the whole of what makes a rectangle
+		# read as a leaf turning over rather than as a falling chip.
+		var flip: float = absf(cos(t * 1.6 + float(i) * 0.9))
+		var green := Color(0.42 + hs * 0.35, 0.72, 0.26).lerp(tint, 0.3)
+		node.draw_set_transform(Vector2(x, y), sin(t + float(i)) * 0.6, Vector2.ONE)
+		node.draw_rect(Rect2(-w * 0.5, -w * 0.2, w, w * 0.18 + w * 0.42 * flip),
+			Color(green, 0.30 + 0.25 * flip), true)
+	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## Volcano. Embers going up, and a heat bloom along the bottom that breathes at
+## a different rate so the two never quite line up.
+static func _motion_embers(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	var breathe: float = 0.5 + 0.5 * sin(t * 0.8)
+	# A disc wider than the screen, centred just below it. Only its top edge is
+	# ever seen, which is what makes it read as heat off the ground rather than
+	# as a circle — so in a panel, where the whole disc would show, it is left
+	# out and the embers carry the effect on their own.
+	if not bound:
+		for i in 4:
+			var f := float(i) / 3.0
+			node.draw_circle(Vector2(size.x * 0.5, size.y * 1.02),
+				size.x * (0.35 + f * 0.75),
+				Color(tint, (0.055 - f * 0.012) * (0.6 + 0.4 * breathe)))
+
+	for i in 58:
+		var hx := _hash01(i, 3.0)
+		var hs := _hash01(i, 4.0)
+		var rise: float = 48.0 + hs * 130.0
+		var y: float = size.y - fmod(t * rise + hx * 1400.0, size.y + 90.0)
+		var x: float = hx * size.x + sin(t * 1.1 + float(i) * 0.8) * 16.0
+		var w: float = 1.4 + hs * 2.6
+		# Guttering, so an ember reads as burning rather than as a dot.
+		var flick: float = 0.30 + 0.70 * absf(sin(t * 4.2 + float(i) * 2.1))
+		# They cool as they climb: orange low, dull red by the top.
+		var high: float = 1.0 - clampf(y / size.y, 0.0, 1.0)
+		var col := Color(1.0, 0.55 - high * 0.30, 0.12).lerp(tint, 0.25)
+		node.draw_circle(Vector2(x, y), w, Color(col, 0.55 * flick * (1.0 - high * 0.5)))
+
+
+## Ocean. The moving bands of light on a sea floor, and bubbles going up through
+## them. The bands are polylines rather than filled shapes because a caustic is
+## a bright line and filling it makes it a cloud.
+static func _motion_caustics(node: CanvasItem, size: Vector2, t: float,
+		tint: Color) -> void:
+	for i in 9:
+		var base: float = size.y * (float(i) + 0.5) / 9.0
+		var pts := PackedVector2Array()
+		for s in 13:
+			var u := float(s) / 12.0
+			var y: float = base + sin(u * 6.0 + t * 0.9 + float(i) * 1.1) * 11.0 \
+				+ sin(u * 14.0 - t * 1.4) * 4.0
+			pts.append(Vector2(u * size.x, y))
+		var a: float = 0.035 + 0.030 * sin(t * 1.3 + float(i) * 0.7)
+		node.draw_polyline(pts, Color(0.75, 0.98, 1.0, maxf(a, 0.0)), 2.5, true)
+
+	for i in 20:
+		var hx := _hash01(i, 5.0)
+		var hs := _hash01(i, 6.0)
+		var rise: float = 30.0 + hs * 60.0
+		var y: float = size.y - fmod(t * rise + hx * 1100.0, size.y + 60.0)
+		var x: float = hx * size.x + sin(t * 1.5 + float(i)) * 13.0
+		var r: float = 2.0 + hs * 4.5
+		node.draw_arc(Vector2(x, y), r, 0.0, TAU, 10, Color(tint, 0.30), 1.2, true)
+
+
+## Space. Stars at three depths, the near ones drifting visibly and the far ones
+## barely at all, which is the only trick here — parallax is what stops a field
+## of dots reading as a texture.
+static func _motion_starfield(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	# Nebulae, which are only nebulae because the frame cuts them. Whole, in a
+	# preview panel, they are three lilac circles.
+	#
+	# They breathe, and that is not decoration — it is most of what this effect
+	# does. Stars are the obvious idea for a space backdrop and the wrong one on
+	# their own: a hundred one-pixel dots twinkling move about a tenth of a
+	# percent of the screen, which is below the threshold at which anybody
+	# registers that the board is alive at all. The clouds are the large slow
+	# thing, and the stars are the detail on top of them.
+	if not bound:
+		for i in 3:
+			var f := float(i) / 2.0
+			var swell: float = 0.72 + 0.28 * sin(t * 0.31 + float(i) * 2.2)
+			var wander: float = sin(t * 0.17 + float(i)) * size.x * 0.02
+			node.draw_circle(
+				Vector2(size.x * (0.62 - f * 0.1) + wander,
+					size.y * (0.28 + f * 0.06)),
+				size.x * (0.20 + f * 0.30) * (0.94 + 0.06 * swell),
+				Color(tint, 0.042 * (1.0 - f * 0.5) * swell))
+
+	for i in 150:
+		var hx := _hash01(i, 7.0)
+		var hy := _hash01(i, 8.0)
+		var depth := float(i % 3)
+		var speed: float = 6.0 + depth * 12.0
+		var x: float = fmod(hx * size.x + t * speed, size.x)
+		var y: float = hy * size.y
+		var r: float = 1.0 + depth * 1.0
+		# Not every star twinkles, and the ones that do are not in step. A field
+		# where all of them pulse together reads as the screen flickering.
+		var tw: float = 0.45 + 0.55 * sin(t * (1.2 + hx * 2.4) + float(i))
+		var col := Color.WHITE.lerp(tint, hy * 0.5)
+		node.draw_circle(Vector2(x, y), r, Color(col, (0.25 + depth * 0.22) * tw))
+
+
+## Cyber. A scan bar crawling down the whole screen, CRT rows under it, and
+## neon signs guttering at the edges.
+static func _motion_scanlines(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	var step: float = maxf(3.0, size.y / 150.0)
+	var rows := int(size.y / step)
+	for i in rows:
+		node.draw_rect(Rect2(0.0, float(i) * step, size.x, 1.0),
+			Color(0.0, 0.0, 0.0, 0.055), true)
+
+	# The bar. Wraps with a gap, so there is a beat between passes rather than a
+	# bar permanently on screen.
+	var sweep: float = fmod(t * 0.22, 1.35) / 1.0
+	if sweep <= 1.0:
+		var run: float = size.y if bound else size.y + 160.0
+		var y: float = sweep * run - (0.0 if bound else 80.0)
+		var tail: float = minf(46.0, size.y * 0.12)
+		for i in 5:
+			var f := float(i) / 4.0
+			node.draw_rect(Rect2(0.0, maxf(y - f * tail, 0.0 if bound else -200.0),
+				size.x, tail * (1.0 - f) + 3.0),
+				Color(tint, 0.055 * (1.0 - f)))
+
+	# Signage. Two columns of bars that cut out at their own rates — a neon sign
+	# that pulses smoothly is a neon sign nobody believes.
+	for i in 8:
+		var hs := _hash01(i, 9.0)
+		var on: float = 1.0 if sin(t * (2.0 + hs * 5.0) + float(i) * 2.3) > -0.45 else 0.15
+		var side: float = 0.03 if i % 2 == 0 else 0.93
+		var y: float = size.y * (0.06 + hs * 0.55)
+		var h: float = size.y * (0.02 + hs * 0.05)
+		var col := Color("#ff2fd0") if i % 3 == 0 else tint
+		node.draw_rect(Rect2(size.x * side, y, size.x * 0.04, h),
+			Color(col, 0.22 * on), true)
+
+
+## Clouds. Puffs crossing sideways at two speeds. Nothing rises, nothing falls —
+## the board is already in the sky, and the only honest motion up there is wind.
+static func _motion_drift(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	for i in 14:
+		var hx := _hash01(i, 10.0)
+		var hy := _hash01(i, 11.0)
+		var near := float(i % 2)
+		var speed: float = 7.0 + near * 15.0
+		var r: float = size.x * (0.05 + hy * 0.06) * (0.7 + near * 0.6)
+		# On a screen a cloud enters from beyond the edge; in a panel it wraps
+		# inside one, which costs the entrance and keeps the wind.
+		var edge: float = r * 2.2 if not bound else 0.0
+		var span: float = size.x + edge * 2.0
+		var x: float = fmod(hx * span + t * speed, span) - edge
+		var y: float = hy * size.y
+		var a: float = (0.05 + near * 0.045) * (0.75 + 0.25 * sin(t * 0.4 + float(i)))
+		var col := Color.WHITE.lerp(tint, 0.15)
+		# Three overlapping discs, because one disc is a ball and three is a cloud.
+		node.draw_circle(Vector2(x, y), r, Color(col, a))
+		node.draw_circle(Vector2(x + r * 0.8, y + r * 0.2), r * 0.75, Color(col, a))
+		node.draw_circle(Vector2(x - r * 0.7, y + r * 0.25), r * 0.65, Color(col, a))
+
+
+## Desert. Heat coming off the sand: bands near the bottom that wobble, and dust
+## hanging in the air above them. Strongest low down, where the ground is.
+static func _motion_haze(node: CanvasItem, size: Vector2, t: float,
+		tint: Color) -> void:
+	for i in 12:
+		var f := float(i) / 11.0
+		# Low bands shimmer hard, high ones barely — heat rises off the floor,
+		# not out of the sky.
+		var ground: float = f * f
+		var base: float = size.y * (0.42 + f * 0.58)
+		var pts := PackedVector2Array()
+		for s in 11:
+			var u := float(s) / 10.0
+			pts.append(Vector2(u * size.x,
+				base + sin(u * 9.0 + t * 2.1 + float(i) * 0.8) * (2.0 + 6.0 * ground)))
+		node.draw_polyline(pts, Color(1.0, 0.86, 0.58, 0.030 * ground + 0.010),
+			3.0 + 3.0 * ground, true)
+
+	for i in 22:
+		var hx := _hash01(i, 12.0)
+		var hs := _hash01(i, 13.0)
+		var y: float = size.y - fmod(t * (10.0 + hs * 22.0) + hx * 900.0, size.y * 0.9)
+		var x: float = fmod(hx * size.x + t * (6.0 + hs * 10.0), size.x)
+		node.draw_circle(Vector2(x + sin(t * 0.8 + float(i)) * 9.0, y),
+			1.0 + hs * 2.0, Color(tint, 0.14 + 0.10 * sin(t * 1.4 + float(i))))
+
+
+## Aurora. Ribbons across the upper sky, each a band whose top and bottom edges
+## wave out of phase with each other — that shear is what makes it a curtain
+## rather than a snake.
+static func _motion_ribbons(node: CanvasItem, size: Vector2, t: float,
+		tint: Color) -> void:
+	var cols := [tint, Color("#7cf6a0"), Color("#5ad0ff")]
+	for i in 3:
+		var base: float = size.y * (0.10 + float(i) * 0.085)
+		var thick: float = size.y * (0.055 + 0.02 * float(i))
+		var phase: float = t * (0.45 + float(i) * 0.12) + float(i) * 2.1
+		var top := PackedVector2Array()
+		var bottom := PackedVector2Array()
+		for s in 15:
+			var u := float(s) / 14.0
+			var x: float = u * size.x
+			var wave: float = sin(u * 4.4 + phase) * size.y * 0.035 \
+				+ sin(u * 9.1 - phase * 1.4) * size.y * 0.012
+			top.append(Vector2(x, base + wave))
+			# The lower edge runs on its own phase, so the ribbon widens and
+			# narrows along its length instead of sliding about rigidly.
+			bottom.append(Vector2(x, base + wave + thick
+				* (0.6 + 0.6 * sin(u * 3.2 - phase * 0.8))))
+		var poly := PackedVector2Array()
+		poly.append_array(top)
+		for s in range(bottom.size() - 1, -1, -1):
+			poly.append(bottom[s])
+		var a: float = 0.055 + 0.030 * sin(t * 0.7 + float(i) * 1.9)
+		node.draw_colored_polygon(poly, Color(cols[i], a))
+		# A brighter lower lip, which is where a real one is densest.
+		node.draw_polyline(bottom, Color(cols[i], a * 1.6), 2.0, true)
+
+
 # ------------------------------------------------------------- the block face
 #
 # The four block styles, drawn somewhere that is not the playfield.
@@ -209,7 +655,41 @@ static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color
 # the vocabulary and the style ids, and `shoptest` checks that neither grows a
 # style the other has never heard of.
 
-const BLOCK_STYLES := ["solid", "outline", "glass", "circuit"]
+## The four originals, then the eight that came with the painted boards.
+##
+## Every one of them is handed the block's *tier* colour and has to give it
+## back recognisably. That is the rule the whole slot lives under: a 4x3 is red
+## and a 1x1 is blue in every style the game has, because the colour is how you
+## read the board at a glance and a style that repainted it would be selling
+## decoration for legibility. So these change the material — crust, glass, ice,
+## neon — and never the hue.
+const BLOCK_STYLES := ["solid", "outline", "glass", "circuit",
+	"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice"]
+
+## The eight that arrive with the premium boards, and the board each was drawn
+## against. Only used for presentation — the slot stays independent, and nothing
+## stops Magma blocks on the Ocean board. The mastery screen reads this to say
+## what a style was meant for, which is the difference between eight new names
+## and eight new names somebody can make sense of.
+const BLOCK_PAIRING := {
+	"bark": "forest", "magma": "volcano", "coral": "ocean", "nebula": "space",
+	"neon": "cyber", "cloud": "clouds", "sandstone": "desert", "ice": "aurora",
+}
+
+
+## The face drawn for a board, which is `BLOCK_PAIRING` read backwards.
+##
+## Worth a function rather than a second dictionary, and worth a function
+## rather than nothing: the table reads style-first because that is the
+## question the mastery screen asks, and every other caller wants it the other
+## way round. A board-keyed `.get` against it silently returns the fallback
+## instead of failing, which is a bug that looks exactly like "the style did
+## not apply" — so it is written once, here, where the direction is named.
+static func face_for_board(theme_id: String) -> String:
+	for style in BLOCK_PAIRING:
+		if String(BLOCK_PAIRING[style]) == theme_id:
+			return String(style)
+	return ""
 
 
 # Emotes used to have styles here: the art was drawn white so a style could be
@@ -251,6 +731,8 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 				node.draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
 			node.draw_circle(pad, 7.0, Color(0, 0, 0, 0.22))
 			return Color("#0b1020")
+		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice":
+			return draw_premium_face(node, rect, col, style, hot)
 		_:
 			node.draw_rect(rect, Color(col, 0.92 if hot else 0.80), true)
 			# The lighter top edge is most of what makes a filled rectangle read
@@ -259,3 +741,253 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 				Vector2(rect.size.x - 8.0, 2.0)), Color(1, 1, 1, 0.30), true)
 			node.draw_rect(rect.grow(-5.0), Color(1, 1, 1, 0.10), false, 1.0)
 			return Color("#0b1020")
+
+
+# ------------------------------------------------------- the premium block set
+#
+# Eight faces drawn against the eight painted boards, and the one place they are
+# implemented.
+#
+# The four originals above are written twice on purpose — `board.gd` has its own
+# copy tuned to a 42px cell, this one is tuned to a menu gutter, and the note up
+# there explains why that was the right trade for them. It is not the right
+# trade for eight more: sixteen implementations of eight styles is eight chances
+# for the block you bought to look like something else in the shop than it does
+# in the match. So these are scale-derived instead — every number below is a
+# fraction of the rect it is given — and `board.gd` calls straight into here.
+#
+# Three of them move. Magma's cracks breathe, Coral's bubbles rise and Neon's
+# scan bar sweeps, all read off `Time` rather than off any state, so a block
+# that was drawn this frame and destroyed the next never had anything to clean
+# up. Both callers already redraw every frame, so the motion costs nothing extra
+# to keep running.
+
+
+## The block's silhouette: a rectangle with its corners taken off, which is as
+## close to a rounded corner as immediate-mode drawing gets without allocating a
+## StyleBoxFlat per tier per frame.
+static func _face_body(node: CanvasItem, rect: Rect2, col: Color) -> void:
+	var cut: float = clampf(minf(rect.size.x, rect.size.y) * 0.16, 3.0, 9.0)
+	var a := rect.position
+	var b := rect.end
+	node.draw_colored_polygon(PackedVector2Array([
+		Vector2(a.x + cut, a.y), Vector2(b.x - cut, a.y),
+		Vector2(b.x, a.y + cut), Vector2(b.x, b.y - cut),
+		Vector2(b.x - cut, b.y), Vector2(a.x + cut, b.y),
+		Vector2(a.x, b.y - cut), Vector2(a.x, a.y + cut),
+	]), col)
+
+
+## The rim. White when the block is one the typed word is about to take, which
+## has to stay true in every style — that highlight is the game telling you your
+## word landed, and a style that muted it would be a style that costs points.
+static func _face_rim(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		width := 2.0) -> void:
+	node.draw_rect(rect, Color.WHITE if hot else col, false,
+		width + (1.0 if hot else 0.0))
+
+
+## A per-block constant in 0..1, taken from where the block sits. Two blocks of
+## the same tier should not be wearing identical grain or identical cracks, and
+## seeding off the position means a block does not redraw itself differently
+## every frame either.
+static func _face_seed(rect: Rect2, k: float) -> float:
+	return absf(fmod(sin(rect.position.x * 0.137 + rect.position.y * 0.311
+		+ k * 4.77) * 9137.3, 1.0))
+
+
+static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
+		style: String, hot: bool) -> Color:
+	var t := Time.get_ticks_msec() / 1000.0
+	var w := rect.size.x
+	var h := rect.size.y
+	var mid := rect.get_center()
+
+	match style:
+		# Forest. Heartwood with the grain running across it and a cut top edge,
+		# so a stack of them reads as sawn timber rather than as tiles.
+		"bark":
+			_face_body(node, rect, Color(col.darkened(0.18), 0.92 if hot else 0.86))
+			node.draw_rect(Rect2(rect.position + Vector2(w * 0.10, h * 0.09),
+				Vector2(w * 0.80, maxf(1.5, h * 0.05))), Color(1, 1, 1, 0.22), true)
+			var grain := Color(col.darkened(0.45), 0.55)
+			for i in 3:
+				var y: float = rect.position.y + h * (0.32 + float(i) * 0.21)
+				var bow: float = h * 0.035 * (1.0 if i % 2 == 0 else -1.0)
+				node.draw_polyline(PackedVector2Array([
+					Vector2(rect.position.x + w * 0.10, y),
+					Vector2(mid.x, y + bow),
+					Vector2(rect.end.x - w * 0.10, y),
+				]), grain, maxf(1.0, h * 0.030), true)
+			_face_rim(node, rect, Color(col.lightened(0.30), 0.9), hot)
+			return Color("#10200f")
+
+		# Volcano. Cooled crust with the heat still showing through the splits in
+		# it, brightening and dulling on a slow cycle.
+		"magma":
+			# Darkened enough to read as crust and not so far that a red 4x3 and
+			# a blue 1x1 become the same brown tile. 0.66 did exactly that, and
+			# a board you cannot read by tier is a board that costs somebody the
+			# word they were about to type.
+			_face_body(node, rect, Color(col.darkened(0.38), 0.94))
+			var beat: float = 0.55 + 0.45 * sin(t * 1.9 + _face_seed(rect, 1.0) * TAU)
+			# Pulled toward lava rather than left as a lightened tier colour.
+			# `col.lightened(0.55)` on a cyan tier is very nearly white, and a
+			# white line across a block reads as a scratch, not as something
+			# glowing underneath it. The body keeps the tier — that is where the
+			# colour has to survive — and the crack is allowed to be hot.
+			var hotcol: Color = col.lightened(0.40).lerp(Color("#ff7a18"), 0.55)
+			node.draw_circle(mid, minf(w, h) * 0.42, Color(hotcol, 0.12 * beat))
+			# One spine down the block with branches off it. Seeded from the
+			# position, so the crack pattern belongs to the block rather than
+			# flickering into a new one each frame.
+			var s0 := _face_seed(rect, 2.0)
+			var inset: float = minf(w, h) * 0.12
+			var lo := rect.position.x + inset
+			var hi := rect.end.x - inset
+			var spine_x: float = clampf(rect.position.x + w * (0.35 + s0 * 0.30),
+				lo, hi)
+			node.draw_line(Vector2(spine_x, rect.position.y + h * 0.10),
+				Vector2(clampf(spine_x + w * (s0 - 0.5) * 0.25, lo, hi),
+					rect.end.y - h * 0.10),
+				Color(hotcol, 0.45 + 0.40 * beat), maxf(1.2, minf(w, h) * 0.045))
+			for i in 3:
+				var sy := _face_seed(rect, 3.0 + float(i))
+				var y: float = rect.position.y + h * (0.24 + float(i) * 0.26)
+				var dir: float = 1.0 if (i % 2 == 0) else -1.0
+				# Clamped to the body. Unclamped, a branch off a spine that was
+				# already two thirds across drew a lava crack out over the
+				# neighbouring block.
+				node.draw_line(Vector2(spine_x, y),
+					Vector2(clampf(spine_x + dir * w * (0.20 + sy * 0.22), lo, hi),
+						minf(y + h * 0.10, rect.end.y - inset * 0.5)),
+					Color(hotcol, 0.32 + 0.35 * beat), maxf(1.0, minf(w, h) * 0.032))
+			_face_rim(node, rect, Color(col.lightened(0.15), 0.95), hot)
+			return Color(col.lightened(0.85))
+
+		# Ocean. A rounded, slightly soft body with air coming off the top of it.
+		"coral":
+			_face_body(node, rect, Color(col, 0.80 if hot else 0.70))
+			# Lobes along the top, which is what stops it reading as a pill.
+			var lobe: float = minf(w * 0.18, h * 0.22)
+			for i in 3:
+				node.draw_circle(Vector2(rect.position.x + w * (0.25 + float(i) * 0.25),
+					rect.position.y + lobe * 0.55), lobe,
+					Color(col.lightened(0.28), 0.55))
+			for i in 3:
+				var hb := _face_seed(rect, 5.0 + float(i))
+				var rise: float = fmod(t * (0.35 + hb * 0.30) + hb, 1.0)
+				var bx: float = rect.position.x + w * (0.18 + hb * 0.64)
+				var by: float = rect.end.y - h * 0.12 - rise * h * 0.72
+				node.draw_arc(Vector2(bx, by), maxf(1.2, minf(w, h) * 0.055),
+					0.0, TAU, 9, Color(1, 1, 1, 0.45 * (1.0 - rise)), 1.2, true)
+			_face_rim(node, rect, Color(col.lightened(0.45), 0.9), hot)
+			return Color.WHITE
+
+		# Space. Thin enough to see through, with a field of stars caught inside
+		# it and a bloom at the middle.
+		"nebula":
+			# Opaque enough to carry its tier. At 0.48 over a purple backdrop
+			# every tier arrived the same lilac, which is the nebula eating the
+			# one thing the block had to say.
+			_face_body(node, rect, Color(col, 0.78 if not hot else 0.90))
+			for i in 3:
+				var f := float(i) / 2.0
+				node.draw_circle(mid, minf(w, h) * (0.16 + f * 0.26),
+					Color(col.lightened(0.40), 0.13 * (1.0 - f)))
+			for i in 7:
+				var sx := _face_seed(rect, 7.0 + float(i))
+				var sy := _face_seed(rect, 17.0 + float(i))
+				var tw: float = 0.45 + 0.55 * sin(t * (1.4 + sx * 2.0) + float(i) * 1.7)
+				node.draw_circle(Vector2(rect.position.x + w * (0.12 + sx * 0.76),
+					rect.position.y + h * (0.12 + sy * 0.76)),
+					maxf(0.8, minf(w, h) * 0.030), Color(1, 1, 1, 0.70 * tw))
+			_face_rim(node, rect, Color(col.lightened(0.50), 0.95), hot)
+			return Color.WHITE
+
+		# Cyber. Housing almost black, edge doing all the work, and a bar
+		# crawling down the inside of it.
+		"neon":
+			# A dark housing, but a *tinted* dark one. At 0.82 darkened the six
+			# tiers were six shades of black and the edge was the only thing
+			# telling them apart, which is too little to read a stack by at a
+			# glance.
+			_face_body(node, rect, Color(col.darkened(0.55), 0.90))
+			_face_body(node, rect.grow(-minf(w, h) * 0.14), Color(col, 0.28))
+			var glow := col.lightened(0.35)
+			var sweep: float = fmod(t * 0.55 + _face_seed(rect, 9.0), 1.0)
+			var bar_h: float = maxf(2.0, h * 0.14)
+			node.draw_rect(Rect2(rect.position.x + 2.0,
+				rect.position.y + sweep * (h - bar_h), w - 4.0, bar_h),
+				Color(glow, 0.20), true)
+			# Corner ticks, so the housing reads as a machined part rather than
+			# as a rectangle somebody drew a line around.
+			var tick: float = minf(w, h) * 0.22
+			for c: Vector2 in [Vector2(rect.position.x, rect.position.y),
+					Vector2(rect.end.x, rect.position.y),
+					Vector2(rect.position.x, rect.end.y),
+					Vector2(rect.end.x, rect.end.y)]:
+				var sx: float = 1.0 if c.x < mid.x else -1.0
+				var sy: float = 1.0 if c.y < mid.y else -1.0
+				var o: Vector2 = c + Vector2(sx, sy) * 3.0
+				node.draw_line(o, o + Vector2(sx * tick, 0.0), Color(glow, 0.85), 2.0)
+				node.draw_line(o, o + Vector2(0.0, sy * tick), Color(glow, 0.85), 2.0)
+			node.draw_rect(rect, Color(col, 0.35), false, 3.0)
+			_face_rim(node, rect, Color(glow, 0.95), hot, 1.5)
+			return col.lightened(0.62)
+
+		# Clouds. The one soft face in the set, and the second of the two that
+		# print dark type — the body is too pale for white to survive on it.
+		"cloud":
+			# The softest face in the set and the one most at risk of losing its
+			# tier, because it sits on the palest board. So the body is nearly
+			# opaque and only the top of it is whitened — the puffs read as
+			# light catching the upper edge rather than as a wash over the whole
+			# block, and the hue survives underneath them.
+			_face_body(node, rect, Color(col, 0.82 if not hot else 0.92))
+			var puff: float = minf(w * 0.20, h * 0.26)
+			for i in 3:
+				node.draw_circle(Vector2(rect.position.x + w * (0.24 + float(i) * 0.26),
+					rect.position.y + puff * 0.70), puff, Color(1, 1, 1, 0.30))
+			node.draw_rect(Rect2(rect.position + Vector2(w * 0.10, h * 0.10),
+				Vector2(w * 0.80, h * 0.20)), Color(1, 1, 1, 0.18), true)
+			_face_rim(node, rect, Color(1, 1, 1, 0.80), hot)
+			return Color("#16324f")
+
+		# Desert. Laid-down strata, thickest at the bottom, which is the one
+		# style in the set that says something about which way is up.
+		"sandstone":
+			_face_body(node, rect, Color(col, 0.90 if hot else 0.84))
+			var bands := 4
+			for i in bands:
+				var f := float(i) / float(bands)
+				var y: float = rect.position.y + h * (0.16 + f * 0.74)
+				var thick: float = maxf(1.5, h * (0.045 + f * 0.030))
+				var shade := Color(1, 1, 1, 0.14) if i % 2 == 0 \
+					else Color(0, 0, 0, 0.16)
+				node.draw_rect(Rect2(rect.position.x + w * 0.06, y,
+					w * 0.88, thick), shade, true)
+			node.draw_rect(Rect2(rect.position + Vector2(w * 0.08, h * 0.07),
+				Vector2(w * 0.84, maxf(1.5, h * 0.045))), Color(1, 1, 1, 0.26), true)
+			_face_rim(node, rect, Color(col.darkened(0.30), 0.9), hot)
+			return Color("#2a1405")
+
+		# Aurora. Cut glass: thin body, hard facets, a frosted double edge.
+		"ice":
+			# Glass, not water. 0.34 was see-through enough that the aurora
+			# behind it decided the block's colour instead of the tier.
+			_face_body(node, rect, Color(col, 0.62 if not hot else 0.76))
+			var apex := Vector2(mid.x + w * 0.10, mid.y - h * 0.06)
+			for c: Vector2 in [rect.position, Vector2(rect.end.x, rect.position.y),
+					Vector2(rect.position.x, rect.end.y), rect.end]:
+				node.draw_line(c.lerp(mid, 0.18), apex, Color(1, 1, 1, 0.26), 1.0)
+			node.draw_colored_polygon(PackedVector2Array([
+				rect.position + Vector2(w * 0.10, h * 0.10),
+				rect.position + Vector2(w * 0.52, h * 0.10),
+				rect.position + Vector2(w * 0.26, h * 0.42),
+			]), Color(1, 1, 1, 0.20))
+			node.draw_rect(rect.grow(-3.0), Color(1, 1, 1, 0.18), false, 1.0)
+			_face_rim(node, rect, Color(col.lightened(0.55), 0.95), hot)
+			return Color.WHITE
+
+	return Color.WHITE

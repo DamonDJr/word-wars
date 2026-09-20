@@ -416,12 +416,38 @@ const COSMETICS := {
 		{"id": "vapor", "name": "Vapour", "need": {"level": 10}},
 		{"id": "bone", "name": "Bone", "need": {"level": 16}},
 		{"id": "prism", "name": "Prism", "need": {"buy": PACK_PREMIUM}},
+		# The painted eight. All in the pack that was already being sold rather
+		# than in a second one: there is one product in this game, and a player
+		# who bought it last month should find it has got better rather than
+		# find a new thing to buy behind the thing they bought.
+		{"id": "forest", "name": "Forest", "need": {"buy": PACK_PREMIUM}},
+		{"id": "volcano", "name": "Volcano", "need": {"buy": PACK_PREMIUM}},
+		{"id": "ocean", "name": "Ocean", "need": {"buy": PACK_PREMIUM}},
+		{"id": "space", "name": "Space", "need": {"buy": PACK_PREMIUM}},
+		{"id": "cyber", "name": "Cyber", "need": {"buy": PACK_PREMIUM}},
+		{"id": "clouds", "name": "Clouds", "need": {"buy": PACK_PREMIUM}},
+		{"id": "desert", "name": "Desert", "need": {"buy": PACK_PREMIUM}},
+		{"id": "aurora", "name": "Aurora", "need": {"buy": PACK_PREMIUM}},
 	],
 	"blocks": [
 		{"id": "solid", "name": "Solid", "need": {}},
 		{"id": "outline", "name": "Wireframe", "need": {"level": 4}},
 		{"id": "glass", "name": "Glass", "need": {"combo": 4}},
 		{"id": "circuit", "name": "Circuit", "need": {"level": 12}},
+		# One per painted board, and gated the same way. Kept as ordinary
+		# entries in their own slot rather than tied to the theme: equipping
+		# Volcano does not touch what you are wearing here, because a slot that
+		# another slot can overwrite is a slot that stops meaning anything.
+		# `Cosmetics.BLOCK_PAIRING` records which board each was drawn for, and
+		# the mastery screen says so — a suggestion rather than a switch.
+		{"id": "bark", "name": "Heartwood", "need": {"buy": PACK_PREMIUM}},
+		{"id": "magma", "name": "Magma", "need": {"buy": PACK_PREMIUM}},
+		{"id": "coral", "name": "Coral", "need": {"buy": PACK_PREMIUM}},
+		{"id": "nebula", "name": "Nebula", "need": {"buy": PACK_PREMIUM}},
+		{"id": "neon", "name": "Neon", "need": {"buy": PACK_PREMIUM}},
+		{"id": "cloud", "name": "Cumulus", "need": {"buy": PACK_PREMIUM}},
+		{"id": "sandstone", "name": "Sandstone", "need": {"buy": PACK_PREMIUM}},
+		{"id": "ice", "name": "Glacier", "need": {"buy": PACK_PREMIUM}},
 	],
 	"typing": [
 		{"id": "plain", "name": "Plain", "need": {}},
