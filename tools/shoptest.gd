@@ -34,6 +34,8 @@ func _init() -> void:
 	_premium_theme_actually_differs()
 	_the_painted_boards_are_painted()
 	_the_faces_match_the_boards()
+	_the_pitch_is_owed_once()
+	_the_badges_answer_to_different_things()
 	_the_menu_knows_every_block_style()
 
 	print("--- %s ---" % ("shop behaves" if fails == 0 else "%d FAILURES" % fails))
@@ -359,6 +361,76 @@ func _the_faces_match_the_boards() -> void:
 	_expect("all eight boards are spoken for", claimed.size() == PAINTED.size())
 	_expect("and there are exactly eight faces",
 		Cosmetics.BLOCK_PAIRING.size() == PAINTED.size())
+
+
+## The slideshow is shown once per content drop and never again.
+##
+## Both halves of that matter and they fail in opposite directions. Never
+## showing it means eight boards were built and nobody was told. Showing it
+## every launch is the thing that turns a pack somebody was going to buy into a
+## reason to delete the game — and it is the easy failure to write, because
+## "has seen it" is one forgotten `set_pref` away from being permanently false.
+func _the_pitch_is_owed_once() -> void:
+	print("--- the pitch is owed once per drop ---")
+	P.owned = {}
+	P.prefs["promo_seen"] = 0
+	_expect("a player who has not seen it is owed it", P.owes_promo())
+
+	P.note_promo_seen()
+	_expect("and is not owed it twice", not P.owes_promo())
+	_expect("seeing it records the current drop",
+		int(P.pref("promo_seen")) == P.PROMO_DROP)
+
+	# Marking it again is not an error and does not move anything.
+	P.note_promo_seen()
+	_expect("marking it again is harmless",
+		int(P.pref("promo_seen")) == P.PROMO_DROP)
+
+	# The next batch of boards. Standing in for a `PROMO_DROP` bump by putting
+	# the save one behind, which is exactly what an upgrading player looks like.
+	P.prefs["promo_seen"] = P.PROMO_DROP - 1
+	_expect("a new drop is owed again", P.owes_promo())
+
+	# Every save written before any of this existed has no key at all, and must
+	# read as owed rather than as seen.
+	P.prefs.erase("promo_seen")
+	_expect("a save from before the feature is owed it", P.owes_promo())
+
+	# And the one case where it must never appear.
+	P.grant(P.PACK_PREMIUM)
+	_expect("somebody who already bought it is never pitched to",
+		not P.owes_promo())
+	P.prefs["promo_seen"] = 0
+	_expect("not even with the counter reset", not P.owes_promo())
+	P.revoke(P.PACK_PREMIUM)
+
+
+## The two badges look identical and mean different things, which is the kind of
+## pair that quietly becomes one flag during a tidy-up.
+func _the_badges_answer_to_different_things() -> void:
+	print("--- the two badges are not the same flag ---")
+	P.owned = {}
+	P.prefs["promo_seen"] = 0
+	P.prefs["cosmetics_seen"] = 0
+	_expect("the wardrobe is new to a player who has not opened it",
+		P.cosmetics_are_new())
+
+	# Seeing the pitch says nothing about having looked at the wardrobe.
+	P.note_promo_seen()
+	_expect("and still is after the pitch has been seen",
+		P.cosmetics_are_new())
+
+	P.note_cosmetics_seen()
+	_expect("opening it clears it", not P.cosmetics_are_new())
+
+	# The important half: this badge is not an offer, so owning the pack does
+	# not silence it. A buyer is the one person who can actually wear the new
+	# faces, and hiding the door from them would be the wrong way round.
+	P.prefs["cosmetics_seen"] = 0
+	P.grant(P.PACK_PREMIUM)
+	_expect("an owner is still told there is something new to wear",
+		P.cosmetics_are_new())
+	P.revoke(P.PACK_PREMIUM)
 
 
 ## The menu is built out of blocks now, so a block style has to reach it. The

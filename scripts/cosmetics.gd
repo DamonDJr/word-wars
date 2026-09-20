@@ -557,28 +557,79 @@ static func _motion_scanlines(node: CanvasItem, size: Vector2, t: float,
 			Color(col, 0.22 * on), true)
 
 
-## Clouds. Puffs crossing sideways at two speeds. Nothing rises, nothing falls —
-## the board is already in the sky, and the only honest motion up there is wind.
+## Clouds. Cumulus crossing at three depths. Nothing rises, nothing falls — the
+## board is already in the sky, and the only honest motion up there is wind.
+##
+## ## Why this one had to be rebuilt
+##
+## The first version was three overlapping white discs at five percent alpha,
+## which is a perfectly good cloud over a dark backdrop and nothing at all over
+## this one. Clouds is the only board whose art is already white, and white at
+## five percent on white is invisible — the effect was running the whole time
+## and could not be seen.
+##
+## So it stopped painting with brightness and started painting with *shape*.
+## Each cloud now carries a shaded underside as well as a lit top: the shadow is
+## what reads against a bright sky, and it is what makes the thing look like a
+## cumulus with a bottom to it rather than a smudge. The alpha is up by roughly
+## three times, which it can afford to be now that the darker half is doing the
+## work.
 static func _motion_drift(node: CanvasItem, size: Vector2, t: float,
 		tint: Color, bound := false) -> void:
-	for i in 14:
+	# Far masses first: very large, very slow, very faint. They are the reason
+	# the sky reads as deep rather than as a flat plate with clouds on it.
+	if not bound:
+		for i in 3:
+			var hb := _hash01(i, 20.0)
+			var bx: float = fmod(hb * size.x * 1.6 + t * 3.5, size.x + size.x * 0.7) \
+				- size.x * 0.35
+			var by: float = size.y * (0.10 + hb * 0.62)
+			var br: float = size.x * (0.26 + hb * 0.16)
+			node.draw_circle(Vector2(bx, by), br, Color(1, 1, 1, 0.045))
+			node.draw_circle(Vector2(bx + br * 0.55, by + br * 0.18), br * 0.72,
+				Color(1, 1, 1, 0.045))
+
+	for i in 11:
 		var hx := _hash01(i, 10.0)
 		var hy := _hash01(i, 11.0)
-		var near := float(i % 2)
-		var speed: float = 7.0 + near * 15.0
-		var r: float = size.x * (0.05 + hy * 0.06) * (0.7 + near * 0.6)
+		var hr := _hash01(i, 21.0)
+		var depth := float(i % 3)
+		var speed: float = 5.0 + depth * 11.0
+		var r: float = size.x * (0.042 + hr * 0.040) * (0.72 + depth * 0.34)
 		# On a screen a cloud enters from beyond the edge; in a panel it wraps
 		# inside one, which costs the entrance and keeps the wind.
-		var edge: float = r * 2.2 if not bound else 0.0
+		var edge: float = r * 2.6 if not bound else 0.0
 		var span: float = size.x + edge * 2.0
 		var x: float = fmod(hx * span + t * speed, span) - edge
-		var y: float = hy * size.y
-		var a: float = (0.05 + near * 0.045) * (0.75 + 0.25 * sin(t * 0.4 + float(i)))
-		var col := Color.WHITE.lerp(tint, 0.15)
-		# Three overlapping discs, because one disc is a ball and three is a cloud.
-		node.draw_circle(Vector2(x, y), r, Color(col, a))
-		node.draw_circle(Vector2(x + r * 0.8, y + r * 0.2), r * 0.75, Color(col, a))
-		node.draw_circle(Vector2(x - r * 0.7, y + r * 0.25), r * 0.65, Color(col, a))
+		# Bobbing, barely. A cloud that only ever translates sideways reads as a
+		# sprite on a rail.
+		var y: float = hy * size.y + sin(t * 0.32 + float(i) * 1.7) * r * 0.16
+		var lift: float = 0.45 + depth * 0.28
+
+		# Five lobes along a shallow arc with a flat base, rather than three in a
+		# row. The flat bottom is most of what separates a cumulus from a
+		# caterpillar.
+		var lobes := [
+			[-1.05, 0.16, 0.62], [-0.48, -0.16, 0.86], [0.08, -0.26, 1.0],
+			[0.66, -0.06, 0.80], [1.16, 0.18, 0.58],
+		]
+		# The shaded underside, offset down. Drawn first so the lit lobes sit on
+		# top of it and only its lower edge shows — which is how a shadow works.
+		var shade := Color(0.42, 0.52, 0.68).lerp(tint, 0.25)
+		for l: Array in lobes:
+			node.draw_circle(
+				Vector2(x + r * float(l[0]), y + r * float(l[1]) + r * 0.22),
+				r * float(l[2]), Color(shade, 0.085 * lift))
+		var lit := Color.WHITE.lerp(tint, 0.10)
+		for l: Array in lobes:
+			node.draw_circle(
+				Vector2(x + r * float(l[0]), y + r * float(l[1])),
+				r * float(l[2]), Color(lit, 0.13 * lift))
+		# A bright crown on the two tallest lobes, where the sun would be.
+		for l: Array in [lobes[1], lobes[2]]:
+			node.draw_circle(
+				Vector2(x + r * float(l[0]), y + r * float(l[1]) - r * 0.16),
+				r * float(l[2]) * 0.55, Color(1, 1, 1, 0.10 * lift))
 
 
 ## Desert. Heat coming off the sand: bands near the bottom that wobble, and dust
@@ -822,46 +873,97 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 			_face_rim(node, rect, Color(col.lightened(0.30), 0.9), hot)
 			return Color("#10200f")
 
-		# Volcano. Cooled crust with the heat still showing through the splits in
-		# it, brightening and dulling on a slow cycle.
+		# Volcano. Cooled crust with the heat still moving underneath it.
+		#
+		# The first version drew a straight vertical line with three straight
+		# horizontal ones crossing it, and at cell size that is not a crack, it
+		# is scaffolding laid on a flat tile. Two things were wrong and both
+		# were structural: a crack in cooling rock is never straight, and the
+		# glow belongs *in* the gap rather than painted over the surface.
+		#
+		# So the face is built the way the backdrop art is — irregular plates
+		# with lit seams between them. The seams wander, each is drawn as a wide
+		# dim bleed with a narrow bright core inside it, and the plates either
+		# side sit at different darknesses so the crust has facets instead of
+		# being one flat wash.
 		"magma":
 			# Darkened enough to read as crust and not so far that a red 4x3 and
-			# a blue 1x1 become the same brown tile. 0.66 did exactly that, and
-			# a board you cannot read by tier is a board that costs somebody the
-			# word they were about to type.
-			_face_body(node, rect, Color(col.darkened(0.38), 0.94))
+			# a blue 1x1 become the same brown tile. A board you cannot read by
+			# tier is a board that costs somebody the word they were about to
+			# type.
+			_face_body(node, rect, Color(col.darkened(0.46), 0.95))
 			var beat: float = 0.55 + 0.45 * sin(t * 1.9 + _face_seed(rect, 1.0) * TAU)
 			# Pulled toward lava rather than left as a lightened tier colour.
 			# `col.lightened(0.55)` on a cyan tier is very nearly white, and a
 			# white line across a block reads as a scratch, not as something
 			# glowing underneath it. The body keeps the tier — that is where the
-			# colour has to survive — and the crack is allowed to be hot.
-			var hotcol: Color = col.lightened(0.40).lerp(Color("#ff7a18"), 0.55)
-			node.draw_circle(mid, minf(w, h) * 0.42, Color(hotcol, 0.12 * beat))
-			# One spine down the block with branches off it. Seeded from the
-			# position, so the crack pattern belongs to the block rather than
-			# flickering into a new one each frame.
-			var s0 := _face_seed(rect, 2.0)
-			var inset: float = minf(w, h) * 0.12
-			var lo := rect.position.x + inset
-			var hi := rect.end.x - inset
-			var spine_x: float = clampf(rect.position.x + w * (0.35 + s0 * 0.30),
-				lo, hi)
-			node.draw_line(Vector2(spine_x, rect.position.y + h * 0.10),
-				Vector2(clampf(spine_x + w * (s0 - 0.5) * 0.25, lo, hi),
-					rect.end.y - h * 0.10),
-				Color(hotcol, 0.45 + 0.40 * beat), maxf(1.2, minf(w, h) * 0.045))
-			for i in 3:
-				var sy := _face_seed(rect, 3.0 + float(i))
-				var y: float = rect.position.y + h * (0.24 + float(i) * 0.26)
-				var dir: float = 1.0 if (i % 2 == 0) else -1.0
-				# Clamped to the body. Unclamped, a branch off a spine that was
-				# already two thirds across drew a lava crack out over the
-				# neighbouring block.
-				node.draw_line(Vector2(spine_x, y),
-					Vector2(clampf(spine_x + dir * w * (0.20 + sy * 0.22), lo, hi),
-						minf(y + h * 0.10, rect.end.y - inset * 0.5)),
-					Color(hotcol, 0.32 + 0.35 * beat), maxf(1.0, minf(w, h) * 0.032))
+			# colour has to survive — and the seam is allowed to be hot.
+			# Three quarters of the way to lava. At 0.62 a cyan tier came out tan
+			# and the seams read as roads across the block; the tier still has to
+			# survive, but it survives in the crust, not in the fire.
+			var hotcol: Color = col.lightened(0.30).lerp(Color("#ff6a10"), 0.78)
+			var core: Color = hotcol.lightened(0.42)
+
+			# Facets. Two wedges of crust at different darknesses, anchored to
+			# the corners so they read as plates rather than as blobs floating
+			# on the face.
+			var f0 := _face_seed(rect, 11.0)
+			var f1 := _face_seed(rect, 12.0)
+			node.draw_colored_polygon(PackedVector2Array([
+				rect.position,
+				rect.position + Vector2(w * (0.42 + f0 * 0.22), 0.0),
+				rect.position + Vector2(w * (0.26 + f1 * 0.18),
+					h * (0.52 + f0 * 0.16)),
+				rect.position + Vector2(0.0, h * 0.68),
+			]), Color(col.darkened(0.34), 0.55))
+			node.draw_colored_polygon(PackedVector2Array([
+				Vector2(rect.end.x, rect.position.y + h * (0.18 + f1 * 0.16)),
+				rect.end,
+				Vector2(rect.position.x + w * (0.44 + f1 * 0.20), rect.end.y),
+				Vector2(rect.position.x + w * (0.62 + f0 * 0.16),
+					rect.position.y + h * (0.46 + f1 * 0.14)),
+			]), Color(col.darkened(0.60), 0.50))
+
+			# Two seams that wander, one down the block and one across it, so a
+			# pair never reads as two parallel scratches.
+			for s in 2:
+				var sd := _face_seed(rect, 13.0 + float(s) * 3.0)
+				var pts := PackedVector2Array()
+				var steps := 5
+				for k in steps + 1:
+					var u := float(k) / float(steps)
+					var ax := 0.0
+					var ay := 0.0
+					if s == 0:
+						ax = w * (0.26 + sd * 0.44) + w * 0.20 * (u - 0.5) * 2.0
+						ay = h * u
+					else:
+						ax = w * u
+						ay = h * (0.32 + sd * 0.36) + h * 0.22 * sin(u * 3.1 + sd * 6.0)
+					# The wander, hashed per point, so a seam has a shape that
+					# belongs to this block and does not redraw itself each frame.
+					var jig: float = _face_seed(rect, 30.0 + float(s) * 7.0 + float(k)) - 0.5
+					if s == 0:
+						ax += jig * w * 0.20
+					else:
+						ay += jig * h * 0.18
+					pts.append(Vector2(
+						clampf(rect.position.x + ax, rect.position.x + 1.0,
+							rect.end.x - 1.0),
+						clampf(rect.position.y + ay, rect.position.y + 1.0,
+							rect.end.y - 1.0)))
+				# The bleed, then the core inside it. Two passes is what makes a
+				# line read as something glowing up through a gap rather than as
+				# a stroke drawn on top of the surface.
+				node.draw_polyline(pts, Color(hotcol, 0.11 + 0.08 * beat),
+					maxf(3.0, minf(w, h) * 0.20), true)
+				node.draw_polyline(pts, Color(hotcol, 0.50 + 0.30 * beat),
+					maxf(1.4, minf(w, h) * 0.075), true)
+				# And a thread of white heat down the middle of the core, which
+				# is what stops a wide warm line reading as a painted stripe.
+				node.draw_polyline(pts, Color(core, 0.55 + 0.35 * beat),
+					maxf(1.0, minf(w, h) * 0.028), true)
+
 			_face_rim(node, rect, Color(col.lightened(0.15), 0.95), hot)
 			return Color(col.lightened(0.85))
 

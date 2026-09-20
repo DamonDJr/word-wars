@@ -290,7 +290,7 @@ const GRAIN := 0.05
 const VIGNETTE := 0.40
 
 enum Phase { SPLASH, TITLE, SOLO, LOBBY, MASTERY, SETTINGS, PRACTICE,
-	COUNTDOWN, PLAY, OVER, COSMETICS, BOARDS }
+	COUNTDOWN, PLAY, OVER, COSMETICS, BOARDS, WEEKLY }
 
 ## What a match is for. A tutorial and a training run use the whole machine —
 ## real board, real typing, real rules — and differ only in what is switched off
@@ -598,7 +598,7 @@ func _scrollable() -> bool:
 		return false
 	match phase:
 		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
-				Phase.SETTINGS, Phase.LOBBY, Phase.BOARDS:
+				Phase.SETTINGS, Phase.LOBBY, Phase.BOARDS, Phase.WEEKLY:
 			return true
 	return false
 
@@ -633,6 +633,8 @@ func _screen_laid() -> float:
 			return _lobby_laid()
 		Phase.BOARDS:
 			return _boards_laid()
+		Phase.WEEKLY:
+			return _weekly_laid()
 	return 0.0
 
 
@@ -1621,6 +1623,25 @@ func _draw_portrait_hud(size: Vector2) -> void:
 			col = Color("#ffd166")
 		elif not WordBank.is_valid(typed):
 			col = Color("#7c88ad")
+
+	# Something for the type to sit on, when there is a photograph behind it.
+	#
+	# The typed word and the line under it are the two most important pieces of
+	# text in the game — what you are holding, and what it will do — and they
+	# sit in the strip between the board and the keyboard, which is the one part
+	# of a painted board that neither dim band reaches. On Clouds that put gold
+	# type on a white sky and it could not be read at all. Soft-edged rather
+	# than a panel: it has to stop being a sky without starting to be a widget.
+	if _art != null:
+		var iw: float = _input_width(size)
+		var ink_top: float = below + 66.0 * band - 30.0
+		for i in 5:
+			var f := float(i) / 4.0
+			var g: float = f * 12.0
+			draw_rect(Rect2(cx - iw * 0.5 - g, ink_top - g,
+				iw + g * 2.0, 78.0 * band + g * 2.0),
+				Color(bg_top, 0.24 * (1.0 - f)), true)
+
 	_text_fit(_font_bold, Vector2(cx, below + 66.0 * band), typed.to_upper(), 34,
 		_input_width(size), col)
 
@@ -2118,6 +2139,19 @@ func _aim(shooter: SideState, mark: SideState) -> void:
 ##
 ## Local wins because a daily is a thing you do as part of your day. It is also
 ## what Wordle does, so the behaviour is already familiar.
+## Fold a finished run into this week's missions, and remember what it paid so
+## the summary can say so.
+##
+## One function for all three modes rather than three calls to `Profile`: the
+## week key has to be computed the same way every time, and a mode added later
+## that worked it out for itself would be a mode whose runs quietly counted for
+## a different week.
+func _bank_week(r: Dictionary, what: String) -> int:
+	var gained := Profile.record_week(Missions.week_key(), r, what)
+	weekly_earned = gained
+	return gained
+
+
 func daily_key() -> String:
 	var d := Time.get_datetime_dict_from_system(false)
 	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
@@ -2422,6 +2456,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_ESCAPE, KEY_C: _activate("title")
 		return
 
+	if phase == Phase.WEEKLY:
+		match k.keycode:
+			KEY_ESCAPE, KEY_W: _activate("title")
+		return
+
 	if phase == Phase.BOARDS:
 		# Left and right move between the two boards; up and down between the two
 		# crowds. Same shape as the cosmetics screen's slot arrows, and it means
@@ -2486,6 +2525,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_RIGHT, KEY_D when mode == Mode.DAILY: _activate("dtab:1")
 		return
 
+	# The pitch owns the keyboard while it is up, for the same reason it owns
+	# the mouse: the title screen's own shortcuts are live underneath it, and a
+	# stray 2 would start the daily out from under a card still being read.
+	# Escape closes it rather than quitting the game, which is what that key
+	# does on the title screen one branch down.
+	if _promo_up():
+		match k.keycode:
+			KEY_ESCAPE, KEY_SPACE: _close_promo()
+			KEY_ENTER, KEY_KP_ENTER: _activate("promo_buy")
+			KEY_LEFT: _promo_step(-1)
+			KEY_RIGHT: _promo_step(1)
+		return
+
 	if phase == Phase.TITLE:
 		match k.keycode:
 			KEY_1: _activate("practice")
@@ -2504,6 +2556,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			# renumbered, so nobody's fingers have to be retrained for a door
 			# that was added after they learnt the others.
 			KEY_9: _activate("boards")
+			# Appended like eight and nine were, rather than renumbering under
+			# fingers that have already learnt the others.
+			KEY_0: _activate("weekly")
+			KEY_W: _activate("weekly")
 			KEY_V: _activate("versus")
 			KEY_S: _activate("survival")
 			KEY_P: _activate("mastery")
@@ -2999,6 +3055,114 @@ func _rematch_sub() -> String:
 var confirm_action := ""
 
 
+# ------------------------------------------------------- the premium slideshow
+#
+# The one screen in this game that exists to sell something, and the rules it is
+# kept to.
+#
+# It is shown once per content drop and never again — see `Profile.PROMO_DROP`.
+# Not once per launch: a full-screen advert on every cold start is the thing
+# that turns a paid pack somebody was going to buy into a reason to delete the
+# app, and the close button becomes the most-pressed control in the game. A
+# player who has seen it has been told, and telling them again is not new
+# information, it is nagging.
+#
+# It is never raised over a match, only over the title screen, and it is never
+# raised for somebody who already owns the pack.
+#
+# The slides are the real boards. Each one draws the actual backdrop texture
+# with the actual motion layer running on it and the actual block faces on top,
+# through the same functions the game uses — so this cannot advertise something
+# the game does not render. The alternative is a folder of marketing stills that
+# go stale the first time a colour is tweaked.
+
+## What the run that just ended paid in mission XP, for the summary to report.
+## Zero for the overwhelming majority of runs, which finish nothing.
+var weekly_earned := 0
+
+var promo_open := false
+var promo_slide := 0
+## How long the current slide has been up, for the auto-advance.
+var promo_age := 0.0
+## Stops the carousel once the player has taken hold of it. Somebody using the
+## arrows is reading at their own pace, and a slide that jumps out from under
+## them mid-read is the carousel arguing with them.
+var promo_held := false
+
+## How long each slide sits before the next one, in seconds.
+const PROMO_DWELL := 3.2
+
+## What the slideshow is made of: the eight boards in the order they were drawn,
+## then the one thing in the pack that is not a board.
+##
+## The ad break is last rather than first on purpose. It is the most valuable
+## thing in the pack for a lot of people and the least interesting to look at,
+## and leading with it would open the pitch on a slide with nothing moving.
+func _promo_slides() -> Array:
+	var out: Array = []
+	for id: String in ["forest", "volcano", "ocean", "space",
+			"cyber", "clouds", "desert", "aurora"]:
+		out.append({
+			"theme": id,
+			"title": String(Profile.entry("theme", id).get("name", id)).to_upper(),
+			"note": PROMO_TAGLINES.get(id, ""),
+		})
+	out.append({
+		"theme": "", "title": "NO AD BREAKS",
+		"note": "every run, start to finish, uninterrupted",
+	})
+	return out
+
+
+## Three words a board, in the voice the concept art used. Kept here rather than
+## in `Cosmetics` because this is ad copy and that file is art direction — one
+## gets rewritten when the picture changes and the other when the marketing does.
+const PROMO_TAGLINES := {
+	"forest": "calm · natural · alive",
+	"volcano": "hot · intense · unstoppable",
+	"ocean": "deep · serene · mysterious",
+	"space": "infinite · otherworldly · epic",
+	"cyber": "neon · fast · electric",
+	"clouds": "bright · dreamy · limitless",
+	"desert": "warm · bold · endless",
+	"aurora": "cool · focused · hypnotic",
+}
+
+
+## Phase-guarded as well as flag-guarded, like every other card here. The title
+## screen is the only place this may sit: a promo that survived into a match
+## would be an advert over a running clock.
+func _promo_up() -> bool:
+	return promo_open and (phase == Phase.TITLE or phase == Phase.SPLASH)
+
+
+## Raise it, if this player is owed it.
+##
+## Called off the splash rather than from `_ready`, so the first thing anybody
+## sees is still the game's own front door resolving into the title — a pitch
+## that beat the splash to the screen would be an advert before the app.
+##
+## `note_promo_seen` fires here, at the moment it goes up, rather than when it
+## is closed. Closing is not guaranteed: the app can be killed from the switcher
+## with the card still open, and a pitch that only counts as delivered when it
+## is dismissed would come back every launch for anybody who does that.
+func _raise_promo() -> void:
+	if not Profile.owes_promo():
+		return
+	promo_open = true
+	promo_slide = 0
+	promo_age = 0.0
+	promo_held = false
+	Profile.note_promo_seen()
+	Sfx.play("count", 1.1)
+
+
+func _close_promo() -> void:
+	promo_open = false
+	promo_held = false
+	Sfx.play("back", 1.2)
+
+
 ## Phase-guarded as well as flag-guarded, the way `_rematch_popup` is.
 ##
 ## The card is raised from the pause menu and answered there, but the run
@@ -3075,6 +3239,316 @@ func _confirm_buttons() -> Array:
 			"key": "ESC", "label": "Keep playing", "sub": "", "note": "",
 			"rating": 0, "accent": PLAYER_ACCENT, "action": "confirm_no"},
 	]
+
+
+func _promo_rect() -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
+	# Tall in portrait, because the thing being sold is a portrait picture and a
+	# letterbox preview of a phone wallpaper sells nothing.
+	var h: float = minf(size.y - 120.0, 940.0 if portrait else 560.0)
+	return Rect2(size.x * 0.5 - w * 0.5, size.y * 0.5 - h * 0.5, w, h)
+
+
+## The button row's top edge. Everything in the footer is placed off this rather
+## than off a stack of offsets from the picture: the name, the tagline and the
+## dots all hang upward from it, so no amount of fiddling with the card's height
+## can slide the dots under the buttons — which is exactly what a first pass of
+## offsets-from-the-top did, and it hid the one control that says how many
+## boards are in the pack.
+const PROMO_BTN_H := 62.0
+
+
+func _promo_button_top() -> float:
+	return _promo_rect().end.y - 22.0 - PROMO_BTN_H
+
+
+## Where the picture goes inside the card: the whole of it above the copy and
+## the controls.
+func _promo_stage() -> Rect2:
+	var r := _promo_rect()
+	var pad := 18.0
+	# Room for a name, a tagline, nine dots and the buttons, with air between
+	# the dots and the buttons.
+	var foot: float = 196.0 if portrait else 182.0
+	return Rect2(r.position.x + pad, r.position.y + 54.0,
+		r.size.x - pad * 2.0, r.size.y - 54.0 - foot)
+
+
+func _promo_buttons() -> Array:
+	if not _promo_up():
+		return []
+	var r := _promo_rect()
+	var out: Array = []
+	var bh := PROMO_BTN_H
+	var by := _promo_button_top()
+
+	# The price comes off Apple rather than out of a string here, and the button
+	# is only a buy button while there is something to buy. On a desktop, or
+	# while the product list is still loading, it says so instead of offering a
+	# purchase that would silently do nothing.
+	var buyable := Store.can_buy()
+	if buyable:
+		var bw: float = (r.size.x - 36.0 - 14.0) * 0.58
+		out.append({
+			"rect": Rect2(r.position.x + 18.0, by, bw, bh), "key": "ENTER",
+			"label": "Unlock · %s" % Store.price, "sub": "", "note": "",
+			"rating": 0, "accent": Color("#ffd166"), "action": "promo_buy"})
+		out.append({
+			"rect": Rect2(r.position.x + 18.0 + bw + 14.0, by,
+				r.size.x - 36.0 - 14.0 - bw, bh), "key": "ESC",
+			"label": "Not now", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#5d6a92"), "action": "promo_close"})
+	else:
+		# Centred and only as wide as it needs to be. Stretched across the card
+		# it is a plate three-quarters empty, which reads as something failing
+		# to load rather than as a button.
+		var cw: float = minf(320.0, r.size.x - 36.0)
+		out.append({
+			"rect": Rect2(r.get_center().x - cw * 0.5, by, cw, bh),
+			"key": "ESC", "label": "Close", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#5d6a92"), "action": "promo_close"})
+
+	# The two arrows, sat over the picture at its vertical middle where a thumb
+	# reaching round the phone already is.
+	var stage := _promo_stage()
+	var aw := 46.0
+	var ay: float = stage.get_center().y - 26.0
+	out.append({
+		"rect": Rect2(stage.position.x + 4.0, ay, aw, 52.0), "key": "",
+		"label": "", "sub": "", "note": "", "rating": 0,
+		"accent": Color("#8d99bd"), "action": "promo_prev"})
+	out.append({
+		"rect": Rect2(stage.end.x - aw - 4.0, ay, aw, 52.0), "key": "",
+		"label": "", "sub": "", "note": "", "rating": 0,
+		"accent": Color("#8d99bd"), "action": "promo_next"})
+	return out
+
+
+func _promo_step(by: int) -> void:
+	var n: int = _promo_slides().size()
+	promo_slide = posmod(promo_slide + by, n)
+	promo_age = 0.0
+	# Touched, so it stops moving on its own. See `promo_held`.
+	promo_held = true
+	Sfx.play("count", 1.15)
+
+
+func _tick_promo(delta: float) -> void:
+	if not _promo_up():
+		return
+	# It has been bought, so there is nothing left to sell. Checked here rather
+	# than wired to `Profile.changed` because ownership arrives by four
+	# different routes — a purchase, a restore, an entitlement found at launch,
+	# an Ask to Buy approved days later — and one poll catches all of them where
+	# four signal handlers would eventually miss one.
+	if Profile.owns(Profile.PACK_PREMIUM):
+		promo_open = false
+		return
+	if promo_held:
+		return
+	promo_age += delta
+	if promo_age >= PROMO_DWELL:
+		promo_age = 0.0
+		promo_slide = posmod(promo_slide + 1, _promo_slides().size())
+
+
+## The pitch.
+##
+## Everything inside the picture frame is drawn with the game's own functions —
+## `Cosmetics.draw_motion` for the weather, `Cosmetics.draw_premium_face` for
+## the blocks — so what is being advertised is what will actually arrive. A
+## folder of marketing stills would be one colour tweak away from being a lie.
+func _draw_promo(size: Vector2) -> void:
+	if not _promo_up():
+		return
+	var t := Time.get_ticks_msec() / 1000.0
+	# Heavier than the other cards' 0.86. Those stand in front of a playfield,
+	# which is dark; this one stands in front of the title screen, which is a
+	# stack of lit plates, and at 0.86 the menu read straight through the pitch
+	# and made it look like a window rather than a card.
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.96), true)
+
+	var r := _promo_rect()
+	_panel(r, Color("#0c1226"), Color("#ffd166", 0.55), 16.0, 2.0)
+	var cx := r.get_center().x
+	_draw_tracked(_font_bold, Vector2(cx, r.position.y + 30.0), "PREMIUM PACK",
+		13, 3.0, Color("#ffd166"))
+
+	var slides := _promo_slides()
+	var slide: Dictionary = slides[clampi(promo_slide, 0, slides.size() - 1)]
+	var stage := _promo_stage()
+	var theme := String(slide["theme"])
+
+	if theme != "":
+		_draw_promo_board(stage, theme, t)
+	else:
+		_draw_promo_no_ads(stage, t)
+
+	# The name and its three words, under the picture rather than over it —
+	# over it, every slide needs its own answer to "is the type readable on
+	# this one", and Clouds does not have one.
+	#
+	# Hung upward off the button row rather than downward off the picture, so
+	# the dots cannot end up underneath the buttons. See `_promo_button_top`.
+	var by := _promo_button_top()
+	var tint: Color = Cosmetics.theme_tint(theme, "accent", Color("#ffd166")) \
+		if theme != "" else Color("#ffd166")
+	_text_fit_overlay(_font_bold, Vector2(cx, by - 74.0),
+		String(slide["title"]), 30, r.size.x - 60.0, tint, 18)
+	_text_fit_overlay(_font, Vector2(cx, by - 46.0),
+		String(slide["note"]), 14, r.size.x - 60.0, Color("#aab4d4"), 11)
+
+	# Dots. The count is the whole point — "there are nine of these" is the
+	# argument, and a carousel with no dots hides it.
+	var dy: float = by - 20.0
+	var gap := 15.0
+	var x0: float = cx - (float(slides.size()) - 1.0) * gap * 0.5
+	for i in slides.size():
+		var on: bool = i == promo_slide
+		_overlay.draw_circle(Vector2(x0 + float(i) * gap, dy), 4.5 if on else 3.0,
+			Color("#ffd166") if on else Color("#3d4666"))
+
+	for b: Dictionary in _promo_buttons():
+		_draw_menu_button(b)
+	# The arrows' glyphs, drawn after the plates they sit on.
+	var stage_mid: float = stage.get_center().y
+	_otext(_font_bold, Vector2(stage.position.x + 27.0, stage_mid), "‹", 34,
+		Color("#e6ecff"))
+	_otext(_font_bold, Vector2(stage.end.x - 27.0, stage_mid), "›", 34,
+		Color("#e6ecff"))
+
+
+## One board, as it would actually look: its picture, its weather, its frame and
+## two of its blocks wearing the face drawn for it.
+func _draw_promo_board(stage: Rect2, id: String, t: float) -> void:
+	var pic := _theme_art(id)
+	var top := Cosmetics.theme_color(id, "top")
+	if pic != null:
+		var asz := Vector2(pic.get_width(), pic.get_height())
+		var want: float = stage.size.x / stage.size.y
+		var src := Rect2(Vector2.ZERO, asz)
+		if asz.x / asz.y > want:
+			src.size.x = asz.y * want
+			src.position.x = (asz.x - src.size.x) * 0.5
+		else:
+			src.size.y = asz.x / want
+			src.position.y = (asz.y - src.size.y) * 0.5
+		_overlay.draw_texture_rect_region(pic, stage, src,
+			Color(1, 1, 1, float(Cosmetics.theme_opt(id, "art_a"))))
+	else:
+		_overlay.draw_rect(stage, top, true)
+
+	var mk := String(Cosmetics.theme_opt(id, "motion"))
+	if mk != "":
+		# `bound`, because there is no scissor here and the card's edge is six
+		# pixels from the gutter of the title screen behind it.
+		_overlay.draw_set_transform(stage.position, 0.0, Vector2.ONE)
+		Cosmetics.draw_motion(_overlay, mk, stage.size, t,
+			Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT), true)
+		_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	# A playfield in miniature, translucent at the theme's own alpha, with its
+	# ruling and a short stack in it. Same shape as the real one: taller than
+	# wide, because that is what a board is.
+	var ph: float = stage.size.y * 0.62
+	var pw: float = ph * 0.52
+	var pan := Rect2(stage.get_center().x - pw * 0.5,
+		stage.get_center().y - ph * 0.5, pw, ph)
+	_overlay.draw_rect(pan, Color(Cosmetics.theme_color(id, "panel"),
+		float(Cosmetics.theme_opt(id, "panel_a"))), true)
+	var grid := Color(Cosmetics.theme_color(id, "grid"),
+		float(Cosmetics.theme(id)["grid_a"]))
+	var step: float = pw / 4.0
+	for i in range(1, 4):
+		_overlay.draw_rect(Rect2(pan.position.x + step * i, pan.position.y,
+			1.0, pan.size.y), grid, true)
+	var rows := int(pan.size.y / step)
+	for i in range(1, rows + 1):
+		_overlay.draw_rect(Rect2(pan.position.x, pan.position.y + step * i,
+			pan.size.x, 1.0), grid, true)
+
+	# Five blocks in the face this board was drawn with, across two rows, so the
+	# tier colours and the material are both on show.
+	var face := Cosmetics.face_for_board(id)
+	var stamps := ["AL", "ENT", "STR", "ING", "RE"]
+	var tiers := [0, 4, 2, 5, 1]
+	for i in 5:
+		var col := i % 3
+		var row := i / 3
+		var br := Rect2(pan.position.x + step * float(col) + 3.0,
+			pan.end.y - step * float(2 - row) + 3.0,
+			step * (2.0 if i == 1 else 1.0) - 6.0, step - 6.0)
+		if br.end.x > pan.end.x:
+			br.size.x = pan.end.x - br.position.x - 3.0
+		var ink := Cosmetics.draw_premium_face(_overlay, br,
+			WWBoard.TIER_COLORS[tiers[i]], face, false)
+		_text_fit_overlay(_font_bold, br.get_center(), stamps[i], 13,
+			br.size.x - 5.0, ink, 8)
+
+	# The frame, which on these boards is the lit neon edge.
+	_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame", PLAYER_ACCENT),
+		false, 2.0)
+
+
+## The one slide with no photograph behind it, which therefore has to be built
+## out of something.
+##
+## A first pass drew ten faint rows with a thin bar across the middle, and the
+## rows read as an empty list rather than as anything — the slide before it is a
+## waterfall, and following that with a mostly-blank panel says the pack runs
+## out of things to show. So this fills the stage: the thing being taken away,
+## struck out at the size the boards are shown at, and underneath it the thing
+## you are left with — one unbroken run.
+func _draw_promo_no_ads(stage: Rect2, t: float) -> void:
+	_overlay.draw_rect(stage, Color("#0b1020"), true)
+	# A wash out of the middle, so the panel has a centre to hang the mark on
+	# rather than being a flat rectangle.
+	var mid := stage.get_center()
+	for i in 6:
+		var f := float(i) / 5.0
+		_overlay.draw_circle(mid, stage.size.x * (0.16 + f * 0.46),
+			Color("#1b2444", 0.30 * (1.0 - f)))
+
+	var beat: float = 0.5 + 0.5 * sin(t * 1.5)
+	var r: float = minf(stage.size.x, stage.size.y) * 0.24
+	var mark := Vector2(mid.x, mid.y - stage.size.y * 0.10)
+	var red := Color("#ff6b6b")
+
+	# The circle-slash, breathing. Drawn rather than set as a character because
+	# the fallback font has no glyph for it and a missing glyph on the one slide
+	# that has no picture would be a blank panel.
+	for i in 3:
+		var f := float(i) / 2.0
+		_overlay.draw_arc(mark, r * (1.0 + f * 0.10), 0.0, TAU, 64,
+			Color(red, (0.30 - f * 0.09) * (0.55 + 0.45 * beat)), 2.0, true)
+	_overlay.draw_arc(mark, r, 0.0, TAU, 72, Color(red, 0.95), 6.0, true)
+	var d: float = r * 0.7071
+	_overlay.draw_line(mark + Vector2(-d, -d), mark + Vector2(d, d),
+		Color(red, 0.95), 6.0)
+	_text_fit_overlay(_font_bold, mark, "ADS", int(r * 0.62), r * 1.15,
+		Color(red, 0.80), 14)
+
+	# And what is left: a run that runs. No gap in it, because the positive
+	# half is the part worth selling — "uninterrupted" is the product, "you
+	# lose thirty seconds" is just the complaint it answers.
+	var bar := Rect2(stage.position.x + stage.size.x * 0.12,
+		mid.y + stage.size.y * 0.24, stage.size.x * 0.76, 34.0)
+	_overlay.draw_rect(bar, Color("#141b33"), true)
+	_overlay.draw_rect(bar, Color("#64dfdf", 0.35), false, 1.0)
+	var run: float = fmod(t * 0.22, 1.0)
+	_overlay.draw_rect(Rect2(bar.position,
+		Vector2(bar.size.x * run, bar.size.y)), Color("#64dfdf", 0.70), true)
+	# The head of it, so the bar reads as filling rather than as a static
+	# fraction somebody chose.
+	_overlay.draw_rect(Rect2(bar.position.x + bar.size.x * run - 2.0,
+		bar.position.y - 3.0, 3.0, bar.size.y + 6.0), Color("#b8f0ff", 0.9), true)
+	_otext(_font, Vector2(bar.position.x + 46.0, bar.position.y - 20.0),
+		"YOUR RUN", 11, Color("#64dfdf", 0.9))
+	_otext(_font, Vector2(bar.get_center().x, bar.end.y + 24.0),
+		"start to finish, nothing in the way", 12, Color("#7c88ad"))
 
 
 func _draw_confirm(size: Vector2) -> void:
@@ -4105,6 +4579,13 @@ func _process(delta: float) -> void:
 				start_match("Rookie", 0, [], Mode.TUTORIAL)
 			else:
 				phase = Phase.TITLE
+				# And only then the pitch, which is why it is in this branch and
+				# not the one above. A brand new player goes to the lesson, and
+				# selling a cosmetic pack to somebody who has not yet been told
+				# what the game is is both rude and useless. They will be owed
+				# it the next time they reach the title, which is when it makes
+				# sense to them.
+				_raise_promo()
 
 	if phase == Phase.OVER:
 		over_age += delta
@@ -4118,6 +4599,7 @@ func _process(delta: float) -> void:
 		_lobby_search = 0.0
 	_tick_challenges(delta)
 	_tick_scroll()
+	_tick_promo(delta)
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
@@ -4637,6 +5119,16 @@ func _end_daily(quit: bool, quiet: bool) -> void:
 	winner = "YOU" if survived else ""
 	Profile.record_daily(daily_key(), player.score, int(round(_wpm())),
 		player.words_played, player.best_chain)
+	# And into the week. A daily is a run like any other for mission purposes —
+	# the words, the salvos and the chain all count — plus the one thing only it
+	# can report.
+	_bank_week({
+		"words": player.words_played, "salvos": player.salvos,
+		"multi_clears": int(player.power_tally.get("COMBO", 0)),
+		"chain": player.best_chain, "combo": player.best_combo,
+		"wpm": _wpm(), "score": player.score,
+		"longest": player.longest_word,
+	}, "dailies")
 	# After the run is banked, never before: the local board is the one the
 	# summary is about to draw, and it must not be waiting on Apple to do it.
 	# `submit_daily` is a no-op off an Apple device and holds the score when
@@ -4743,6 +5235,15 @@ func _finish_survival() -> void:
 			"longest": player.longest_word,
 			"powers": player.power_tally,
 		})
+		_bank_week({
+			"words": player.words_played, "salvos": player.salvos,
+			"multi_clears": int(player.power_tally.get("COMBO", 0)),
+			"chain": player.best_chain, "combo": player.best_combo,
+			"wpm": _wpm(), "score": player.score,
+			"longest": player.longest_word,
+			# The one metric only survival can report.
+			"seconds": match_time,
+		}, "survivals")
 	earned = _earned_since(was_xp, was_level, was_unlocked)
 	# Inside the floor check's shadow on purpose: `survival_took` is empty for a
 	# run too short to bank, and a ten-second death has no business on a global
@@ -5030,7 +5531,21 @@ func _record_mastery() -> void:
 		"longest": player.longest_word,
 		"powers": player.power_tally,
 	})
+	_bank_week({
+		"won": winner == "YOU",
+		"flawless": winner == "YOU" and player.lives >= LIVES,
+		"words": player.words_played, "salvos": player.salvos,
+		"multi_clears": int(player.power_tally.get("COMBO", 0)),
+		"chain": player.best_chain, "combo": player.best_combo,
+		"wpm": _wpm(), "score": player.score,
+		"longest": player.longest_word,
+	}, "matches")
 
+	# Measured after the week is banked, so mission XP lands in the same "you
+	# earned this" readout as everything else the run paid for. Before it, the
+	# level bar on the summary would animate to a number three hundred XP short
+	# of where the profile actually is, and the missing chunk would appear out
+	# of nowhere the next time a screen was opened.
 	earned = _earned_since(was_xp, was_level, was_unlocked)
 
 	# The best moment the game has: beating another person. Rare enough at this
@@ -5888,7 +6403,7 @@ func _back_action() -> String:
 		return "rules"
 	match phase:
 		Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.SETTINGS, Phase.OVER, \
-				Phase.COSMETICS, Phase.BOARDS:
+				Phase.COSMETICS, Phase.BOARDS, Phase.WEEKLY:
 			return "title"
 		Phase.LOBBY:
 			# Backing out of a running search stops it rather than leaving it
@@ -6774,6 +7289,22 @@ func _draw_player_input(size: Vector2) -> void:
 	var cx := player.board.position.x + bw * 0.5
 	var base_y := BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 46.0
 
+	# Something for the type to sit on, when there is a photograph behind it.
+	#
+	# The input line and the readout under it are the two most important pieces
+	# of text in the game — what you are typing, and what it will do — and they
+	# live in the gap between the board and the keyboard, which is the one strip
+	# a painted board covers and neither dim band reaches. On Clouds that put
+	# gold type on a white sky. Soft-edged rather than a panel: it has to stop
+	# being a sky without starting to be a widget.
+	if _art != null:
+		for i in 5:
+			var f := float(i) / 4.0
+			var g: float = f * 11.0
+			draw_rect(Rect2(cx - bw * 0.5 - 26.0 - g, base_y - 32.0 - g,
+				bw + 52.0 + g * 2.0, 88.0 + g * 2.0),
+				Color(bg_top, 0.26 * (1.0 - f)), true)
+
 	var hits := _preview_hits(player, typed)
 	var col := PLAYER_ACCENT
 	if typed.length() >= MIN_WORD_LEN:
@@ -7061,6 +7592,8 @@ func _draw_overlay() -> void:
 			_draw_cosmetics(size)
 		elif phase == Phase.BOARDS:
 			_draw_boards(size)
+		elif phase == Phase.WEEKLY:
+			_draw_weekly(size)
 		elif phase == Phase.SETTINGS:
 			_draw_settings(size)
 		elif phase == Phase.COUNTDOWN:
@@ -7080,6 +7613,13 @@ func _draw_overlay() -> void:
 		if portrait:
 			_draw_scrollbar(size)
 			_draw_back_button()
+
+		# Over the title screen and its scrollbar, because it is a card and the
+		# title screen is what it is standing in front of. Inside this branch
+		# rather than beside the invite banner below: `_promo_up` already refuses
+		# any phase but TITLE and SPLASH, and a pitch that could be drawn over a
+		# match would be one `_promo_up` edit away from being drawn over one.
+		_draw_promo(size)
 
 	# Over every screen, for the same reason the curtain is: an invitation can
 	# arrive on any of them, and a banner drawn per-branch is a banner missing
@@ -7243,8 +7783,22 @@ func _draw_splash(size: Vector2) -> void:
 
 func _draw_title(size: Vector2) -> void:
 	var cx := size.x * 0.5
+	# A painted board is allowed to show through here.
+	#
+	# At the flat 0.90 every menu wears, Clouds' sky and Forest's waterfall
+	# arrived as a uniform navy rectangle — the board somebody paid for was
+	# visible during a match and nowhere else, and the front door of the game
+	# was the one screen that never showed it. 0.66 is as far as it goes: the
+	# plates are opaque and stay readable at any wash, but the band labels
+	# above them are small grey type sitting directly on the backdrop, and they
+	# are what sets the floor.
+	#
+	# Only the title. The dense screens — mastery, cosmetics, settings — keep
+	# their heavier wash, because those are read rather than looked at and a
+	# waterfall behind a table of numbers is a worse table.
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), Color(bg_top, 0.90), true)
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.66 if _art != null else 0.90), true)
 	_draw_decor()
 
 	# Wordmark, with the tail of WARS picked out — the whole game in one gag.
@@ -8665,6 +9219,118 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 				String(e2.get("name", "")).to_upper(), 20, Color("#e6ecff"))
 			_otext(_font, Vector2(mid.x, mid.y + 16.0), "seen in play", 11,
 				Color("#5d6a92"))
+
+
+## This week's four, and how far along each one is.
+##
+## Deliberately a list and not a grid. Four rows with a bar apiece is a thing
+## somebody reads top to bottom in three seconds; a grid of tiles would fit more
+## on the screen and there is nothing more to fit — four is the whole set, and
+## the screen's job is to make the one that is nearly done obvious.
+
+## Row height and the gap under the header, shared by the layout and the draw so
+## the two cannot disagree about where row three is.
+const WEEK_ROW_H := 92.0
+const WEEK_ROW_GAP := 12.0
+
+
+func _weekly_head() -> float:
+	return safe_top + _menu_offset(_weekly_laid()) + 150.0
+
+
+func _weekly_laid() -> float:
+	return 150.0 + float(Missions.PER_WEEK) * (WEEK_ROW_H + WEEK_ROW_GAP) + 190.0
+
+
+func _weekly_row_rect(i: int) -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
+	return Rect2(size.x * 0.5 - w * 0.5,
+		_weekly_head() + float(i) * (WEEK_ROW_H + WEEK_ROW_GAP), w, WEEK_ROW_H)
+
+
+func _draw_weekly(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	var key := Missions.week_key()
+	var hy := safe_top + _menu_offset(_weekly_laid())
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "WEEKLY", 34, Color("#e6ecff"))
+	# The deadline, said once at the top rather than on every row.
+	_otext(_font, Vector2(cx, hy + 92.0),
+		"four missions · new set Sunday · %s left" % _weekly_left_text(key),
+		13, Color("#7c88ad"))
+
+	var rows := Profile.weekly_state(key)
+	var done := 0
+	for i in rows.size():
+		if bool((rows[i] as Dictionary)["done"]):
+			done += 1
+		_draw_weekly_row(_weekly_row_rect(i), rows[i])
+
+	# The footer: what the week has paid and what is left to take. A total is
+	# the one thing four separate bars cannot say.
+	var fy: float = _weekly_head() + float(rows.size()) \
+		* (WEEK_ROW_H + WEEK_ROW_GAP) + 26.0
+	var owed: int = (Missions.PER_WEEK - done) * Missions.MISSION_XP
+	if done >= Missions.PER_WEEK:
+		_otext(_font_bold, Vector2(cx, fy), "WEEK CLEARED", 20, Color("#90be6d"))
+		_otext(_font, Vector2(cx, fy + 26.0),
+			"+%s XP banked · come back Sunday" % _commas(
+				Missions.PER_WEEK * Missions.MISSION_XP),
+			13, Color("#7c88ad"))
+	else:
+		_otext(_font_bold, Vector2(cx, fy),
+			"%d of %d done" % [done, Missions.PER_WEEK], 20, Color("#ffd166"))
+		_otext(_font, Vector2(cx, fy + 26.0),
+			"%s XP still on the table" % _commas(owed), 13, Color("#7c88ad"))
+	if Profile.weekly_cleared > 0:
+		_otext(_font, Vector2(cx, fy + 50.0),
+			"%d week%s cleared all-time" % [Profile.weekly_cleared,
+				"" if Profile.weekly_cleared == 1 else "s"],
+			12, Color("#5d6a92"))
+
+	for b: Dictionary in _menu_buttons():
+		_draw_menu_button(b)
+
+
+## One mission: what it asks, how far along, and whether it is paid.
+func _draw_weekly_row(r: Rect2, m: Dictionary) -> void:
+	var is_done: bool = bool(m["done"])
+	var tint: Color = Color("#90be6d") if is_done else Color("#64dfdf")
+	_panel(r, Color("#141b33"), Color(tint, 0.55 if is_done else 0.22), 10.0, 2.0)
+
+	var pad := 18.0
+	_otext_left(_font_bold, Vector2(r.position.x + pad, r.position.y + 28.0),
+		String(m["text"]), 17, Color("#e6ecff") if not is_done else tint)
+
+	# The bar. Its own numbers under it rather than inside it, because a target
+	# of 24,000 does not fit in a bar and the bar is the part that has to be
+	# readable at a glance anyway.
+	var have := int(m["have"])
+	var target: int = maxi(1, int(m["target"]))
+	var frac: float = clampf(float(have) / float(target), 0.0, 1.0)
+	var bar := Rect2(r.position.x + pad, r.position.y + 46.0,
+		r.size.x - pad * 2.0, 12.0)
+	_overlay.draw_rect(bar, Color("#0b1020"), true)
+	if frac > 0.0:
+		_overlay.draw_rect(Rect2(bar.position,
+			Vector2(bar.size.x * frac, bar.size.y)), Color(tint, 0.85), true)
+	_overlay.draw_rect(bar, Color(tint, 0.30), false, 1.0)
+
+	_otext_left(_font, Vector2(r.position.x + pad, r.position.y + 74.0),
+		"%s / %s" % [_commas(have), _commas(target)], 12,
+		Color("#7c88ad"))
+	# The payout, right-aligned, greyed once it has been taken — a finished
+	# mission that still advertises its price reads as unclaimed.
+	var tag := "+%d XP" % Missions.MISSION_XP if not is_done else "EARNED"
+	var tw: float = _font_bold.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, 13).x
+	_otext_left(_font_bold, Vector2(r.end.x - pad - tw, r.position.y + 74.0),
+		tag, 13, tint if is_done else Color("#ffd166"))
 
 
 ## Everything you are wearing, and everything you could be.
@@ -11796,6 +12462,14 @@ func _menu_buttons() -> Array:
 					+ 66.0, 180.0, 38.0),
 				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.WEEKLY:
+		# One control. Nothing on this screen is pressable — the missions are a
+		# report, not a menu — so the only thing it needs is a way out.
+		out.append({
+			"rect": Rect2(cx - 90.0, _weekly_head() + float(Missions.PER_WEEK)
+				* (WEEK_ROW_H + WEEK_ROW_GAP) + 96.0, 180.0, 44.0),
+			"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.BOARDS:
 		var hy := _boards_head()
 		# Two rows of two, both centred on the same 304-wide block so the pair of
@@ -12124,6 +12798,37 @@ func _survival_sub() -> String:
 ## The line under the BOARDS door. A waiting challenge is the strongest reason
 ## to go through it and gets said first; failing that, where today's daily run
 ## actually put you, which is the number the door is offering to explain.
+## What the weekly door says for itself: how many of the four are done, and how
+## long is left to do the rest.
+##
+## The count comes first because it is the part that changes. "3 of 4 done" is a
+## reason to go in; "resets Sunday" on its own is a fact about a calendar.
+func _weekly_sub() -> String:
+	var key := Missions.week_key()
+	var done := Profile.weekly_done_count(key)
+	if done >= Missions.PER_WEEK:
+		return "All %d done — new set on Sunday" % Missions.PER_WEEK
+	return "%d of %d missions done  ·  %s left" % [done, Missions.PER_WEEK,
+		_weekly_left_text(key)]
+
+
+func _weekly_all_done() -> bool:
+	return Profile.weekly_done_count(Missions.week_key()) >= Missions.PER_WEEK
+
+
+## Time until Sunday, in the largest unit that still says something useful.
+## Hours once it is inside a day, because "0 days" is not an answer.
+func _weekly_left_text(key: String) -> String:
+	var secs := Missions.seconds_left(key)
+	if secs >= 86400.0:
+		var days := int(secs / 86400.0)
+		return "%d day%s" % [days, "" if days == 1 else "s"]
+	var hours := int(secs / 3600.0)
+	if hours >= 1:
+		return "%d hour%s" % [hours, "" if hours == 1 else "s"]
+	return "%d min" % maxi(1, int(secs / 60.0))
+
+
 func _boards_door_sub() -> String:
 	if Boards.pending > 0:
 		return "%d challenge%s waiting" % [Boards.pending,
@@ -12185,6 +12890,12 @@ func _title_modes() -> Array:
 			Color("#90be6d"), 1],
 		["DAI", "DAILY", dsub, "daily",
 			Color("#5d6a92") if spent else Color("#ffd166"), 2],
+		# Next to the daily because it is the same rhythm at a longer wavelength
+		# — one is a board a day, this is a set of jobs a week — and somebody
+		# who came here for one should see the other. Not a mode: it opens a
+		# list rather than a run, which is why it is a door and not a Play.
+		["WEEK", "WEEKLY", _weekly_sub(), "weekly",
+			Color("#90be6d") if _weekly_all_done() else Color("#64dfdf"), 2],
 		["SUR", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 2],
 		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 2],
 		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 2],
@@ -12268,6 +12979,7 @@ func _title_plates() -> Array:
 			"sub": String(row[2]), "note": "", "rating": 0,
 			"accent": row[4], "action": String(row[3]),
 			"stamp": String(row[0]), "word": String(row[1]), "band": int(row[5]),
+			"badge": _plate_badge(String(row[3])),
 		})
 		y += float(m["h"]) + float(m["gap"])
 	# The rules are not a mode, so they are not a plate. A quiet line under the
@@ -12278,6 +12990,30 @@ func _title_plates() -> Array:
 		"accent": Color("#5d6a92"), "action": "rules", "stamp": "", "word": "",
 		"band": -1})
 	return out
+
+
+## The flag in the corner of a title plate, or "" for the usual case.
+##
+## Worked out from the action rather than carried in the row tables, because
+## those are positional arrays read by three separate loops and a seventh column
+## would have to be threaded through all of them to say something only two rows
+## will ever have.
+##
+## The two badges mean different things and clear on different events, which is
+## why `Profile` answers them with two calls rather than one:
+##
+##   COSMETICS  "the wardrobe has things you have not seen." Answered by opening
+##              the screen. Shown to owners too — they are the ones who can
+##              actually wear the new faces.
+##   PREMIUM    "this offer has changed." Answered by buying, and by nothing
+##              else. The row only exists while there is something to sell, so
+##              a player who already owns the pack never sees it.
+func _plate_badge(action: String) -> String:
+	if action == "cosmetics" and Profile.cosmetics_are_new():
+		return "NEW"
+	if action == "buy" and not Profile.owns(Profile.PACK_PREMIUM):
+		return "NEW"
+	return ""
 
 
 ## The fragment a word would be branded with. Three letters is what most
@@ -12303,7 +13039,8 @@ func _stamp_for(word: String) -> String:
 ##
 ## `stamp` empty draws a plain row instead — for the things that are not modes.
 func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color,
-		hot: bool, on: bool = false, locked: bool = false) -> void:
+		hot: bool, on: bool = false, locked: bool = false,
+		badge: String = "") -> void:
 	if stamp == "":
 		_draw_tracked(_font, r.get_center(), word.to_upper(), 11, 2.0,
 			Color("#aab4d4") if hot else Color("#6b769b"))
@@ -12369,12 +13106,45 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 			int(clampf(13.0 + (r.size.y - 40.0) * 0.055, 13.0, 19.0)), avail, 11)
 		_otext_left(_font, Vector2(tx, r.position.y + r.size.y * 0.72), sub, ss,
 			Color("#aab4d4") if hot else Color("#7c88ad"))
+	if badge != "":
+		_draw_plate_badge(r, badge)
+
+
+## The flag itself: a gold pill hanging off the plate's top right corner.
+##
+## Gold because that is what this palette already uses for the thing worth
+## having, and it is the one colour on the title screen not spent on a mode —
+## so a gold mark reads as "look here" without having to be big.
+##
+## It breathes. A static badge on a screen somebody has opened two hundred
+## times is furniture, and furniture is invisible; the point of this thing is to
+## be noticed exactly once. Slow enough not to be a distraction while the eye is
+## somewhere else — the period is over two seconds, where the danger vignette
+## beats three times as fast.
+func _draw_plate_badge(r: Rect2, text: String) -> void:
+	var pulse: float = 0.5 + 0.5 * sin(Time.get_ticks_msec() / 370.0)
+	var gold := Color("#ffd166")
+	var pad := 7.0
+	var fs := 11
+	var tw: float = _font_bold.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, fs).x
+	var pill := Rect2(r.end.x - tw - pad * 2.0 - 8.0, r.position.y - 7.0,
+		tw + pad * 2.0, 18.0)
+	# A soft halo under it, which is what carries the pulse — pulsing the pill
+	# itself makes the word flicker and the word has to stay readable.
+	for i in 3:
+		var f := float(i) / 2.0
+		_overlay.draw_rect(pill.grow(2.0 + f * 5.0),
+			Color(gold, 0.18 * (1.0 - f) * (0.35 + 0.65 * pulse)), true)
+	_panel(pill, gold, Color("#fff3d6", 0.9), 9.0, 1.0)
+	_otext(_font_bold, pill.get_center(), text, fs, Color("#2a1b00"))
 
 
 func _draw_title_plate(b: Dictionary) -> void:
 	_draw_plate(b["rect"], String(b.get("stamp", "")), String(b["word"])
 		if b.has("word") else String(b["label"]), String(b["sub"]), b["accent"],
-		_hover_action == String(b["action"]))
+		_hover_action == String(b["action"]), false, false,
+		String(b.get("badge", "")))
 
 
 ## Text with a fixed extra advance between characters. Godot has no tracking, so
@@ -12475,7 +13245,8 @@ func _draw_menu_button(b: Dictionary) -> void:
 	if int(b.get("rating", 0)) > 0 and sub == "":
 		sub = "%d wpm" % int(b["rating"])
 	_draw_plate(r, stamp, label.to_upper(), sub, b["accent"], hot,
-		bool(b.get("on", false)), bool(b.get("locked", false)))
+		bool(b.get("on", false)), bool(b.get("locked", false)),
+		String(b.get("badge", "")))
 
 
 func _panel(r: Rect2, bg: Color, border: Color, radius: float, width: float = 2.0) -> void:
@@ -12816,6 +13587,15 @@ func _action_at(p: Vector2) -> String:
 	for b: Dictionary in _invite_banner_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
+	# The pitch owns the screen while it is up, and swallows presses that miss
+	# it — the title screen's plates are directly underneath, and a press that
+	# fell through would start a match out from under a card the player was
+	# still reading.
+	if _promo_up():
+		for b: Dictionary in _promo_buttons():
+			if (b["rect"] as Rect2).has_point(p):
+				return String(b["action"])
+		return ""
 	# The leave card comes first for the same reason the rematch card does, and
 	# with more at stake: the pause menu is directly underneath it, and the
 	# button it is asking about is the one a stray press would land on.
@@ -13059,9 +13839,31 @@ func _activate(action: String) -> void:
 		Link.leave()
 		MultiplayerManager.leave_match()
 		start_match("Survival", 0, [], Mode.SURVIVAL)
+	elif action == "promo_close":
+		_close_promo()
+	elif action == "promo_next":
+		_promo_step(1)
+	elif action == "promo_prev":
+		_promo_step(-1)
+	elif action == "promo_buy":
+		# Straight into Apple's sheet. The card stays up behind it: the purchase
+		# can be cancelled, and dropping the pitch on the way to a sheet that
+		# might come back "no" would leave somebody who meant to buy it with no
+		# way back to the button. `Profile.changed` takes it down on success —
+		# see `_apply_theme`'s neighbour in `_ready`.
+		if Store.can_buy():
+			Store.buy()
+	elif action == "weekly":
+		phase = Phase.WEEKLY
+		_hover_action = ""
+		Sfx.play("count", 1.1)
 	elif action == "cosmetics":
 		phase = Phase.COSMETICS
 		_hover_action = ""
+		# The badge on the door has done its job the moment the door is opened.
+		# Marked here rather than in the screen's draw so that it is the act of
+		# going in that answers it, not a frame of it happening to be rendered.
+		Profile.note_cosmetics_seen()
 		Sfx.play("count", 1.1)
 	elif action == "rules":
 		show_rules = not show_rules

@@ -272,7 +272,67 @@ const PREF_DEFAULTS := {
 	## moment of asking rather than on a confirmation that never comes.
 	"review_asks": 0,
 	"review_last": 0,
+	## The last content drop whose pitch this player has seen, and the last one
+	## whose new cosmetics they have gone and looked at. Both are numbers rather
+	## than bools so that the next batch of boards can announce itself without
+	## anything new being written; see `PROMO_DROP`.
+	"promo_seen": 0,
+	"cosmetics_seen": 0,
 }
+
+## Which batch of paid content is current.
+##
+## Bumped by hand, once, in the commit that adds the content. Everything that
+## announces new cosmetics compares against it: a player whose `promo_seen` is
+## behind is owed the pitch, a player whose `cosmetics_seen` is behind gets the
+## badge on the door. Seeing it writes the number back, and both go quiet until
+## the next bump.
+##
+## A number rather than a "has seen the premium pitch" bool because the bool
+## only works once. The eight painted boards are the second thing this pack has
+## ever gained, and on the day there is a ninth, a bool would have to be renamed
+## or hand-cleared on every install in the world.
+##
+## 0 is "before any of this existed", which is what every save written before
+## this version reads back as — so the drop below is owed to exactly the people
+## who have not seen it, including everyone upgrading.
+##
+##   1  the eight painted boards and the block faces drawn for them
+const PROMO_DROP := 1
+
+
+## Whether this player is owed the pitch for the current drop.
+##
+## Owning the pack is the first question and not the only one: somebody who
+## bought it already has the boards and does not need to be sold them, and
+## somebody who has seen this drop's pitch has answered it.
+func owes_promo() -> bool:
+	if owns(PACK_PREMIUM):
+		return false
+	return int(pref("promo_seen")) < PROMO_DROP
+
+
+## Whether the cosmetics door should be wearing a NEW badge.
+##
+## Deliberately not gated on owning the pack. The premium badge is an offer and
+## belongs only to people who have not taken it; this one says "the wardrobe has
+## things in it you have not seen", which is true for a buyer as well — more so,
+## since they are the ones who can wear them.
+func cosmetics_are_new() -> bool:
+	return int(pref("cosmetics_seen")) < PROMO_DROP
+
+
+## Mark a drop's announcement as delivered. Separate calls because the two are
+## answered by different acts: the pitch by being shown, the badge by the player
+## opening the screen it points at.
+func note_promo_seen() -> void:
+	if int(pref("promo_seen")) < PROMO_DROP:
+		set_pref("promo_seen", PROMO_DROP)
+
+
+func note_cosmetics_seen() -> void:
+	if int(pref("cosmetics_seen")) < PROMO_DROP:
+		set_pref("cosmetics_seen", PROMO_DROP)
 
 
 func pref(key: String):
@@ -329,6 +389,20 @@ func xp_total() -> int:
 	n += longest_word.length() * longest_word.length() * int(XP["longest"])
 	for key in powers:
 		n += int(powers[key]) * 18
+	# The weekly missions, and the one thing in here that is not derived.
+	#
+	# Everything above is a pure function of the lifetime record, which is a
+	# property worth keeping: it means a level can be recomputed from the stats
+	# and never drifts. A mission cannot work that way — "reach a x7 chain this
+	# week" is not recoverable from a lifetime peak, because the peak does not
+	# know which week it happened in. So the payout is banked when it is earned
+	# and carried as its own total.
+	#
+	# It is still part of the record rather than a wallet: it only ever goes up,
+	# nothing spends it, and `shoptest` still proves the premium entries cannot
+	# be reached by playing — a mission pays XP, and XP has never unlocked the
+	# paid pack.
+	n += weekly_xp
 	return n
 
 
@@ -637,6 +711,164 @@ var _legacy_streak := 0
 ## How many days of history to keep. The streak is counted out of this, so it is
 ## also the longest streak that can be *proved* from the file — see
 ## `daily_best_streak`, which is what remembers anything longer.
+# --------------------------------------------------------- the weekly missions
+#
+# Four jobs a week, reset every Sunday. `Missions` owns which four and what they
+# ask for; this owns how far along you are and what has been paid out.
+#
+# ## Why progress is keyed by the week
+#
+# A single "progress" dictionary would be a week behind the moment the clock
+# rolled over, and clearing it on rollover needs something to notice the
+# rollover — which is a thing that only runs when the game is open. Keyed by
+# the Sunday, a new week simply has no entry yet and reads as all zeros, and the
+# old week's numbers sit there harmlessly until they are trimmed. Nothing has to
+# fire at midnight for the reset to be correct.
+
+## Sunday key -> {"progress": {metric: number}, "paid": [mission ids]}.
+var weekly: Dictionary = {}
+## XP banked from finished missions, ever. Folded into `xp_total`.
+var weekly_xp := 0
+## How many whole weeks have been cleared — all four, in one week.
+var weekly_cleared := 0
+## Weeks of history kept. Eight is two months, which is enough to show a run of
+## them and not enough to turn the save into a log file.
+const WEEKS_KEPT := 8
+
+
+func _week_row(key: String) -> Dictionary:
+	if not weekly.has(key):
+		weekly[key] = {"progress": {}, "paid": []}
+	return weekly[key]
+
+
+## How far along a metric is this week.
+func weekly_progress(key: String, metric: String) -> int:
+	var row: Dictionary = weekly.get(key, {})
+	var p: Dictionary = row.get("progress", {})
+	return int(p.get(metric, 0))
+
+
+func weekly_paid(key: String, id: String) -> bool:
+	var row: Dictionary = weekly.get(key, {})
+	return (row.get("paid", []) as Array).has(id)
+
+
+## This week's four, each with where the player has got to.
+##
+## Built by asking `Missions` for the set and the save for the numbers, rather
+## than by storing the set — so retuning a target changes what an unfinished
+## week is asking for, and a week already paid out stays paid.
+func weekly_state(key: String) -> Array:
+	var out: Array = []
+	for m: Dictionary in Missions.for_week(key):
+		var have := weekly_progress(key, String(m["metric"]))
+		var target := int(m["target"])
+		var row := m.duplicate()
+		row["have"] = mini(have, target)
+		row["done"] = have >= target
+		row["paid"] = weekly_paid(key, String(m["id"]))
+		out.append(row)
+	return out
+
+
+func weekly_done_count(key: String) -> int:
+	var n := 0
+	for m: Dictionary in weekly_state(key):
+		if bool(m["done"]):
+			n += 1
+	return n
+
+
+## Move a metric along, and pay for anything that just finished.
+##
+## `kind` decides how: a count adds, a peak takes the better of the two. The
+## caller does not have to know which — it reports what happened and this works
+## out what that means for the four jobs currently running.
+##
+## Returns the XP just paid, so the summary screen can say so.
+func note_mission_progress(key: String, metric: String, amount: int) -> int:
+	if amount <= 0:
+		return 0
+	var row := _week_row(key)
+	var p: Dictionary = row["progress"]
+	# A peak metric is reported as "this run reached N", a count as "N more
+	# happened". Which one this metric is, is a property of the catalogue, so
+	# it is read from there rather than passed in and possibly disagreed about.
+	var peak := false
+	for m: Dictionary in Missions.CATALOGUE:
+		if String(m["metric"]) == metric:
+			peak = String(m["kind"]) == "peak"
+			break
+	if peak:
+		p[metric] = maxi(int(p.get(metric, 0)), amount)
+	else:
+		p[metric] = int(p.get(metric, 0)) + amount
+
+	# Anything that just crossed its line gets paid once. `paid` is what makes
+	# it once: without it, every subsequent word typed would pay for the same
+	# finished mission again.
+	var gained := 0
+	var paid: Array = row["paid"]
+	var before := weekly_cleared
+	for m: Dictionary in weekly_state(key):
+		if bool(m["done"]) and not paid.has(String(m["id"])):
+			paid.append(String(m["id"]))
+			gained += Missions.MISSION_XP
+	if gained > 0:
+		weekly_xp += gained
+		if paid.size() >= Missions.PER_WEEK and before == weekly_cleared:
+			weekly_cleared += 1
+	return gained
+
+
+## Fold a finished run into the week. One door for every mode, so a mode cannot
+## be added that quietly counts for nothing.
+##
+## `what` is the mode's own contribution — a match reports `matches`, a daily
+## reports `dailies`, survival reports `survivals` — on top of the numbers every
+## mode produces.
+func record_week(key: String, r: Dictionary, what: String) -> int:
+	var gained := 0
+	if what != "":
+		gained += note_mission_progress(key, what, 1)
+	gained += note_mission_progress(key, "words", int(r.get("words", 0)))
+	gained += note_mission_progress(key, "salvos", int(r.get("salvos", 0)))
+	gained += note_mission_progress(key, "multi_clears",
+		int(r.get("multi_clears", 0)))
+	if bool(r.get("won", false)):
+		gained += note_mission_progress(key, "wins", 1)
+	if bool(r.get("flawless", false)):
+		gained += note_mission_progress(key, "flawless", 1)
+	gained += note_mission_progress(key, "chain", int(r.get("chain", 0)))
+	gained += note_mission_progress(key, "combo", int(r.get("combo", 0)))
+	gained += note_mission_progress(key, "wpm", int(round(float(r.get("wpm", 0.0)))))
+	gained += note_mission_progress(key, "score", int(r.get("score", 0)))
+	gained += note_mission_progress(key, "longest",
+		String(r.get("longest", "")).length())
+	gained += note_mission_progress(key, "survive_seconds",
+		int(r.get("seconds", 0.0)))
+	_trim_weeks(key)
+	save()
+	changed.emit()
+	return gained
+
+
+## Drop weeks older than `WEEKS_KEPT`. Sorted as strings, which for ISO dates is
+## the same as sorted by date — the one thing that format is for.
+func _trim_weeks(current: String) -> void:
+	if weekly.size() <= WEEKS_KEPT:
+		return
+	var keys: Array = weekly.keys()
+	keys.sort()
+	while keys.size() > WEEKS_KEPT:
+		var oldest := String(keys[0])
+		keys.remove_at(0)
+		# Never the week being played, however the clock has been set.
+		if oldest != current:
+			weekly.erase(oldest)
+
+
 const DAILY_KEPT := 60
 
 ## "YYYY-MM-DD" -> {"score", "wpm", "words", "chain"}.
@@ -904,6 +1136,13 @@ func _apply(cfg: ConfigFile) -> Error:
 	daily = cfg.get_value("daily", "runs", {})
 	daily_best = int(cfg.get_value("daily", "best", 0))
 	daily_best_streak = int(cfg.get_value("daily", "best_streak", 0))
+	# Absent from every save written before the missions existed, and the
+	# defaults are exactly right for those: no weeks on file, nothing paid out,
+	# nothing cleared. No migration needed — an old save simply starts this
+	# week from zero, which is what it should do.
+	weekly = cfg.get_value("weekly", "runs", {})
+	weekly_xp = int(cfg.get_value("weekly", "xp", 0))
+	weekly_cleared = int(cfg.get_value("weekly", "cleared", 0))
 	# Schema 2 and older kept the *live* streak here and had no record of the
 	# best one. Read into the record: it is the only number in the old file that
 	# says anything about a streak, and the alternative is telling somebody who
@@ -1007,6 +1246,9 @@ func _encode() -> ConfigFile:
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
 	cfg.set_value("daily", "best_streak", daily_best_streak)
+	cfg.set_value("weekly", "runs", weekly)
+	cfg.set_value("weekly", "xp", weekly_xp)
+	cfg.set_value("weekly", "cleared", weekly_cleared)
 	cfg.set_value("worn", "equipped", equipped)
 	cfg.set_value("worn", "prefs", prefs)
 	return cfg
