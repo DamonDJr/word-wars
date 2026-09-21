@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Pack the BloqBot frame folders into the sprite sheets the game draws from.
+"""Pack a character's frame folders into the sprite sheets the game draws from.
 
-    python3 tools/build_emotes.py
+    python3 tools/build_emotes.py            every character
+    python3 tools/build_emotes.py waddles    just the one
 
 Reads `baseEmotes/BloqBot/<Set>/*.png` and writes one sheet per emote into
 `emotes/`. Source frames are 512x512 (Love is 256) with the character floating
@@ -36,23 +37,49 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "baseEmotes" / "BloqBot"
 DST = ROOT / "emotes"
 
 CELL = 160
 GUTTER = 2
 COLS = 6
 
-# Source folder -> output name. The output names are what `game.gd` names in
-# EMOTE_ANIM; changing one means changing both.
-SETS = {
-    "BloqBotExcited": "bot_excited",
-    "BloqBotCry": "bot_cry",
-    "BloqBotShocked": "bot_shocked",
-    "BloqBotMad": "bot_mad",
-    "BloqBotLove": "bot_love",
-    "BloqBotHype": "bot_hype",
-    "BloqBotDead": "bot_dead",
+# The longest cycle worth packing.
+#
+# `EMOTE_FPS` is 12 and `EMOTE_SHOW` is 2.4 seconds, so a sticker is on screen
+# for about 29 frames. Waddles' Dance is 72 and his Victory is 83 -- packed
+# whole, two thirds of each sheet would be frames nobody ever sees, at 160px a
+# cell. So anything longer is sampled evenly down to this, which keeps the
+# gesture and drops the in-betweens.
+#
+# 24 rather than 29 because it matches the longest BloqBot cycle: every
+# character then runs at the same cadence, and a set that plays faster for one
+# of them would read as a different animation rather than a different bird.
+MAX_FRAMES = 24
+
+# Source folder -> output name, per character. The output names are what
+# `game.gd` names in EMOTE_ANIM; changing one means changing both.
+#
+# Waddles has five sets against BloqBot's seven, so two of his do double duty
+# in that table -- Victory answers both cheer and nice, Exhausted both cry and
+# dead. That mapping lives in `game.gd` because it is about which feeling gets
+# which picture; this file only has to produce the five sheets.
+CHARACTERS = {
+    "bloqbot": (ROOT / "baseEmotes" / "BloqBot", {
+        "BloqBotExcited": "bot_excited",
+        "BloqBotCry": "bot_cry",
+        "BloqBotShocked": "bot_shocked",
+        "BloqBotMad": "bot_mad",
+        "BloqBotLove": "bot_love",
+        "BloqBotHype": "bot_hype",
+        "BloqBotDead": "bot_dead",
+    }),
+    "waddles": (ROOT / "baseEmotes" / "Waddles", {
+        "WaddlesVictory": "duck_victory",
+        "WaddlesExhausted": "duck_exhausted",
+        "WaddlesShocked": "duck_shocked",
+        "WaddlesDance": "duck_dance",
+        "WaddlesWait": "duck_wait",
+    }),
 }
 
 
@@ -126,10 +153,16 @@ def dilate(sheet, passes=4):
     return sheet
 
 
-def build(folder, name):
-    frames = sorted((SRC / folder).glob("*.png"))
+def build(src, folder, name):
+    frames = sorted((src / folder).glob("*.png"))
     if not frames:
-        raise SystemExit("no frames in %s" % (SRC / folder))
+        raise SystemExit("no frames in %s" % (src / folder))
+    # Evenly spaced rather than the first N, or a 72-frame dance would pack its
+    # wind-up and none of the dance.
+    if len(frames) > MAX_FRAMES:
+        step = len(frames) / float(MAX_FRAMES)
+        frames = [frames[min(len(frames) - 1, int(i * step))]
+                  for i in range(MAX_FRAMES)]
     rows = (len(frames) + COLS - 1) // COLS
     sheet = np.zeros((rows * CELL, COLS * CELL, 4), dtype=np.float32)
     inner = CELL - GUTTER * 2
@@ -150,12 +183,21 @@ def build(folder, name):
 
 
 def main():
-    if not SRC.is_dir():
-        raise SystemExit("no source art at %s" % SRC)
-    print("cell %d  gutter %d  cols %d" % (CELL, GUTTER, COLS))
-    for folder, name in SETS.items():
-        count, rows = build(folder, name)
-        print("%-12s -> {\"frames\": %d, \"rows\": %d}" % ("", count, rows))
+    wanted = sys.argv[1:] or sorted(CHARACTERS)
+    for who in wanted:
+        if who not in CHARACTERS:
+            raise SystemExit("unknown character %r -- have %s"
+                             % (who, ", ".join(sorted(CHARACTERS))))
+    print("cell %d  gutter %d  cols %d  max %d frames"
+          % (CELL, GUTTER, COLS, MAX_FRAMES))
+    for who in wanted:
+        src, sets = CHARACTERS[who]
+        if not src.is_dir():
+            raise SystemExit("no source art at %s" % src)
+        print("--- %s ---" % who)
+        for folder, name in sets.items():
+            count, rows = build(src, folder, name)
+            print("%-12s -> {\"frames\": %d, \"rows\": %d}" % ("", count, rows))
 
 
 if __name__ == "__main__":

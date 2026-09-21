@@ -722,7 +722,8 @@ func _draw_block(b: Blk, hot: bool) -> void:
 		# a fraction of the rect they are handed, so the same painter serves a
 		# 42px cell and a shop preview, and the block you bought cannot look
 		# like one thing in the menu and another in the match.
-		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice":
+		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice", \
+				"rune":
 			# `b.art` rather than the rect: see the note on `Blk.art`. Without
 			# it a falling block re-rolls its own pattern sixty times a second.
 			ink = Cosmetics.draw_premium_face(self, rect, col, style, hot,

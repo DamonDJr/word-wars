@@ -34,6 +34,8 @@ func _init() -> void:
 	_premium_theme_actually_differs()
 	_the_painted_boards_are_painted()
 	_the_faces_match_the_boards()
+	_the_share_ladder_is_not_for_sale()
+	_a_day_is_the_unit_of_sharing()
 	_the_pitch_is_owed_once()
 	_the_badges_answer_to_different_things()
 	_the_menu_knows_every_block_style()
@@ -297,8 +299,11 @@ func _premium_theme_actually_differs() -> void:
 ## board still equips, still plays, and is silently just its wash — a paid
 ## board that looks like a free one, reported as "it did nothing". Checked on
 ## disk rather than by reading the table back at itself.
+## Every board that carries a picture. Nexus is one of them and is not for
+## sale — see `_the_share_ladder_is_not_for_sale`. The distinction that matters
+## here is "has art and weather", not "has a price".
 const PAINTED := ["forest", "volcano", "ocean", "space", "cyber", "clouds",
-	"desert", "aurora"]
+	"desert", "aurora", "nexus"]
 
 
 func _the_painted_boards_are_painted() -> void:
@@ -354,13 +359,109 @@ func _the_faces_match_the_boards() -> void:
 		var board := String(Cosmetics.BLOCK_PAIRING[style])
 		_expect("%s is a style the game can draw" % sid,
 			Cosmetics.BLOCK_STYLES.has(sid))
-		_expect("%s is sold" % sid,
-			P.entry("blocks", sid).get("need", {}).has("buy"))
+		# Gated, not necessarily sold. Runestone comes with Nexus and is earned
+		# by sharing; the others come with the pack. What must never happen is
+		# a face arriving unlocked for everybody.
+		_expect("%s is locked behind something" % sid,
+			not (P.entry("blocks", sid).get("need", {}) as Dictionary).is_empty())
 		_expect("%s points at the %s board" % [sid, board], PAINTED.has(board))
 		claimed[board] = true
-	_expect("all eight boards are spoken for", claimed.size() == PAINTED.size())
-	_expect("and there are exactly eight faces",
+	_expect("every painted board is spoken for", claimed.size() == PAINTED.size())
+	_expect("and there is exactly one face per board",
 		Cosmetics.BLOCK_PAIRING.size() == PAINTED.size())
+
+
+## The three share rewards are the only things in the game that money cannot
+## reach, and that is the whole of their value.
+##
+## Two failures matter and they are opposites. Handing them to a buyer makes
+## the premium pack the way to get them and the sharing pointless. Letting the
+## record earn them puts them one balance pass away from being free, which is
+## the same trap the premium entries are checked against.
+func _the_share_ladder_is_not_for_sale() -> void:
+	print("--- the share rewards answer only to sharing ---")
+	var ladder: Array = []
+	for slot: String in P.SLOTS:
+		for e: Dictionary in P.entries(slot):
+			if (e.get("need", {}) as Dictionary).has("shares"):
+				ladder.append([slot, String(e["id"])])
+	_expect("the ladder is four entries", ladder.size() == 4)
+
+	# A career, a wallet, and nothing shared.
+	P.owned = {}
+	P.share_days = []
+	P.matches = 100000
+	P.wins = 100000
+	P.words = 9999999
+	P.best_chain = 999
+	P.grant(P.PACK_PREMIUM)
+	for pair in ladder:
+		_expect("%s/%s is not for sale and not for grinding"
+			% [pair[0], pair[1]],
+			not P.is_unlocked(String(pair[0]), String(pair[1])))
+
+	# And sharing does reach them, or the check above would pass on a ladder
+	# nothing can ever climb.
+	var day := 1
+	while P.shares() < P.share_top():
+		P.note_share("2026-09-%02d" % day)
+		day += 1
+		if day > 40:
+			break
+	for pair in ladder:
+		_expect("%s/%s unlocks by sharing" % [pair[0], pair[1]],
+			P.is_unlocked(String(pair[0]), String(pair[1])))
+	_expect("and the ladder reports itself finished",
+		P.share_rewards_complete())
+	P.revoke(P.PACK_PREMIUM)
+	P.share_days = []
+
+
+## One share a day, and the whole mechanism rests on it.
+##
+## Counting every completed share would make the ladder fifteen taps rather
+## than fifteen days, and iOS cannot tell us whether a share reached anybody —
+## so a raw count is a number somebody runs up to the top in two minutes
+## without a single person hearing about the game. The cap is the only thing
+## standing between the rewards and being free.
+func _a_day_is_the_unit_of_sharing() -> void:
+	print("--- a day is the unit of sharing ---")
+	P.share_days = []
+	_expect("a fresh profile has shared nothing", P.shares() == 0)
+
+	_expect("the first share of a day counts", P.note_share("2026-09-20"))
+	_expect("the second does not", not P.note_share("2026-09-20"))
+	_expect("and the tenth does not", not P.note_share("2026-09-20"))
+	_expect("so the day is worth one", P.shares() == 1)
+
+	_expect("tomorrow counts again", P.note_share("2026-09-21"))
+	_expect("two days is two", P.shares() == 2)
+
+	# An empty date is what a share completing before the clock is readable
+	# would look like. It must not count, and must not crash.
+	_expect("an empty date counts for nothing", not P.note_share(""))
+	_expect("and leaves the tally alone", P.shares() == 2)
+
+	# The tally survives a restart, or every day would be the first day.
+	P.save()
+	P.share_days = []
+	_expect("the file reads the days back",
+		P._read(P.save_path) == OK and P.shares() == 2)
+
+	# The button's own copy: worth pressing today, not worth pressing twice.
+	_expect("a fresh day is worth sharing", P.share_counts_today("2026-09-22"))
+	_expect("a spent day is not", not P.share_counts_today("2026-09-21"))
+
+	# Trimming keeps the tally honest at the top of the ladder rather than
+	# letting a year of dates accumulate.
+	P.share_days = []
+	for i in P.SHARE_DAYS_KEPT + 12:
+		P.note_share("2026-%02d-%02d" % [1 + i / 28, 1 + i % 28])
+	_expect("history is capped at %d days" % P.SHARE_DAYS_KEPT,
+		P.shares() == P.SHARE_DAYS_KEPT)
+	_expect("which is still above the top rung",
+		P.SHARE_DAYS_KEPT >= P.share_top())
+	P.share_days = []
 
 
 ## The slideshow is shown once per content drop and never again.

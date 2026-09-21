@@ -163,6 +163,31 @@ const THEMES := {
 		"art": "res://boards/aurora.png", "art_a": 0.90, "art_dim": 0.24,
 		"motion": "ribbons",
 	},
+
+	# The ninth, and the only board in the game that is not for sale.
+	#
+	# Nexus is the share reward — see the `shares` requirement on its
+	# catalogue row. It sits in this table beside the eight paid ones because
+	# it *is* one of them as far as every drawing routine is concerned: a
+	# picture, a weather, a frame and a face. What differs is the lock on the
+	# door, and locks live in `Profile`, not here.
+	#
+	# Its art is the one piece in the set that arrived at full size rather than
+	# sliced out of a contact sheet, and it is nearly square where the others
+	# are 9:16. `_draw_board_art` centre-crops to the screen's own aspect, and
+	# the middle of this picture is the portal, the sun and the plaza — so a
+	# phone gets the composition the painting was built around.
+	"nexus": {
+		"top": "#0c0a1c", "bottom": "#221a33", "panel": "#140f2a", "panel_a": 0.40,
+		"grid": "#ffe9b8", "grid_a": 0.12, "nodes": true,
+		"frame": "#ffc850", "frame_a": 0.95, "frame_pulse": 0.22,
+		"accent": "#ffd77a",
+		"key_bg": "#1a1330", "key_edge": "#ffc850", "key_ink": "#fff3d6",
+		"fire_bg": "#3d2a52", "fire_edge": "#ffd77a",
+		"glow": "#c9973f", "glow_a": 0.26,
+		"art": "res://boards/nexus.png", "art_a": 0.92, "art_dim": 0.28,
+		"motion": "aether",
+	},
 }
 
 ## What a theme may set beyond the five originals, and what it falls back to.
@@ -344,7 +369,7 @@ static func victory_shatter(node: CanvasItem, at: Vector2, t: float, tint: Color
 ## effect nothing uses are both findable without anyone having to look at the
 ## screen.
 const MOTIONS := ["leaves", "embers", "caustics", "starfield", "scanlines",
-	"drift", "haze", "ribbons"]
+	"drift", "haze", "ribbons", "aether"]
 
 
 ## A stable pseudo-random in 0..1 for index `i`, salted by `k` so one index can
@@ -382,6 +407,7 @@ static func draw_motion(node: CanvasItem, kind: String, size: Vector2, t: float,
 		"drift": _motion_drift(node, size, t, tint, bound)
 		"haze": _motion_haze(node, size, t, tint)
 		"ribbons": _motion_ribbons(node, size, t, tint)
+		"aether": _motion_aether(node, size, t, tint, bound)
 
 
 ## Forest. Shafts of light coming through the canopy from the upper left, and
@@ -691,6 +717,155 @@ static func _motion_ribbons(node: CanvasItem, size: Vector2, t: float,
 		node.draw_polyline(bottom, Color(cols[i], a * 1.6), 2.0, true)
 
 
+## Nexus. Motes of light rising off the plaza, and the ring overhead breathing.
+##
+## The picture already has the drama in it — a portal, a sun, a mile of cloud —
+## so this stays quiet on purpose. A backdrop that is doing a lot needs less
+## moving on top of it, not more: the job here is to stop it being a still, not
+## to compete with it.
+static func _motion_aether(node: CanvasItem, size: Vector2, t: float,
+		tint: Color, bound := false) -> void:
+	# The ring. A slow swell at the top third, roughly where the painting puts
+	# its portal, so the two read as the same object. Skipped when bounded —
+	# whole, in a preview panel, it is a circle floating in the middle of a
+	# photograph that already has one.
+	if not bound:
+		var at := Vector2(size.x * 0.5, size.y * 0.24)
+		var swell: float = 0.5 + 0.5 * sin(t * 0.55)
+		for i in 3:
+			var f := float(i) / 2.0
+			node.draw_arc(at, size.x * (0.26 + f * 0.05 + swell * 0.012),
+				0.0, TAU, 72,
+				Color(tint, (0.045 - f * 0.012) * (0.45 + 0.55 * swell)),
+				2.0 + (1.0 - f) * 2.0, true)
+
+	# Motes. Rising, drifting, and fading out near the top rather than wrapping
+	# hard — these are embers' gentler cousin and a hard wrap would read as a
+	# loop where embers reads as a fire.
+	for i in 46:
+		var hx := _hash01(i, 22.0)
+		var hs := _hash01(i, 23.0)
+		var climb: float = fmod(t * (0.055 + hs * 0.075) + hx, 1.0)
+		var y: float = size.y * (1.02 - climb * 1.06)
+		var x: float = hx * size.x + sin(t * 0.7 + float(i) * 1.3) * size.x * 0.035
+		var r: float = 1.1 + hs * 2.4
+		# Brightest in the middle of the climb: born dim off the floor, spent by
+		# the time it reaches the sky.
+		var life: float = sin(climb * 3.14159)
+		var twinkle: float = 0.55 + 0.45 * sin(t * 2.2 + float(i) * 2.7)
+		node.draw_circle(Vector2(x, y), r,
+			Color(Color.WHITE.lerp(tint, 0.55), 0.42 * life * twinkle))
+
+	# Two shafts leaning in from the upper corners, on a long cycle, which is
+	# what ties the motes to the light source above them.
+	if not bound:
+		for i in 2:
+			var side: float = 0.16 + float(i) * 0.68
+			var lean: float = sin(t * 0.21 + float(i) * 2.0) * size.x * 0.04
+			var wide: float = size.x * 0.10
+			var a: float = 0.030 + 0.018 * sin(t * 0.37 + float(i) * 1.6)
+			node.draw_colored_polygon(PackedVector2Array([
+				Vector2(size.x * side + lean - wide * 0.3, 0.0),
+				Vector2(size.x * side + lean + wide * 0.3, 0.0),
+				Vector2(size.x * side + lean + wide * 1.4, size.y * 0.82),
+				Vector2(size.x * side + lean - wide * 0.5, size.y * 0.82),
+			]), Color(1.0, 0.94, 0.78, a))
+
+
+# ---------------------------------------------------------------- characters
+#
+# Who is sending the emote.
+#
+# There was a cosmetic slot here once that *tinted* the emotes — the art was
+# drawn white and a style was a single multiply. BloqBot arrived already
+# coloured and that slot died with it, as the note further down records. This
+# is not that slot coming back. A character is a whole different set of
+# drawings rather than a filter over one set, which is the difference between
+# six recolours nobody could tell apart and two performers.
+#
+# Three things vary and they are all here rather than in `game.gd`, because all
+# three are art direction: which sheet plays for which feeling, where the head
+# sits in the frame, and what colour sits behind the character to lift it off a
+# dark panel.
+#
+# ## Why the wire indices are the keys
+#
+# What crosses the network for an emote is an integer, and it means a *feeling*
+# — 3 is anger whoever is expressing it. So each character maps those same
+# indices onto its own drawings, and two players running different characters
+# see their own performer play the emote the other one sent. A character that
+# renumbered anything here would be a character that sends the wrong feeling.
+
+const CHARACTERS := {
+	"bloqbot": {
+		"name": "BloqBot",
+		# Seven feelings, seven sets. `frames` and `cols` describe the grid
+		# `tools/build_emotes.py` packed; the script prints them.
+		"anim": {
+			0: {"sheet": "bot_excited", "frames": 24, "cols": 6},
+			1: {"sheet": "bot_cry", "frames": 18, "cols": 6},
+			2: {"sheet": "bot_shocked", "frames": 18, "cols": 6},
+			3: {"sheet": "bot_mad", "frames": 18, "cols": 6},
+			4: {"sheet": "bot_love", "frames": 18, "cols": 6},
+			7: {"sheet": "bot_hype", "frames": 18, "cols": 6},
+			8: {"sheet": "bot_dead", "frames": 18, "cols": 6},
+		},
+		# Where the head is in a frame, for the key legend — see the note on
+		# `EMOTE_KEY_HEAD` in `game.gd` for why the key is cropped at all.
+		"head": Rect2(0.24, 0.10, 0.54, 0.54),
+		# Off its own visor. It has to be *its* blue rather than the UI purple,
+		# because what this separates is a navy character whose ink is #0b1220
+		# from a panel that bottoms out at #0b1020.
+		"glow": "#68c4e0",
+	},
+	# An angry duck. Five sets against BloqBot's seven, so two of them answer
+	# two feelings each.
+	#
+	# The pairings are not arbitrary and are worth writing down, because the
+	# obvious reading of the folder names gets one of them wrong. "Wait" is not
+	# an idle — it is arms folded and scowling, which is the angriest thing he
+	# does, so it takes 3 rather than sitting unused while anger borrowed the
+	# shocked face. Victory doubles for nice because both are him pleased with
+	# himself; Exhausted doubles for dead because both are him spent.
+	#
+	# If an angry set and a love set are ever drawn, 3 and 4 are the two lines
+	# to change and nothing else moves.
+	"waddles": {
+		"name": "Waddles",
+		"anim": {
+			0: {"sheet": "duck_victory", "frames": 24, "cols": 6},
+			1: {"sheet": "duck_exhausted", "frames": 24, "cols": 6},
+			2: {"sheet": "duck_shocked", "frames": 24, "cols": 6},
+			3: {"sheet": "duck_wait", "frames": 24, "cols": 6},
+			4: {"sheet": "duck_victory", "frames": 24, "cols": 6},
+			7: {"sheet": "duck_dance", "frames": 24, "cols": 6},
+			8: {"sheet": "duck_exhausted", "frames": 24, "cols": 6},
+		},
+		"head": Rect2(0.26, 0.04, 0.50, 0.50),
+		# Amber rather than his own yellow. The halo's job is to seat him
+		# against the panel, and a yellow glow behind a yellow bird is a
+		# smudge with a duck in the middle of it.
+		"glow": "#e0902c",
+	},
+}
+
+
+static func character(id: String) -> Dictionary:
+	return CHARACTERS.get(id, CHARACTERS["bloqbot"])
+
+
+static func character_anim(id: String) -> Dictionary:
+	return character(id)["anim"]
+
+
+static func character_head(id: String) -> Rect2:
+	return character(id)["head"]
+
+
+static func character_glow(id: String) -> Color:
+	return Color(String(character(id)["glow"]))
+
+
 # ------------------------------------------------------------- the block face
 #
 # The four block styles, drawn somewhere that is not the playfield.
@@ -715,7 +890,8 @@ static func _motion_ribbons(node: CanvasItem, size: Vector2, t: float,
 ## decoration for legibility. So these change the material — crust, glass, ice,
 ## neon — and never the hue.
 const BLOCK_STYLES := ["solid", "outline", "glass", "circuit",
-	"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice"]
+	"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice",
+	"rune"]
 
 ## The eight that arrive with the premium boards, and the board each was drawn
 ## against. Only used for presentation — the slot stays independent, and nothing
@@ -725,6 +901,7 @@ const BLOCK_STYLES := ["solid", "outline", "glass", "circuit",
 const BLOCK_PAIRING := {
 	"bark": "forest", "magma": "volcano", "coral": "ocean", "nebula": "space",
 	"neon": "cyber", "cloud": "clouds", "sandstone": "desert", "ice": "aurora",
+	"rune": "nexus",
 }
 
 
@@ -754,8 +931,13 @@ static func face_for_board(theme_id: String) -> String:
 ## Paint one, and report what colour its label should be — the ink has to be
 ## decided per style rather than assumed dark, because two of the four are
 ## mostly transparent.
+## `key` identifies the block for the patterned faces; see `_face_seed`. Every
+## caller that draws a face on something which can move — a menu plate on a
+## scrolling screen, a preview swatch that shifts when the panel resizes — has
+## to pass one, or the pattern re-rolls as it moves. Anything static may leave
+## it and be seeded from its own rect.
 static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
-		style: String, hot: bool) -> Color:
+		style: String, hot: bool, key: float = -1.0) -> Color:
 	match style:
 		"outline":
 			node.draw_rect(rect, Color(col, 0.10), true)
@@ -782,8 +964,9 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 				node.draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
 			node.draw_circle(pad, 7.0, Color(0, 0, 0, 0.22))
 			return Color("#0b1020")
-		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice":
-			return draw_premium_face(node, rect, col, style, hot)
+		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice", \
+				"rune":
+			return draw_premium_face(node, rect, col, style, hot, key)
 		_:
 			node.draw_rect(rect, Color(col, 0.92 if hot else 0.80), true)
 			# The lighter top edge is most of what makes a filled rectangle read
@@ -1149,6 +1332,47 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 				Vector2(w * 0.84, maxf(1.5, h * 0.045))), Color(1, 1, 1, 0.26), true)
 			_face_rim(node, rect, Color(col.darkened(0.30), 0.9), hot)
 			return Color("#2a1405")
+
+		# Nexus. Cut stone with a glyph lit into the face of it — the boards in
+		# the painting are masonry with gold worked through the joints, and this
+		# is that at tile size.
+		"rune":
+			_face_body(node, rect, Color(col.darkened(0.30), 0.93))
+			var gold := Color("#ffc850")
+			var pulse: float = 0.5 + 0.5 * sin(t * 1.15
+				+ _face_seed(base, 50.0) * TAU)
+			# Masonry: two courses split by a joint, each a slightly different
+			# darkness, so the block reads as cut rather than cast.
+			#
+			# The joint sits in the upper third rather than across the middle.
+			# Centred it landed exactly where the stamp is and read as a line
+			# struck through the letters — the block is a label first and a
+			# piece of stonework second.
+			var split: float = 0.20 + _face_seed(base, 51.0) * 0.14
+			node.draw_rect(Rect2(rect.position.x + 1.0, rect.position.y + 1.0,
+				w - 2.0, h * split), Color(1, 1, 1, 0.07), true)
+			node.draw_rect(Rect2(rect.position.x + 1.0,
+				rect.position.y + h * split - 1.0, w - 2.0,
+				maxf(1.0, h * 0.02)), Color(0, 0, 0, 0.16), true)
+			# The glyph. A ring with two chords across it, which is enough to
+			# read as carved at 36px and cheap enough to draw on forty blocks.
+			var gr: float = minf(w, h) * 0.26
+			node.draw_arc(mid, gr, 0.0, TAU, 28,
+				Color(gold, 0.30 + 0.30 * pulse), maxf(1.2, gr * 0.16), true)
+			node.draw_arc(mid, gr * 0.58, 0.0, TAU, 20,
+				Color(gold, 0.20 + 0.22 * pulse), maxf(1.0, gr * 0.10), true)
+			for i in 2:
+				var a2: float = _face_seed(base, 52.0 + float(i)) * TAU
+				node.draw_line(mid + Vector2(cos(a2), sin(a2)) * gr * 1.05,
+					mid - Vector2(cos(a2), sin(a2)) * gr * 1.05,
+					Color(gold, 0.22 + 0.20 * pulse), maxf(1.0, gr * 0.09))
+			# Gold worked into the joint, which is the motif the board is built
+			# on and the thing that ties the face to the picture behind it.
+			node.draw_rect(Rect2(rect.position.x + w * 0.08,
+				rect.end.y - h * 0.13, w * 0.84, maxf(1.2, h * 0.035)),
+				Color(gold, 0.26 + 0.18 * pulse), true)
+			_face_rim(node, rect, Color(gold, 0.85), hot)
+			return Color("#fff3d6")
 
 		# Aurora. Cut glass: thin body, hard facets, a frosted double edge.
 		"ice":

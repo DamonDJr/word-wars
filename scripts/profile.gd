@@ -278,6 +278,12 @@ const PREF_DEFAULTS := {
 	## anything new being written; see `PROMO_DROP`.
 	"promo_seen": 0,
 	"cosmetics_seen": 0,
+	## The same idea as `promo_seen`, for the share ladder. Its own counter
+	## rather than sharing one, because the two pitches are owed to different
+	## people: the premium card is for anybody who has not bought the pack, and
+	## this one is for anybody missing Waddles or Nexus — which includes buyers,
+	## since no amount of money reaches either.
+	"share_promo_seen": 0,
 }
 
 ## Which batch of paid content is current.
@@ -299,6 +305,39 @@ const PREF_DEFAULTS := {
 ##
 ##   1  the eight painted boards and the block faces drawn for them
 const PROMO_DROP := 1
+
+## The same, for the share rewards. Bumped when the ladder gains a rung.
+##
+##   1  the Herald title, the Nexus board and Waddles
+const SHARE_DROP := 1
+
+
+## Whether this player is owed the share-rewards pitch.
+##
+## Unlike `owes_promo` this is not about money — a premium buyer is shown it
+## too, because the three rewards on it are the only things in the game their
+## purchase does not reach. It stops being owed once they are all in hand,
+## which is the point at which the card would be advertising things the player
+## is already wearing.
+func owes_share_promo() -> bool:
+	if int(pref("share_promo_seen")) >= SHARE_DROP:
+		return false
+	return not share_rewards_complete()
+
+
+## Whether every rung of the ladder has been climbed.
+func share_rewards_complete() -> bool:
+	for slot: String in SLOTS:
+		for e: Dictionary in entries(slot):
+			if (e.get("need", {}) as Dictionary).has("shares") \
+					and not meets(e["need"]):
+				return false
+	return true
+
+
+func note_share_promo_seen() -> void:
+	if int(pref("share_promo_seen")) < SHARE_DROP:
+		set_pref("share_promo_seen", SHARE_DROP)
 
 
 ## Whether this player is owed the pitch for the current drop.
@@ -450,13 +489,14 @@ func level_progress() -> Dictionary:
 ## A stale `equipped["emote"]` in an older save is left where it is — nothing
 ## iterates it any more, and rewriting the file to drop one dead key is a worse
 ## trade than carrying it.
-const SLOTS := ["title", "theme", "blocks", "typing", "attack", "cursor",
-	"victory"]
+const SLOTS := ["title", "theme", "blocks", "character", "typing", "attack",
+	"cursor", "victory"]
 
 const SLOT_NAMES := {
 	"title": "TITLE",
 	"theme": "BOARD THEME",
 	"blocks": "BLOCK STYLE",
+	"character": "CHARACTER",
 	"typing": "TYPING",
 	"attack": "ATTACK",
 	"cursor": "CURSOR",
@@ -482,6 +522,10 @@ const COSMETICS := {
 		{"id": "undefeated", "name": "Undefeated", "need": {"wins": 15}},
 		{"id": "centurion", "name": "Centurion", "need": {"matches": 100}},
 		{"id": "founder", "name": "FOUNDER", "need": {"buy": PACK_PREMIUM}},
+		# The first rung of the share ladder, and deliberately the cheapest
+		# thing on it. Three days is close enough that somebody finds out the
+		# ladder exists by finishing it rather than by reading about it.
+		{"id": "herald", "name": "HERALD", "need": {"shares": 3}},
 	],
 	"theme": [
 		{"id": "midnight", "name": "Midnight", "need": {}},
@@ -502,6 +546,10 @@ const COSMETICS := {
 		{"id": "clouds", "name": "Clouds", "need": {"buy": PACK_PREMIUM}},
 		{"id": "desert", "name": "Desert", "need": {"buy": PACK_PREMIUM}},
 		{"id": "aurora", "name": "Aurora", "need": {"buy": PACK_PREMIUM}},
+		# The middle rung. The only board in the game that cannot be bought —
+		# which is the point of it, and why it is worth more than the price of
+		# the pack to the people who want it.
+		{"id": "nexus", "name": "Nexus", "need": {"shares": 8}},
 	],
 	"blocks": [
 		{"id": "solid", "name": "Solid", "need": {}},
@@ -522,6 +570,17 @@ const COSMETICS := {
 		{"id": "cloud", "name": "Cumulus", "need": {"buy": PACK_PREMIUM}},
 		{"id": "sandstone", "name": "Sandstone", "need": {"buy": PACK_PREMIUM}},
 		{"id": "ice", "name": "Glacier", "need": {"buy": PACK_PREMIUM}},
+		# Arrives with the board it was drawn for, on the same rung.
+		{"id": "rune", "name": "Runestone", "need": {"shares": 8}},
+	],
+	# Who sends your emotes. A whole second set of drawings rather than a filter
+	# over one set — see the note in `Cosmetics.CHARACTERS` for why the slot that
+	# used to live here died and why this is not it coming back.
+	"character": [
+		{"id": "bloqbot", "name": "BloqBot", "need": {}},
+		# The top of the share ladder, and the only one of the three that is a
+		# whole new performer rather than a repaint.
+		{"id": "waddles", "name": "Waddles", "need": {"shares": 15}},
 	],
 	"typing": [
 		{"id": "plain", "name": "Plain", "need": {}},
@@ -612,6 +671,9 @@ func standing(need: Dictionary) -> Dictionary:
 			have = 1 if owns(String(need[key])) else 0
 			want = 1
 			what = "in the premium pack"
+		"shares":
+			have = shares()
+			what = "share the game on %d days" % want
 		_:
 			if key.begins_with("power:"):
 				var name := key.substr(6)
@@ -711,6 +773,85 @@ var _legacy_streak := 0
 ## How many days of history to keep. The streak is counted out of this, so it is
 ## also the longest streak that can be *proved* from the file — see
 ## `daily_best_streak`, which is what remembers anything longer.
+# ------------------------------------------------------------- sharing rewards
+#
+# Three things earned by telling somebody about the game, in a fixed order: a
+# title, then the Nexus board, then Waddles.
+#
+# ## Why a day is the unit and not a share
+#
+# iOS reports that the share sheet completed. It does not report where the
+# share went, whether it arrived, or whether a human ever looked at it — so a
+# raw count of completions is a number anybody can run up to fifteen in two
+# minutes by sharing to themselves, and the rewards would cost nothing and
+# bring nobody.
+#
+# Counting at most one a day turns fifteen shares into fifteen separate days on
+# which somebody chose to pass the game on. That is still not proof anyone
+# installed it, and it cannot be — there is no server and no attribution. But
+# it is the difference between a ladder that measures fifteen taps and one that
+# measures a fortnight of actually doing the thing.
+#
+# The honest limitation, written down so nobody is surprised by it later: a
+# determined person still gets all three in fifteen days of tapping share and
+# cancelling into a note to self. That is an acceptable floor for three
+# cosmetics, and the alternative is an attribution backend for a word game.
+
+## Days on which at least one share completed, newest last. Dates rather than a
+## count so that "already counted today" is answerable after a restart, and so
+## the streak is auditable if anybody ever asks why a reward has not arrived.
+var share_days: Array = []
+## Kept short. The ladder tops out at 15 and nothing reads further back, so
+## there is no reason to carry a year of dates in the save.
+const SHARE_DAYS_KEPT := 40
+
+
+## How many qualifying days are on file. This is what the `shares` requirement
+## in the catalogue is measured against.
+func shares() -> int:
+	return share_days.size()
+
+
+## Record a completed share. Returns true if it counted — the caller uses that
+## to decide whether to say so.
+##
+## `today` is passed in rather than read here, so the one clock this game
+## agrees on stays `game.gd`'s and a test can walk days without touching the
+## system time.
+func note_share(today: String) -> bool:
+	if today == "" or share_days.has(today):
+		return false
+	share_days.append(today)
+	share_days.sort()
+	while share_days.size() > SHARE_DAYS_KEPT:
+		share_days.remove_at(0)
+	save()
+	changed.emit()
+	return true
+
+
+## Whether a share today would still count for anything, for the copy on the
+## share button. False once every reward is in hand, or once today is spent.
+func share_counts_today(today: String) -> bool:
+	if share_days.has(today):
+		return false
+	return shares() < share_top()
+
+
+## The last rung of the ladder. Derived rather than written twice — the
+## catalogue below is what decides the thresholds, and a constant here that
+## drifted from it would make the share button lie about whether it is worth
+## pressing.
+static func share_top() -> int:
+	var top := 0
+	for slot: String in SLOTS:
+		for e: Dictionary in (COSMETICS.get(slot, []) as Array):
+			var need: Dictionary = e.get("need", {})
+			if need.has("shares"):
+				top = maxi(top, int(need["shares"]))
+	return top
+
+
 # --------------------------------------------------------- the weekly missions
 #
 # Four jobs a week, reset every Sunday. `Missions` owns which four and what they
@@ -1140,6 +1281,10 @@ func _apply(cfg: ConfigFile) -> Error:
 	# defaults are exactly right for those: no weeks on file, nothing paid out,
 	# nothing cleared. No migration needed — an old save simply starts this
 	# week from zero, which is what it should do.
+	# Absent from every save written before the rewards existed, and an empty
+	# list is exactly right for those: nobody has shared yet as far as this
+	# ladder is concerned.
+	share_days = cfg.get_value("share", "days", [])
 	weekly = cfg.get_value("weekly", "runs", {})
 	weekly_xp = int(cfg.get_value("weekly", "xp", 0))
 	weekly_cleared = int(cfg.get_value("weekly", "cleared", 0))
@@ -1246,6 +1391,7 @@ func _encode() -> ConfigFile:
 	cfg.set_value("daily", "runs", daily)
 	cfg.set_value("daily", "best", daily_best)
 	cfg.set_value("daily", "best_streak", daily_best_streak)
+	cfg.set_value("share", "days", share_days)
 	cfg.set_value("weekly", "runs", weekly)
 	cfg.set_value("weekly", "xp", weekly_xp)
 	cfg.set_value("weekly", "cleared", weekly_cleared)

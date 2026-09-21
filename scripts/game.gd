@@ -974,6 +974,10 @@ func _ready() -> void:
 	_apply_theme()
 	_apply_prefs()
 	Profile.changed.connect(_apply_theme)
+	# Nothing was listening to this before. The sheet opened, something was or
+	# was not sent, and the game never found out either way — which was fine
+	# while sharing earned nothing and is the whole mechanism now.
+	Sharing.finished.connect(_on_share_finished)
 	var saved: Array = Profile.pref("solo")
 	if saved.size() == solo_seats.size():
 		solo_seats = saved.duplicate()
@@ -1192,6 +1196,14 @@ func _apply_theme() -> void:
 	_art_dim = float(Cosmetics.theme_opt(id, "art_dim"))
 	_motion = String(Cosmetics.theme_opt(id, "motion")) if _art != null else ""
 	_motion_tint = Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)
+
+	# And who is sending the emotes. Pushed here rather than read at each draw
+	# so that equipping a character takes effect the moment it is equipped,
+	# through the same `Profile.changed` hook the board paint uses.
+	var who := Profile.worn("character")
+	EMOTE_ANIM = Cosmetics.character_anim(who)
+	EMOTE_KEY_HEAD = Cosmetics.character_head(who)
+	EMOTE_GLOW = Cosmetics.character_glow(who)
 	queue_redraw()
 
 
@@ -2530,6 +2542,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	# stray 2 would start the daily out from under a card still being read.
 	# Escape closes it rather than quitting the game, which is what that key
 	# does on the title screen one branch down.
+	if _share_promo_up():
+		match k.keycode:
+			KEY_ESCAPE, KEY_SPACE: _close_share_promo()
+			KEY_ENTER, KEY_KP_ENTER: _activate("share_promo_go")
+		return
+
 	if _promo_up():
 		match k.keycode:
 			KEY_ESCAPE, KEY_SPACE: _close_promo()
@@ -3080,6 +3098,11 @@ var confirm_action := ""
 ## Zero for the overwhelming majority of runs, which finish nothing.
 var weekly_earned := 0
 
+## The share-rewards card. A separate flag from `promo_open` because the two
+## are owed to different people and only one may be up at a time; see
+## `_raise_promo`.
+var share_promo_open := false
+
 var promo_open := false
 var promo_slide := 0
 ## How long the current slide has been up, for the auto-advance.
@@ -3161,6 +3184,52 @@ func _close_promo() -> void:
 	promo_open = false
 	promo_held = false
 	Sfx.play("back", 1.2)
+
+
+func _share_promo_up() -> bool:
+	return share_promo_open and (phase == Phase.TITLE or phase == Phase.SPLASH)
+
+
+## Raise the share card, if it is owed and the premium one is not already up.
+##
+## One card at a time. Both are owed at once to a brand new player who has not
+## bought the pack, and two full-screen pitches stacked on the first launch of
+## an update is the point at which somebody stops reading either of them. The
+## premium card goes first because it is the one with a price on it and the one
+## whose slideshow explains what the boards are; the share card is owed on the
+## next launch, and `owes_share_promo` is still true then because nothing has
+## marked it seen.
+func _raise_share_promo() -> void:
+	if promo_open or not Profile.owes_share_promo():
+		return
+	share_promo_open = true
+	# Marked on open rather than on close, for the same reason the premium card
+	# is: an app killed from the switcher with the card up would otherwise be
+	# pitched again on every launch.
+	Profile.note_share_promo_seen()
+	Sfx.play("count", 1.1)
+
+
+func _close_share_promo() -> void:
+	share_promo_open = false
+	Sfx.play("back", 1.2)
+
+
+## The three rungs, with where the player stands on each.
+func _share_tiers() -> Array:
+	var have := Profile.shares()
+	var out: Array = []
+	for row in [["title", "herald"], ["theme", "nexus"],
+			["character", "waddles"]]:
+		var e := Profile.entry(String(row[0]), String(row[1]))
+		var want := int((e.get("need", {}) as Dictionary).get("shares", 0))
+		out.append({
+			"slot": String(row[0]), "id": String(row[1]),
+			"name": String(e.get("name", row[1])).to_upper(),
+			"want": want, "have": mini(have, want),
+			"done": have >= want,
+		})
+	return out
 
 
 ## Phase-guarded as well as flag-guarded, the way `_rematch_popup` is.
@@ -3335,6 +3404,10 @@ func _promo_step(by: int) -> void:
 
 
 func _tick_promo(delta: float) -> void:
+	# The share card, first: it is the one that can be satisfied while it is up,
+	# because its own Share button can complete the last rung.
+	if share_promo_open and Profile.share_rewards_complete():
+		share_promo_open = false
 	if not _promo_up():
 		return
 	# It has been bought, so there is nothing left to sell. Checked here rather
@@ -3484,7 +3557,7 @@ func _draw_promo_board(stage: Rect2, id: String, t: float) -> void:
 		if br.end.x > pan.end.x:
 			br.size.x = pan.end.x - br.position.x - 3.0
 		var ink := Cosmetics.draw_premium_face(_overlay, br,
-			WWBoard.TIER_COLORS[tiers[i]], face, false)
+			WWBoard.TIER_COLORS[tiers[i]], face, false, float(i))
 		_text_fit_overlay(_font_bold, br.get_center(), stamps[i], 13,
 			br.size.x - 5.0, ink, 8)
 
@@ -3549,6 +3622,164 @@ func _draw_promo_no_ads(stage: Rect2, t: float) -> void:
 		"YOUR RUN", 11, Color("#64dfdf", 0.9))
 	_otext(_font, Vector2(bar.get_center().x, bar.end.y + 24.0),
 		"start to finish, nothing in the way", 12, Color("#7c88ad"))
+
+
+func _share_promo_rect() -> Rect2:
+	var size := get_viewport_rect().size
+	var w: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
+	var h: float = minf(size.y - 120.0, 780.0 if portrait else 560.0)
+	return Rect2(size.x * 0.5 - w * 0.5, size.y * 0.5 - h * 0.5, w, h)
+
+
+func _share_tier_rect(i: int) -> Rect2:
+	var r := _share_promo_rect()
+	var rows := 3.0
+	var top: float = r.position.y + 128.0
+	var avail: float = (r.end.y - 112.0) - top
+	var rh: float = (avail - 12.0 * (rows - 1.0)) / rows
+	return Rect2(r.position.x + 18.0, top + float(i) * (rh + 12.0),
+		r.size.x - 36.0, rh)
+
+
+func _share_promo_buttons() -> Array:
+	if not _share_promo_up():
+		return []
+	var r := _share_promo_rect()
+	var out: Array = []
+	var bh := 58.0
+	var by: float = r.end.y - 20.0 - bh
+	# The share button only exists where a sheet does. On a desktop, and on any
+	# build whose export left the plugin out, it would open nothing — and a
+	# card whose whole subject is "go and share" ending in a dead button is
+	# worse than one that simply explains the ladder.
+	if _share_possible():
+		var bw: float = (r.size.x - 36.0 - 14.0) * 0.60
+		out.append({
+			"rect": Rect2(r.position.x + 18.0, by, bw, bh), "key": "ENTER",
+			"label": "Share now", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#64dfdf"), "action": "share_promo_go"})
+		out.append({
+			"rect": Rect2(r.position.x + 18.0 + bw + 14.0, by,
+				r.size.x - 36.0 - 14.0 - bw, bh), "key": "ESC",
+			"label": "Later", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#5d6a92"), "action": "share_promo_close"})
+	else:
+		var cw: float = minf(320.0, r.size.x - 36.0)
+		out.append({
+			"rect": Rect2(r.get_center().x - cw * 0.5, by, cw, bh),
+			"key": "ESC", "label": "Close", "sub": "", "note": "", "rating": 0,
+			"accent": Color("#5d6a92"), "action": "share_promo_close"})
+	return out
+
+
+## The card that explains the ladder.
+##
+## It is a list and not a carousel, unlike the premium pitch. That one is
+## selling eight things that look alike and has to show them one at a time;
+## this is explaining three things that are different from each other and where
+## the *order* is the message — title, then board, then duck. A list says the
+## order. A carousel hides it.
+func _draw_share_promo(size: Vector2) -> void:
+	if not _share_promo_up():
+		return
+	var t := Time.get_ticks_msec() / 1000.0
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.96), true)
+
+	var r := _share_promo_rect()
+	_panel(r, Color("#0c1226"), Color("#64dfdf", 0.55), 16.0, 2.0)
+	var cx := r.get_center().x
+	_draw_tracked(_font_bold, Vector2(cx, r.position.y + 30.0),
+		"SHARE & UNLOCK", 13, 3.0, Color("#64dfdf"))
+	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + 66.0),
+		"Three things money cannot buy", 24, r.size.x - 50.0,
+		Color("#e6ecff"), 15)
+	# The rule, said once and plainly. It is the thing somebody has to
+	# understand to play along, and burying it under the tiers would mean
+	# counting shares that never arrive.
+	_text_fit_overlay(_font, Vector2(cx, r.position.y + 96.0),
+		"Share the game on %d different days — one counts per day"
+			% Profile.share_top(), 14, r.size.x - 50.0, Color("#aab4d4"), 11)
+
+	for i in 3:
+		_draw_share_tier(_share_tier_rect(i), _share_tiers()[i], t)
+
+	var have := Profile.shares()
+	var fy: float = r.end.y - 92.0
+	_otext(_font_bold, Vector2(cx, fy),
+		"Shared on %d day%s" % [have, "" if have == 1 else "s"], 16,
+		Color("#ffd166"))
+
+	for b: Dictionary in _share_promo_buttons():
+		_draw_menu_button(b)
+
+
+## One rung: what it is, what it costs, and how far off it is.
+func _draw_share_tier(box: Rect2, tier: Dictionary, t: float) -> void:
+	var done: bool = bool(tier["done"])
+	var tint: Color = Color("#90be6d") if done else Color("#64dfdf")
+	_panel(box, Color("#141b33"), Color(tint, 0.55 if done else 0.20), 10.0, 2.0)
+
+	# A picture of the thing, which is most of the argument. The board gets its
+	# own art, the duck gets his own face, and the title gets set in the type it
+	# will actually appear in.
+	var thumb := Rect2(box.position + Vector2(10.0, 10.0),
+		Vector2(box.size.y - 20.0, box.size.y - 20.0))
+	var id := String(tier["id"])
+	if id == "nexus":
+		var pic := _theme_art("nexus")
+		if pic != null:
+			var asz := Vector2(pic.get_width(), pic.get_height())
+			var side: float = minf(asz.x, asz.y)
+			_overlay.draw_texture_rect_region(pic, thumb,
+				Rect2((asz - Vector2(side, side)) * 0.5, Vector2(side, side)),
+				Color(1, 1, 1, 1.0 if done else 0.70))
+	elif id == "waddles":
+		var sheet := _emote_texture("duck_victory")
+		if sheet != null:
+			var anim: Dictionary = Cosmetics.character_anim("waddles")[0]
+			var frame := _emote_frame(anim, t)
+			var head: Rect2 = Cosmetics.character_head("waddles")
+			_overlay.draw_texture_rect_region(sheet, thumb,
+				Rect2(frame.position + head.position * frame.size,
+					head.size * frame.size),
+				Color(1, 1, 1, 1.0 if done else 0.70))
+	else:
+		_overlay.draw_rect(thumb, Color("#0b1020"), true)
+		_text_fit_overlay(_font_bold, thumb.get_center(), "HERALD", 15,
+			thumb.size.x - 8.0, Color("#ffd166"), 9)
+	_overlay.draw_rect(thumb, Color(tint, 0.35), false, 1.0)
+
+	var tx: float = thumb.end.x + 14.0
+	var avail: float = box.end.x - tx - 14.0
+	_otext_left(_font_bold, Vector2(tx, box.position.y + 26.0),
+		String(tier["name"]), 18, Color("#e6ecff") if not done else tint)
+	_otext_left(_font, Vector2(tx, box.position.y + 48.0),
+		SHARE_TIER_NOTE.get(id, ""), 12, Color("#7c88ad"))
+
+	var want: int = maxi(1, int(tier["want"]))
+	var have := int(tier["have"])
+	var bar := Rect2(tx, box.end.y - 30.0, avail, 10.0)
+	_overlay.draw_rect(bar, Color("#0b1020"), true)
+	_overlay.draw_rect(Rect2(bar.position, Vector2(bar.size.x
+		* clampf(float(have) / float(want), 0.0, 1.0), bar.size.y)),
+		Color(tint, 0.85), true)
+	_overlay.draw_rect(bar, Color(tint, 0.30), false, 1.0)
+	var tag := "EARNED" if done else "%d / %d days" % [have, want]
+	var tw: float = _font.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT,
+		-1, 12).x
+	_otext_left(_font, Vector2(box.end.x - 14.0 - tw, box.end.y - 38.0),
+		tag, 12, tint if done else Color("#7c88ad"))
+
+
+## One line a rung, saying what the thing actually is. Separate from the
+## catalogue names because "Nexus" does not tell somebody it is a board.
+const SHARE_TIER_NOTE := {
+	"herald": "a title under your name",
+	"nexus": "a board, and the blocks drawn for it",
+	"waddles": "an angry duck, with his own emotes",
+}
 
 
 func _draw_confirm(size: Vector2) -> void:
@@ -4586,6 +4817,7 @@ func _process(delta: float) -> void:
 				# it the next time they reach the title, which is when it makes
 				# sense to them.
 				_raise_promo()
+				_raise_share_promo()
 
 	if phase == Phase.OVER:
 		over_age += delta
@@ -5833,15 +6065,19 @@ const EMOTE_MENU := [0, 1, 2, 3, 4, 7, 8]
 ## `frames` and `cols` describe the grid `tools/build_emotes.py` packed. They
 ## are duplicated between the two on purpose — the script prints them, and the
 ## alternative was a manifest file to parse at load for fourteen integers.
-const EMOTE_ANIM := {
-	0: {"sheet": "bot_excited", "frames": 24, "cols": 6},
-	1: {"sheet": "bot_cry", "frames": 18, "cols": 6},
-	2: {"sheet": "bot_shocked", "frames": 18, "cols": 6},
-	3: {"sheet": "bot_mad", "frames": 18, "cols": 6},
-	4: {"sheet": "bot_love", "frames": 18, "cols": 6},
-	7: {"sheet": "bot_hype", "frames": 18, "cols": 6},
-	8: {"sheet": "bot_dead", "frames": 18, "cols": 6},
-}
+## Wire index -> the sheet that animates it, for the equipped character.
+##
+## Was a constant holding BloqBot's seven sets. It is state now because there
+## is more than one performer: the table lives in `Cosmetics.CHARACTERS` and
+## this is whichever one is worn, refreshed by `_apply_theme` on every profile
+## change. Anything not in here falls back to the single still in
+## `res://emotes/<name>.png`, which is what `huh` or `think` from an older
+## build lands on.
+var EMOTE_ANIM: Dictionary = Cosmetics.character_anim("bloqbot")
+## Where the head sits in a frame, and the colour behind the character. Both
+## belong to whoever is wearing the costume; see `Cosmetics.CHARACTERS`.
+var EMOTE_KEY_HEAD: Rect2 = Cosmetics.character_head("bloqbot")
+var EMOTE_GLOW: Color = Cosmetics.character_glow("bloqbot")
 ## One cell of a sheet, and the transparent margin inside it. The game draws the
 ## inner square: bilinear filtering reaches a texel past the region it is given,
 ## and without the margin the frame beside it bleeds down the edge.
@@ -5860,8 +6096,6 @@ const EMOTE_FPS := 12.0
 ## frame — so three quarters of those thirty pixels went on limbs nobody can
 ## resolve, and the legend came out a smudge. Cropped to the head it is a face
 ## again, which is the only job the legend has.
-const EMOTE_KEY_HEAD := Rect2(0.24, 0.10, 0.54, 0.54)
-
 ## The halo behind the character, and the only colour the emotes have left now
 ## that nothing tints them.
 ##
@@ -5869,8 +6103,6 @@ const EMOTE_KEY_HEAD := Rect2(0.24, 0.10, 0.54, 0.54)
 ## purple, because the thing this is separating is a navy character whose ink is
 ## `#0b1220` from a panel that bottoms out at `#0b1020` — near enough the same
 ## colour that the outline disappears into the bubble without it.
-const EMOTE_GLOW := Color("#68c4e0")
-
 ## How long the key must be held before the menu appears. Short enough not to
 ## feel like a wait, long enough that a brush past it on the way to P does not
 ## trigger it.
@@ -7620,6 +7852,7 @@ func _draw_overlay() -> void:
 		# any phase but TITLE and SPLASH, and a pitch that could be drawn over a
 		# match would be one `_promo_up` edit away from being drawn over one.
 		_draw_promo(size)
+		_draw_share_promo(size)
 
 	# Over every screen, for the same reason the curtain is: an invitation can
 	# arrive on any of them, and a banner drawn per-branch is a banner missing
@@ -9160,7 +9393,8 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					pan.end.y - step * float(2 - i) - step + 3.0,
 					step - 6.0, step - 6.0)
 				var bink := Cosmetics.draw_block_face(_overlay, br,
-					WWBoard.TIER_COLORS[i * 3], Profile.worn("blocks"), false)
+					WWBoard.TIER_COLORS[i * 3], Profile.worn("blocks"), false,
+					float(i))
 				_text_fit_overlay(_font_bold, br.get_center(), ["AL", "ENT"][i], 11,
 					br.size.x - 4.0, bink)
 			_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame",
@@ -9176,7 +9410,7 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 				var rr := Rect2(mid.x - w * 1.65 + float(i) * (w + 8.0),
 					row_y, w, w * 0.8)
 				var ink := Cosmetics.draw_block_face(_overlay, rr,
-					WWBoard.TIER_COLORS[i * 2], id, false)
+					WWBoard.TIER_COLORS[i * 2], id, false, float(i))
 				_text_fit_overlay(_font_bold, rr.get_center(),
 					["AL", "SHIP", "ENT"][i], 15, rr.size.x - 8.0, ink)
 			# Said rather than done. The eight premium styles were each drawn
@@ -9201,6 +9435,29 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 						Color("#ffd166"))
 				_:
 					_otext(_font, mid, "no effect", 13, Color("#5d6a92"))
+		"character":
+			# The performer, playing. Unlike typing or cursor this one *can* be
+			# shown honestly in a box — it is a sticker, and a sticker standing
+			# still is most of what it is — so the panel draws the real sheet
+			# through the real frame picker rather than saying "seen in play".
+			#
+			# Cheer is the frame to show: it is the emote the key legend wears
+			# and the one everybody sends first.
+			var anim: Dictionary = Cosmetics.character_anim(id).get(0, {})
+			var sheet := _emote_texture(String(anim.get("sheet", "")))
+			var side: float = minf(box.size.y - 26.0, box.size.x * 0.44)
+			var at := Rect2(mid.x - side * 0.5, mid.y - side * 0.5 - 6.0,
+				side, side)
+			var halo := Cosmetics.character_glow(id)
+			for i in 3:
+				var f := 1.0 - float(i) / 3.0
+				_overlay.draw_circle(at.get_center(),
+					side * (0.44 + 0.09 * float(i)), Color(halo, 0.16 * f))
+			if sheet != null:
+				_overlay.draw_texture_rect_region(sheet, at,
+					_emote_frame(anim, t), Color.WHITE)
+			_otext(_font, Vector2(mid.x, box.end.y - 16.0),
+				"sends your emotes", 11, Color("#5d6a92"))
 		"title":
 			var e := Profile.entry("title", id)
 			var name := String(e.get("name", ""))
@@ -11077,6 +11334,62 @@ func _do_share() -> void:
 		if drew else Sharing.share_text("Word Wars", "Word Wars", text)
 	if not sent:
 		Sfx.play("reject", 1.2)
+
+
+## A share came back from the system sheet.
+##
+## `ok` is the only thing iOS tells us that is worth acting on, and it means
+## "the sheet completed" rather than "somebody received this" — see the long
+## note on the ladder in `profile.gd` for what that does and does not buy.
+##
+## Counted against the local date, which is the same clock the daily board
+## uses. One a day: `note_share` is what enforces that and it answers whether
+## today was spent, so a second share in an evening is silently not counted
+## rather than being refused with a message nobody needs.
+func _on_share_finished(ok: bool, _detail: String) -> void:
+	if not ok:
+		return
+	var before := Profile.unlocked_set()
+	if not Profile.note_share(daily_key()):
+		return
+
+	# What that just earned, if anything. Diffed the same way a finished match
+	# works out its unlocks, so a reward announces itself in the words the rest
+	# of the game uses rather than in a special case written here.
+	var after := Profile.unlocked_set()
+	var won: Array = []
+	for slot in after:
+		for id in after[slot]:
+			if not (before[slot] as Array).has(id):
+				won.append(String(Profile.entry(String(slot), String(id))
+					.get("name", id)))
+	if not won.is_empty():
+		Sfx.play("start")
+		_say("UNLOCKED: %s" % ", ".join(won).to_upper(), Color("#ffd166"))
+		Haptics.fire("level")
+		return
+
+	var have := Profile.shares()
+	var next := _next_share_step(have)
+	Sfx.play("count", 1.3)
+	if next > 0:
+		_say("shared — %d more to go" % (next - have), Color("#64dfdf"))
+	else:
+		_say("shared — thank you", Color("#64dfdf"))
+
+
+## The next threshold above `have`, or 0 once the ladder is finished.
+func _next_share_step(have: int) -> int:
+	var best := 0
+	for slot: String in Profile.SLOTS:
+		for e: Dictionary in Profile.entries(slot):
+			var need: Dictionary = e.get("need", {})
+			if not need.has("shares"):
+				continue
+			var want := int(need["shares"])
+			if want > have and (best == 0 or want < best):
+				best = want
+	return best
 
 
 # ------------------------------------------------------------- the daily board
@@ -13073,8 +13386,13 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 			70.0 / 6.0 + 1.0, body.size.y - 2.0), Color(tint, 0.075 * (1.0 - f)), true)
 
 	var face: Color = tint if not locked else Color("#39415f")
+	# Keyed off the plate's own word rather than off where the plate is.
+	# The title screen scrolls, and a plate shifts three pixels sideways
+	# when it lights up — so a rect-seeded pattern boils on both, which is
+	# the falling-block bug again in the one place somebody looks at a
+	# single block for more than a second.
 	var ink := Cosmetics.draw_block_face(_overlay, gutter, face,
-		Profile.worn("blocks"), hot)
+		Profile.worn("blocks"), hot, float(absi(hash(word)) % 4093))
 	# Continuous with the plate rather than stepping at two thresholds, so a
 	# taller row carries bigger type instead of stranding small text in it.
 	#
@@ -13591,6 +13909,11 @@ func _action_at(p: Vector2) -> String:
 	# it — the title screen's plates are directly underneath, and a press that
 	# fell through would start a match out from under a card the player was
 	# still reading.
+	if _share_promo_up():
+		for b: Dictionary in _share_promo_buttons():
+			if (b["rect"] as Rect2).has_point(p):
+				return String(b["action"])
+		return ""
 	if _promo_up():
 		for b: Dictionary in _promo_buttons():
 			if (b["rect"] as Rect2).has_point(p):
@@ -13839,6 +14162,16 @@ func _activate(action: String) -> void:
 		Link.leave()
 		MultiplayerManager.leave_match()
 		start_match("Survival", 0, [], Mode.SURVIVAL)
+	elif action == "share_promo_close":
+		_close_share_promo()
+	elif action == "share_promo_go":
+		# The card comes down on the way to the sheet. Unlike the premium
+		# purchase there is nothing to come back to: the share either happens
+		# or it does not, `_on_share_finished` reports either way, and leaving
+		# a full-screen card behind the system sheet would put the player back
+		# on an advert when they dismiss it.
+		_close_share_promo()
+		_do_share()
 	elif action == "promo_close":
 		_close_promo()
 	elif action == "promo_next":
