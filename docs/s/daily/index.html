@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>There is a score to beat on today's Word Wars board</title>
+<meta name="description" content="One board a day, the same one for everybody, and it is gone tomorrow. Go and beat it.">
+
+<!-- Written by tools/ogcards.gd. Edit that, not this. -->
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Word Wars: Typing Battle">
+<meta property="og:title" content="There is a score to beat on today's Word Wars board">
+<meta property="og:description" content="One board a day, the same one for everybody, and it is gone tomorrow. Go and beat it.">
+<meta property="og:url" content="https://damondjr.github.io/word-wars/s/daily/">
+<meta property="og:image" content="https://damondjr.github.io/word-wars/s/og/daily.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A Word Wars result card">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="There is a score to beat on today's Word Wars board">
+<meta name="twitter:description" content="One board a day, the same one for everybody, and it is gone tomorrow. Go and beat it.">
+<meta name="twitter:image" content="https://damondjr.github.io/word-wars/s/og/daily.png">
+
+<!-- So a tap on a phone goes to the store without a second decision, while a
+     desktop scraper and a desktop visitor both still get a real page. -->
+<meta name="apple-itunes-app" content="app-id=6802900966">
+
+<link rel="stylesheet" href="../../style.css">
+<style>
+  :root { --accent: #ffd166; }
+  .result { text-align: center; padding: 1.5rem 1rem 2rem; }
+  .result .headline { font-size: 4rem; line-height: 1; font-weight: 700;
+    color: var(--ink); margin: .2rem 0; }
+  .result .note, .result .badge { text-transform: uppercase;
+    letter-spacing: .12em; font-size: .78rem; }
+  .result .note { color: var(--dim); }
+  .result .badge { display: inline-block; margin-top: .6rem;
+    padding: .45rem 1rem; border: 2px solid var(--accent); border-radius: 999px;
+    color: var(--accent); }
+  .tiles { display: flex; flex-wrap: wrap; gap: .3rem; justify-content: center;
+    margin: 1.4rem 0 .4rem; }
+  .tiles span { width: 2.6rem; height: 2.6rem; display: grid;
+    place-items: center; border-radius: .5rem; font-weight: 700;
+    color: #0b1020; background: var(--accent); }
+  .cta { display: inline-block; margin-top: 1.6rem; padding: .9rem 2rem;
+    border-radius: 999px; background: var(--accent); color: #0b1020;
+    font-weight: 700; text-decoration: none; letter-spacing: .06em;
+    text-transform: uppercase; }
+  .dare { font-size: 1.3rem; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: .04em; margin-top: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="mark" aria-hidden="true">
+    <span class="blk w1">W</span><span class="blk w2">W</span>
+    <span class="blk wide">TYPE</span>
+  </div>
+  <h1>Word Wars: Typing Battle</h1>
+  <p class="meta">Daily Board</p>
+</header>
+
+<div class="card result">
+  <p class="note" id="mode-note">One board a day, the same one for everybody, and it is gone tomorrow. Go and beat it.</p>
+  <p class="headline" id="headline" hidden></p>
+  <p class="note" id="headline-note" hidden></p>
+  <p class="badge" id="badge" hidden></p>
+  <div class="tiles" id="tiles" hidden></div>
+  <p class="note" id="word-note" hidden></p>
+  <p class="dare" id="dare">EVERYBODY GETS THE SAME BOARD</p>
+  <a class="cta" href="https://apps.apple.com/app/id6802900966">Play free on the App Store</a>
+</div>
+
+<p class="lede">Type a word. Its last letters land on your opponent's board, and
+they have to answer them. Whatever they play comes straight back at you.</p>
+
+<footer>
+  <a href="../../">Support</a> &middot;
+  <a href="../../privacy.html">Privacy Policy</a> &middot;
+  &copy; 2026 Damon J
+</footer>
+</main>
+
+<script>
+// The run that was shared, as the game put it in the query string. Every value
+// lands through textContent — see the note in tools/ogcards.gd for why that is
+// load-bearing rather than tidy.
+(function () {
+  var q = new URLSearchParams(location.search);
+  function put(id, value) {
+    if (!value) return false;
+    var el = document.getElementById(id);
+    el.textContent = value.slice(0, 120);
+    el.hidden = false;
+    return true;
+  }
+  var any = put('headline', q.get('h'));
+  put('headline-note', q.get('n'));
+  put('badge', q.get('b'));
+  // The run's own dare replaces the mode's, which is already in the element.
+  put('dare', q.get('d'));
+
+  // Letters only, and not because of layout: these become elements, and the
+  // one rule that keeps that safe is that nothing but A-Z ever gets here.
+  var word = (q.get('w') || '').slice(0, 16).toUpperCase();
+  if (/^[A-Z]+$/.test(word)) {
+    var box = document.getElementById('tiles');
+    for (var i = 0; i < word.length; i++) {
+      var t = document.createElement('span');
+      t.textContent = word[i];
+      box.appendChild(t);
+    }
+    box.hidden = false;
+    put('word-note', q.get('v'));
+  }
+  // With real numbers on the page the mode blurb is repetition, so it goes.
+  if (any) document.getElementById('mode-note').hidden = true;
+})();
+</script>
+</body>
+</html>

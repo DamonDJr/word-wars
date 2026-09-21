@@ -11175,7 +11175,38 @@ func _share_text() -> String:
 	# The link is appended once, here, rather than written into four sentences —
 	# it is the half of the share that does any work, and the way to ship three
 	# of these with a link and the fourth without is to write it out four times.
-	return "%s\n%s" % [_share_line(), Sharing.STORE_URL]
+	return "%s\n%s" % [_share_line(), _share_url()]
+
+
+## Which of the share pages this run belongs on.
+##
+## Matches the slugs in `tools/ogcards.gd`, which is the thing that writes the
+## pages — a slug with no page behind it is a 404 where the preview should be,
+## and `sharetest.gd` checks every one of these has a file.
+func _share_slug() -> String:
+	if mode == Mode.SURVIVAL:
+		return "survival"
+	if mode == Mode.DAILY:
+		return "daily"
+	var kind := "versus" if difficulty == "Versus" else "solo"
+	return "%s-%s" % [kind, "won" if winner == "YOU" else "lost"]
+
+
+## Where the share points, with this run's numbers along for the ride.
+##
+## Built off the card rather than off the match, so the page and the picture say
+## the same thing without two lists of what a result is. See `Sharing.page_url`
+## for what the far end does with it.
+func _share_url() -> String:
+	var c := _share_card_data()
+	return Sharing.page_url(_share_slug(), {
+		"h": c.headline,
+		"n": c.headline_note,
+		"b": c.badge,
+		"w": c.word,
+		"v": c.word_note,
+		"d": c.dare,
+	})
 
 
 ## The sentence, without the link.

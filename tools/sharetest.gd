@@ -109,8 +109,8 @@ func _the_copy_reads_outside_the_game() -> void:
 		game.player.score = 1000
 		_expect("mode %d still has a headline and text" % m,
 			game._share_card_data().headline != "" and game._share_line() != "")
-		_expect("mode %d carries the store link" % m,
-			game._share_text().contains(sharing.STORE_URL))
+		_expect("mode %d carries a link" % m,
+			game._share_text().contains(sharing.SHARE_BASE))
 
 
 ## Everything the redesigned card promises, for every mode that can produce one.
@@ -163,6 +163,79 @@ func _the_card_sells_the_game() -> void:
 	game.player.best_word = ""
 	_expect("a match with no word drops the block outright",
 		game._share_card_data().word == "")
+
+
+## The link has something on the far end worth scraping.
+##
+## This is the check the whole share used to fail. It went out as the player's
+## sentence with the App Store URL glued on, and Facebook, Threads and LinkedIn
+## all do the same thing with that: find the URL, fetch it, render what it says
+## about itself, discard the sentence and the picture. So a card that took a file
+## to compose arrived as a grey box with an app name in it.
+##
+## The link is now a page we wrote, with `og:` tags and an image on it. Three
+## things have to hold for that to keep working, and every one of them breaks
+## silently — the game still shares, the sheet still opens, and nobody finds out
+## until somebody looks at a post:
+##
+##   * every slug the game can produce has a page committed behind it. A missing
+##     one is a 404 where the preview should be, which is worse than the bare
+##     store link it replaced;
+##   * the two halves agree on the address. `tools/ogcards.gd` writes the pages
+##     and cannot see this autoload, so it keeps its own copy of the site root;
+##   * nothing the player did not type ends up unescaped in a URL.
+func _the_link_has_something_to_scrape() -> void:
+	print("--- the link points at a page worth fetching ---")
+
+	# Driven through the real slug function rather than listed, so a fifth mode
+	# fails here instead of shipping a dead link.
+	var seen: Array[String] = []
+	for m in [game.Mode.SURVIVAL, game.Mode.DAILY, game.Mode.NORMAL]:
+		for diff in ["Versus", "Duelist"]:
+			for won in [true, false]:
+				game.start_match(diff, 1, [], m)
+				game.difficulty = diff
+				game.winner = "YOU" if won else "THEM"
+				game.player.score = 4200
+				var slug: String = game._share_slug()
+				if seen.has(slug):
+					continue
+				seen.append(slug)
+				_expect("slug '%s' has a page" % slug,
+					FileAccess.file_exists("res://docs/s/%s/index.html" % slug))
+				_expect("slug '%s' has a preview image" % slug,
+					FileAccess.file_exists("res://docs/s/og/%s.png" % slug))
+
+	# The regression itself, stated plainly: the store link may not be what goes
+	# out, because that is the thing the scrapers were eating.
+	game.start_match("Duelist", 0, [], game.Mode.SURVIVAL)
+	game.match_time = 252.0
+	game.player.score = 14320
+	var text: String = game._share_text()
+	_expect("the share links to our page, not the store",
+		text.contains(sharing.SHARE_BASE) and not text.contains(sharing.STORE_URL))
+	_expect("and carries the run's numbers with it (%s)" % text.split("\n")[-1],
+		text.contains("h=4%3A12"))
+
+	# `ogcards.gd` is a standalone script and never loads this autoload, so it
+	# writes the address out a second time. Two copies that can disagree is
+	# exactly the sort of thing that is found six weeks later by a 404.
+	var tool_script := load("res://tools/ogcards.gd")
+	var consts: Dictionary = tool_script.get_script_constant_map()
+	_expect("the page writer agrees on the site root",
+		String(consts.get("SITE", "")) == sharing.SITE_URL)
+	_expect("and on the store link",
+		String(consts.get("STORE_URL", "")) == sharing.STORE_URL)
+
+	# A versus badge can carry a rival's Game Center display name, which is
+	# whatever they typed into it. It reaches the page through the query string.
+	var hostile: String = sharing.page_url("survival",
+		{"b": "beat \"Bobby\" & <friends>?"})
+	_expect("a rival's name is encoded, not pasted: %s" % hostile.split("?")[-1],
+		not hostile.contains(" ") and not hostile.contains("\"")
+		and not hostile.contains("<"))
+	_expect("and an empty value is dropped rather than left dangling",
+		not sharing.page_url("daily", {"h": "8,150", "b": ""}).contains("b="))
 
 
 ## The one badge that can lie.
@@ -252,6 +325,7 @@ func _init() -> void:
 
 	_the_seam_refuses_cleanly()
 	_the_copy_reads_outside_the_game()
+	_the_link_has_something_to_scrape()
 	_the_card_sells_the_game()
 	_the_record_badge_tells_the_truth()
 	_the_summary_fits_three_doors()

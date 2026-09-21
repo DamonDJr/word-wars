@@ -52,16 +52,24 @@ const PLUGIN_CLASS := "Share"
 ## share sheet can reach — see the note above.
 const CARD_DIR := "user://share"
 
-## The link that goes out with every share, and the whole reason a share is worth
-## having: a picture of somebody's score is a nice picture, and a picture with a
-## way to go and beat it is a install.
+## Where the store listing is, for the buttons that mean "go and get it".
 ##
 ## Built from the App Store Connect app id in `tools/ship-ios.sh` rather than
 ## copied from a browser, so there is one number to change and it is the same one
 ## the upload uses. Worth opening once on a phone before trusting it — a listing
 ## that is not yet public redirects, and the redirect is what people would see.
+##
+## No longer the link that goes out with a share. See `page_url` for why.
 const STORE_APP_ID := "6802900966"
 const STORE_URL := "https://apps.apple.com/app/id" + STORE_APP_ID
+
+## The GitHub Pages site, and the share pages on it.
+##
+## `tools/ogcards.gd` writes those pages and holds its own copy of this address
+## — it has to, being a standalone script that never loads this autoload — and
+## `sharetest.gd` checks the two have not drifted apart.
+const SITE_URL := "https://damondjr.github.io/word-wars"
+const SHARE_BASE := SITE_URL + "/s"
 
 var _node: Node = null
 var _ready_to_share := false
@@ -200,6 +208,48 @@ func share_text(title: String, subject: String, content: String) -> bool:
 	_in_flight = true
 	_node.call("share_text", title, subject, content)
 	return true
+
+
+## The link that goes out with a share.
+##
+## ## Why this is not the store link any more
+##
+## It was, and that is what made a share worthless everywhere it mattered most.
+## The sheet is handed two things — the sentence and the picture — and a handful
+## of the places people send them do not take either. Facebook, Threads and
+## LinkedIn all find the URL inside the text, fetch it, render what *it* says
+## about itself, and drop the sentence and the image on the floor. What the App
+## Store says about itself is a grey box with an app name in it.
+##
+## So the share posted a link and nothing else. Not because the card failed to
+## draw — it drew fine — but because nobody on the other end ever asked for it.
+##
+## A page we own answers differently. `docs/s/<slug>/` carries `og:title`,
+## `og:description` and a 1200x630 `og:image`, so the same scrape that used to
+## produce a grey box now produces a card with a dare on it, and the tap still
+## lands on the store. The thing that was eating the share now carries it.
+##
+## ## What the query string is for
+##
+## The preview cannot hold the player's actual numbers: it is composed on
+## Facebook's servers from a static file, and there is no renderer on the far end
+## to put "14,320" into a picture. See the note in `scripts/og_card.gd`.
+##
+## The numbers travel anyway, as `?h=14,320&d=can+you+beat+14,320%3F`, and the
+## page reads them out for whoever taps through. Preview is the hook, page is the
+## payoff. Values are URI-encoded here rather than trusted: one of them can be a
+## rival's Game Center display name, which is whatever they typed.
+func page_url(slug: String, params: Dictionary = {}) -> String:
+	var url := "%s/%s/" % [SHARE_BASE, slug]
+	var query: Array[String] = []
+	for key: String in params:
+		var value := String(params[key])
+		if value == "":
+			continue
+		query.append("%s=%s" % [key.uri_encode(), value.uri_encode()])
+	if query.is_empty():
+		return url
+	return "%s?%s" % [url, "&".join(query)]
 
 
 ## Somewhere under `user://` to put the card, made on first use.

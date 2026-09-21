@@ -1,0 +1,12 @@
+This folder is the GitHub Pages site, not part of the game.
+
+Godot imports anything under the project root, so without this the share-card
+PNGs in `s/og/` acquire `.import` files, become resources, and get packed into
+the app — most of a megabyte of pictures the game never opens, shipped to every
+player so that Facebook can fetch them from a web server.
+
+Same lesson as `scripts/Documents/` in `.gitignore`, and the same fix.
+
+Nothing here is loaded through `ResourceLoader`. `tools/ogcards.gd` writes these
+files and `tools/sharetest.gd` checks they exist, both through `FileAccess` and
+`DirAccess`, which read the real path and do not care whether it was imported.
