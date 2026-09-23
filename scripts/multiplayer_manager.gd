@@ -1136,9 +1136,19 @@ static func code_from_link(link: String) -> String:
 		return ""
 	var at := link.find("c=")
 	var raw := link.substr(at + 2).get_slice("&", 0) if at >= 0 \
-		else link.get_slice("?", 0).trim_suffix("/").get_file()
-	var code := clean_code(raw)
-	return code if code.length() == EOSConfig.CODE_LENGTH else ""
+		else link.strip_edges().get_slice("?", 0).trim_suffix("/").get_file()
+	# Strict, unlike `clean_code`. That one forgives stray characters because a
+	# person typing is making slips; here the text came from a clipboard and
+	# could be anything, and forgiving it turned "nothing useful" into room
+	# NTHNG. So only spaces and dashes may sit inside a code, and nothing else
+	# may be left over.
+	var bare := raw.strip_edges().replace(" ", "").replace("-", "").to_upper()
+	if bare.length() != EOSConfig.CODE_LENGTH:
+		return ""
+	for ch in bare:
+		if not EOSConfig.CODE_ALPHABET.contains(ch):
+			return ""
+	return bare
 
 
 func _eos_find() -> void:

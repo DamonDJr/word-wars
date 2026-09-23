@@ -42,6 +42,8 @@
   .stores { margin-top: 1.4rem; display: flex; flex-direction: column; gap: .6rem;
     align-items: center; }
   .stores a { color: var(--ink); }
+  /* The buttons set display, which otherwise beats the hidden attribute. */
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -108,25 +110,58 @@ room stays open while your friend waits in it.</p>
 
   var ua = navigator.userAgent;
   var android = /Android/i.test(ua);
+  // iPadOS reports itself as a Mac, so a Mac with a touchscreen is an iPad.
+  var ios = /iPhone|iPad|iPod/i.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
   var open = document.getElementById('open');
+  var steps = document.getElementById('steps');
+  var scheme = 'wordwars://join/' + code;
+
+  // The copy has to happen inside the tap itself — browsers only allow it
+  // there — so both buttons call this synchronously and never await it.
+  function copy() {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(code).catch(fallback);
+        return;
+      }
+    } catch (e) {}
+    fallback();
+  }
+  function fallback() {
+    var t = document.createElement('textarea');
+    t.value = code;
+    t.setAttribute('readonly', '');
+    t.style.position = 'fixed';
+    t.style.opacity = '0';
+    document.body.appendChild(t);
+    t.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(t);
+  }
+
   if (android) {
-    // The game registers wordwars://join/CODE, so this drops straight into the
-    // room even before the https link itself is verified for the app.
-    open.href = 'wordwars://join/' + code;
-    document.getElementById('steps').textContent =
-      'Or open the game yourself: Versus → Join with a code.';
+    // Android hands the whole link to the game, so this drops straight into
+    // the room. The copy is only a spare, in case it opens to the title.
+    open.href = scheme;
+    open.addEventListener('click', copy);
+    steps.textContent = 'Or open the game yourself: Versus → Join with a code.';
+  } else if (ios) {
+    // iOS opens the game from wordwars:// but cannot pass it the link, so the
+    // code travels on the clipboard: copied here, pasted in the game.
+    open.textContent = 'Copy code & open Word Wars';
+    open.href = scheme;
+    open.addEventListener('click', copy);
+    steps.innerHTML = 'Then in the game: <b>Versus</b> → <b>Join with a code</b> → <b>Paste</b>.';
   } else {
-    // iOS has no way to hand a link to the game yet, so the code travels by
-    // hand: copy it, open the game, paste or type it.
-    open.hidden = true;
+    // A desktop browser has no game to open. `hidden` alone loses to the
+    // button's own display rule, which is how this once showed a dead button.
+    open.style.display = 'none';
   }
 
   document.getElementById('copy').addEventListener('click', function () {
-    var btn = this;
-    var done = function () { btn.textContent = 'Copied ' + code; };
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(code).then(done, function () {});
-    }
+    copy();
+    this.textContent = 'Copied ' + code;
   });
 })();
 </script>

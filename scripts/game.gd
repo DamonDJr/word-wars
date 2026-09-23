@@ -2471,6 +2471,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		# Typing a code: letters go into it, and the only other keys are the
 		# ones the two doors on screen advertise.
 		if _code_entry:
+			if k.keycode == KEY_V and (k.ctrl_pressed or k.meta_pressed):
+				_paste_code()
+				return
 			match k.keycode:
 				KEY_ENTER, KEY_KP_ENTER: _code_key("fire")
 				KEY_BACKSPACE: _code_key("clear" if k.ctrl_pressed else "back")
@@ -10261,6 +10264,7 @@ func _crossplay() -> bool:
 func _code_key(id: String) -> void:
 	if not _code_entry:
 		return
+	_code_note = ""
 	match id:
 		"fire":
 			var code := MultiplayerManager.clean_code(_code_text)
@@ -10288,6 +10292,28 @@ func _code_key(id: String) -> void:
 			_code_text += ch
 			Haptics.fire("key")
 			Sfx.play("key", randf_range(0.92, 1.10))
+
+
+## Fill the code from the clipboard and join. On iOS reading the clipboard asks
+## the player's permission — which is why this is a button they press, and never
+## something the game does to them on launch.
+func _paste_code(text: String = "\uffff") -> void:
+	# The argument is for tests: a headless run has no clipboard to put a link on.
+	if text == "\uffff":
+		text = DisplayServer.clipboard_get()
+	var code := MultiplayerManager.code_from_link(text)
+	if code == "":
+		_code_note = "nothing to paste — copy the code from the invite first"
+		Sfx.play("reject", 1.2)
+		Haptics.fire("reject")
+		return
+	_code_note = ""
+	_code_text = code
+	_code_key("fire")
+
+
+## Why the last paste did nothing, until the next key clears it.
+var _code_note := ""
 
 
 ## The code as it is being typed, with the empty places shown so the length is
@@ -10338,6 +10364,13 @@ func _lobby_doors() -> Array:
 			"accent": PLAYER_ACCENT if _code_text.length() == EOSConfig.CODE_LENGTH
 				else grey,
 			"action": "versus_join"})
+		# iOS has no way to hand the invite link to the game, so the invite page
+		# copies the code instead, and this is where it comes back out. Takes a
+		# whole pasted link as happily as a bare code.
+		out.append({
+			"rect": Rect2(), "key": "", "stamp": "PASTE", "label": "Paste the code",
+			"sub": "The invite page copies it for you", "note": "", "rating": 0,
+			"accent": Color("#7bdff2"), "action": "versus_paste"})
 		out.append({
 			"rect": Rect2(), "key": "ESC", "stamp": "BACK", "label": "Back",
 			"sub": "", "note": "", "rating": 0, "accent": Color("#8d99bd"),
@@ -10427,6 +10460,8 @@ func _lobby_head() -> String:
 ## card still cheerfully saying "looking" would be arguing with it.
 func _lobby_note() -> String:
 	if _code_entry:
+		if _code_note != "":
+			return _code_note
 		return "the code is in the link your friend sent"
 	if not MultiplayerManager.available() and not _versus_busy():
 		return "versus needs an internet connection" if _crossplay() \
@@ -14499,6 +14534,7 @@ func _activate(action: String) -> void:
 			net_status = ""
 			_code_entry = true
 			_code_text = ""
+			_code_note = ""
 			Sfx.play("count", 1.2)
 	elif action == "versus_code_back":
 		_code_entry = false
@@ -14506,6 +14542,8 @@ func _activate(action: String) -> void:
 		Sfx.play("back")
 	elif action == "versus_join":
 		_code_key("fire")
+	elif action == "versus_paste":
+		_paste_code()
 	elif action == "versus_share":
 		# The room is already open; this only puts the sheet back up, for the
 		# player who dismissed it or wants to send the link to somebody else.
