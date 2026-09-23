@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>You've been challenged to Word Wars</title>
+<meta name="description" content="A friend has opened a Word Wars room and is waiting for you. iPhone and Android play together.">
+
+<!-- The invite link. The game shares https://damondjr.github.io/word-wars/j/?c=CODE
+     (EOSConfig.INVITE_URL). On Android with the game installed this page is
+     usually never seen: the link opens the game directly. Everyone else lands
+     here and gets the code, a way into the game, and a way to get it. -->
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Word Wars: Typing Battle">
+<meta property="og:title" content="You've been challenged to Word Wars">
+<meta property="og:description" content="A friend has opened a room and is waiting for you. Tap to join — iPhone and Android play together.">
+<meta property="og:url" content="https://damondjr.github.io/word-wars/j/">
+<meta property="og:image" content="https://damondjr.github.io/word-wars/s/og/versus-won.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="apple-itunes-app" content="app-id=6802900966">
+
+<link rel="stylesheet" href="../style.css">
+<style>
+  :root { --accent: #c77dff; }
+  .invite { text-align: center; padding: 1.5rem 1rem 2rem; }
+  .invite .note { color: var(--dim); text-transform: uppercase;
+    letter-spacing: .12em; font-size: .78rem; }
+  .tiles { display: flex; gap: .4rem; justify-content: center; margin: 1rem 0 .4rem; }
+  .tiles span { width: 3rem; height: 3.4rem; display: grid; place-items: center;
+    border-radius: .5rem; font-weight: 700; font-size: 1.6rem;
+    color: #0b1020; background: var(--accent); }
+  .cta { display: inline-block; margin-top: 1.2rem; padding: .9rem 2rem;
+    border-radius: 999px; background: var(--accent); color: #0b1020;
+    font-weight: 700; text-decoration: none; letter-spacing: .06em;
+    text-transform: uppercase; border: 0; font-size: 1rem; cursor: pointer; }
+  .cta.quiet { background: transparent; color: var(--accent);
+    border: 2px solid var(--accent); }
+  .steps { color: var(--dim); margin-top: 1.2rem; line-height: 1.6; }
+  .stores { margin-top: 1.4rem; display: flex; flex-direction: column; gap: .6rem;
+    align-items: center; }
+  .stores a { color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="mark" aria-hidden="true">
+    <span class="blk w1">W</span><span class="blk w2">W</span>
+    <span class="blk wide">TYPE</span>
+  </div>
+  <h1>Word Wars: Typing Battle</h1>
+  <p class="meta">You've been challenged</p>
+</header>
+
+<div class="card invite">
+  <p class="note">Your friend's room code</p>
+  <div class="tiles" id="tiles" aria-live="polite"></div>
+  <p class="note" id="nocode" hidden>This link has no room code in it — ask your friend to send it again.</p>
+
+  <div id="haveit">
+    <a class="cta" id="open" href="#">Open Word Wars</a><br>
+    <button class="cta quiet" id="copy" type="button">Copy the code</button>
+    <p class="steps" id="steps">In the game: <b>Versus</b> → <b>Join with a code</b>.</p>
+  </div>
+
+  <div class="stores">
+    <span class="note">Don't have it yet? It's free.</span>
+    <a href="https://apps.apple.com/app/id6802900966">App Store</a>
+    <a href="https://play.google.com/store/apps/details?id=com.damonj.wordwars">Google Play</a>
+  </div>
+</div>
+
+<p class="lede">Type a word. Its last letters land on your opponent's board, and
+they have to answer them. Whatever they play comes straight back at you. The
+room stays open while your friend waits in it.</p>
+
+<footer>
+  <a href="../">Support</a> &middot;
+  <a href="../privacy.html">Privacy Policy</a> &middot;
+  &copy; 2026 Damon J
+</footer>
+</main>
+
+<script>
+(function () {
+  // The same rule the game uses (MultiplayerManager.clean_code): only letters
+  // from the code alphabet survive, so nothing else can ever reach the page.
+  var ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var raw = (new URLSearchParams(location.search).get('c') || '').toUpperCase();
+  var code = '';
+  for (var i = 0; i < raw.length && code.length < 5; i++) {
+    if (ALPHABET.indexOf(raw[i]) >= 0) code += raw[i];
+  }
+  if (code.length !== 5) {
+    document.getElementById('nocode').hidden = false;
+    document.getElementById('haveit').hidden = true;
+    return;
+  }
+  var box = document.getElementById('tiles');
+  for (var j = 0; j < code.length; j++) {
+    var t = document.createElement('span');
+    t.textContent = code[j];
+    box.appendChild(t);
+  }
+
+  var ua = navigator.userAgent;
+  var android = /Android/i.test(ua);
+  var open = document.getElementById('open');
+  if (android) {
+    // The game registers wordwars://join/CODE, so this drops straight into the
+    // room even before the https link itself is verified for the app.
+    open.href = 'wordwars://join/' + code;
+    document.getElementById('steps').textContent =
+      'Or open the game yourself: Versus → Join with a code.';
+  } else {
+    // iOS has no way to hand a link to the game yet, so the code travels by
+    // hand: copy it, open the game, paste or type it.
+    open.hidden = true;
+  }
+
+  document.getElementById('copy').addEventListener('click', function () {
+    var btn = this;
+    var done = function () { btn.textContent = 'Copied ' + code; };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(code).then(done, function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>
