@@ -94,7 +94,9 @@ func _the_lobby_fits() -> void:
 		var which := "portrait" if tall else "landscape"
 		var view: Vector2 = game.get_viewport_rect().size
 		var rects: Array = game._lobby_door_rects()
-		_expect("%s draws all three doors" % which, rects.size() == 3)
+		# Three over Game Center; four over Epic, which adds Join with a code.
+		var want := 4 if mm.transport == mm.Transport.EOS else 3
+		_expect("%s draws all %d doors" % [which, want], rects.size() == want)
 
 		# The card is drawn at `hy + 124` and is 96 tall; the doors start at
 		# `hy + _lobby_head_h()`. Anything under 220 puts the first door through

@@ -1065,7 +1065,7 @@ func join_code(text: String) -> void:
 		return
 	var code := clean_code(text)
 	if code.length() != EOSConfig.CODE_LENGTH:
-		_set_state(State.READY, "room codes are %d letters" % EOSConfig.CODE_LENGTH)
+		_set_state(State.READY, "room codes are %d characters" % EOSConfig.CODE_LENGTH)
 		return
 	var attempt := _new_attempt()
 	_set_state(State.MATCHMAKING, "looking for room %s" % code)

@@ -284,6 +284,8 @@ const PREF_DEFAULTS := {
 	## this one is for anybody missing Waddles or Nexus — which includes buyers,
 	## since no amount of money reaches either.
 	"share_promo_seen": 0,
+	## The local date the share card was last shown, so it can come back.
+	"share_promo_day": "",
 }
 
 ## Which batch of paid content is current.
@@ -312,17 +314,38 @@ const PROMO_DROP := 1
 const SHARE_DROP := 1
 
 
-## Whether this player is owed the share-rewards pitch.
+## How many days before the share card is shown again to somebody still
+## climbing the ladder.
+##
+## It used to be shown once, ever — and a ladder you are told about once and
+## then never see again is a ladder nobody climbs past the first rung, because
+## the rewards are fifteen separate days apart and nothing on any of those days
+## says they exist. Every few days is often enough to be remembered and rare
+## enough not to be the thing a player sees instead of the game.
+const SHARE_PROMO_EVERY := 4
+
+
+## Whether this player is owed the share-rewards pitch today.
 ##
 ## Unlike `owes_promo` this is not about money — a premium buyer is shown it
 ## too, because the three rewards on it are the only things in the game their
 ## purchase does not reach. It stops being owed once they are all in hand,
 ## which is the point at which the card would be advertising things the player
-## is already wearing.
-func owes_share_promo() -> bool:
-	if int(pref("share_promo_seen")) >= SHARE_DROP:
+## is already wearing — and on a day they have already shared, when it has
+## nothing to ask for.
+func owes_share_promo(today: String) -> bool:
+	if share_rewards_complete() or share_days.has(today):
 		return false
-	return not share_rewards_complete()
+	if int(pref("share_promo_seen")) < SHARE_DROP:
+		return true
+	var last := String(pref("share_promo_day"))
+	return last == "" or _days_between(last, today) >= SHARE_PROMO_EVERY
+
+
+static func _days_between(a: String, b: String) -> int:
+	var ta := Time.get_unix_time_from_datetime_string(a)
+	var tb := Time.get_unix_time_from_datetime_string(b)
+	return int(round(float(tb - ta) / 86400.0))
 
 
 ## Whether every rung of the ladder has been climbed.
@@ -335,9 +358,10 @@ func share_rewards_complete() -> bool:
 	return true
 
 
-func note_share_promo_seen() -> void:
+func note_share_promo_seen(today: String) -> void:
 	if int(pref("share_promo_seen")) < SHARE_DROP:
 		set_pref("share_promo_seen", SHARE_DROP)
+	set_pref("share_promo_day", today)
 
 
 ## Whether this player is owed the pitch for the current drop.

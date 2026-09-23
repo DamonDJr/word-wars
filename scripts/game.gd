@@ -885,6 +885,29 @@ var _press_action := ""
 ## than the one this fixes. `cloud.gd` takes both because writing a save file
 ## twice costs nothing; this ends a run and has to be sure.
 func _notification(what: int) -> void:
+	# Android's back gesture. Left to Godot's default it quits the app — from a
+	# menu, from the versus lobby, and from the middle of a match, run and all —
+	# and it is the gesture Android players reach for more than any other. So
+	# quitting on it is switched off (`quit_on_go_back`) and it is handed in as
+	# Escape instead, which already means the right thing on every screen: close
+	# the card, answer no, pause and unpause, step back — and on the title screen,
+	# where there is nowhere further back to go, leave.
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		# One press can arrive as two requests — Android reports the back key's
+		# down and its up, and Godot raises this for both. Taken twice, a single
+		# back from the lobby lands on the title and then leaves the app. Two
+		# deliberate presses are never this close together.
+		var now := Time.get_ticks_msec()
+		if now - _last_back_ms < 300:
+			return
+		_last_back_ms = now
+		for down in [true, false]:
+			var esc := InputEventKey.new()
+			esc.keycode = KEY_ESCAPE
+			esc.physical_keycode = KEY_ESCAPE
+			esc.pressed = down
+			Input.parse_input_event(esc)
+		return
 	if what != NOTIFICATION_APPLICATION_PAUSED:
 		return
 	if phase != Phase.PLAY or mode != Mode.DAILY:
@@ -1139,7 +1162,13 @@ func _kb_form() -> int:
 # shape — and so a new one cannot be added that forgets to ask.
 
 func _kb_height(size: Vector2) -> float:
-	return Keyboard.height(size, _kb_form())
+	return Keyboard.height(size, _kb_form(), _kb_digits())
+
+
+## Whether the keyboard is carrying its number row — only while a room code is
+## being typed, which is the only thing in the game with digits in it.
+func _kb_digits() -> bool:
+	return phase == Phase.LOBBY and _code_entry
 
 
 ## The multiplier for anything sized to match the keys: the type on the caps,
@@ -2680,6 +2709,12 @@ func _submit_player() -> void:
 		return
 	var w := typed
 	typed = ""
+	# Taken now, whatever becomes of the word, so no tap outlives its line.
+	var taps := _word_taps
+	_word_taps = []
+	# A real word is proof of what each tap meant, even one already spent.
+	if w.length() >= MIN_WORD_LEN and WordBank.is_valid(w):
+		_aim_learn(w, taps)
 	# Firing an empty line is a slip, not an attempt — no penalty for it.
 	if w.is_empty():
 		return
@@ -3187,6 +3222,11 @@ func _promo_up() -> bool:
 func _raise_promo() -> void:
 	if not Profile.owes_promo():
 		return
+	# Not where nothing can be bought — Android, until it has Play billing. A
+	# pitch for a pack with no buy button is an advert for a locked door. Left
+	# unseen rather than marked, so the day a store exists here it is owed.
+	if not Store.available():
+		return
 	promo_open = true
 	promo_slide = 0
 	promo_age = 0.0
@@ -3215,13 +3255,13 @@ func _share_promo_up() -> bool:
 ## next launch, and `owes_share_promo` is still true then because nothing has
 ## marked it seen.
 func _raise_share_promo() -> void:
-	if promo_open or not Profile.owes_share_promo():
+	if promo_open or not Profile.owes_share_promo(daily_key()):
 		return
 	share_promo_open = true
 	# Marked on open rather than on close, for the same reason the premium card
 	# is: an app killed from the switcher with the card up would otherwise be
 	# pitched again on every launch.
-	Profile.note_share_promo_seen()
+	Profile.note_share_promo_seen(daily_key())
 	Sfx.play("count", 1.1)
 
 
@@ -4775,6 +4815,13 @@ func _process(delta: float) -> void:
 			live_pops.append(p)
 	score_pops = live_pops
 
+	var live_keys: Array = []
+	for kp: Dictionary in _key_pops:
+		kp["life"] = float(kp["life"]) - delta / KEY_POP_TIME
+		if kp["life"] > 0.0 or _keys_down.values().has(kp["id"]):
+			live_keys.append(kp)
+	_key_pops = live_keys
+
 	var live_flecks: Array = []
 	for f: Dictionary in _key_flecks:
 		f["life"] = float(f["life"]) - delta * 1.7
@@ -5662,6 +5709,8 @@ func _champion() -> SideState:
 
 
 func _end_match(loser: SideState) -> void:
+	# Whatever the keyboard learnt this match, kept — see `_aim_save`.
+	_aim_save()
 	phase = Phase.OVER
 	over_age = 0.0
 	# Whatever was half-typed when it ended is not a command for this screen.
@@ -6876,7 +6925,7 @@ func _press_back() -> void:
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
 	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom(),
-		_kb_form())
+		_kb_form(), _kb_digits())
 
 
 ## The letters on the keycaps, and the words on the three action keys.
@@ -6940,7 +6989,14 @@ func _draw_keyboard() -> void:
 			face = _font_bold
 		elif id.length() > 1:
 			cap = ACTION_SIZE
+		# A room code never contains I or O — the alphabet leaves them out as
+		# lookalikes of 1 and 0 — so while one is being typed they are drawn as
+		# the dead keys they are.
+		if _kb_digits() and id.length() == 1 \
+				and not EOSConfig.CODE_ALPHABET.contains(id.to_upper()):
+			ink = Color(ink, 0.22)
 		_otext(face, r.get_center(), String(k["label"]), int(float(cap) * s), ink)
+	_draw_key_pops()
 
 ## The emote key, and the fan when it is open.
 ##
@@ -6948,6 +7004,57 @@ func _draw_keyboard() -> void:
 ## under it, and on `_overlay` like everything else that must not move with the
 ## screen shake — an emote menu that jitters while you are trying to pick from it
 ## is a menu you will pick the wrong thing from.
+## Keys just pressed, drawn magnified above the thumb that pressed them.
+##
+## The pressed state of the key itself — a 3-unit dip and a lighter face — is
+## under the thumb doing the pressing, which is the one place on the glass its
+## owner cannot see. So which letter actually registered was a thing learnt only
+## afterwards, by reading the line. The bubble puts the answer where the eye
+## already is, the way every phone keyboard does, and makes a sideways miss
+## visible at the moment it happens instead of three letters later.
+var _key_pops: Array = []
+## How long a bubble outlives the press. Short: a fast typist's next letter is
+## under 100ms behind, and a bubble that lingered would be showing the last one.
+const KEY_POP_TIME := 0.14
+
+
+func _pop_key(id: String) -> void:
+	if id.length() != 1:
+		return
+	for kp: Dictionary in _key_pops:
+		if kp["id"] == id:
+			kp["life"] = 1.0
+			return
+	_key_pops.append({"id": id, "life": 1.0})
+
+
+func _draw_key_pops() -> void:
+	if _key_pops.is_empty():
+		return
+	var size := get_viewport_rect().size
+	var s := _kb_type_scale(size)
+	var rects := {}
+	for k: Dictionary in _keyboard():
+		rects[k["id"]] = k
+	for kp: Dictionary in _key_pops:
+		if not rects.has(kp["id"]):
+			continue
+		var k: Dictionary = rects[kp["id"]]
+		var r: Rect2 = k["rect"]
+		var a := clampf(float(kp["life"]) * 3.0, 0.0, 1.0)
+		if _keys_down.values().has(kp["id"]):
+			a = 1.0
+		var w := r.size.x * 1.45
+		var h := r.size.y * 1.15
+		# Above the key, clear of the thumb, and never off the edge of the glass —
+		# Q and P are the keys most often pressed right at it.
+		var x := clampf(r.get_center().x - w * 0.5, 4.0, size.x - w - 4.0)
+		var bub := Rect2(x, r.position.y - h - 10.0 * s, w, h)
+		_panel(bub, Color(_key_bg.lightened(0.16), a), Color(_key_edge, 0.45 * a), 12.0, 2.0)
+		_otext(_font_key, bub.get_center(), String(k["label"]),
+			int(float(CAP_SIZE) * 1.35 * s), Color(_key_ink, a))
+
+
 func _draw_emote_key() -> void:
 	if not _emotes_live():
 		return
@@ -7069,6 +7176,7 @@ func _draw_keyboard_hitboxes() -> void:
 # implementation of what a keystroke means.
 
 var _vk_open := false
+var _last_back_ms := -1000
 
 
 ## Raise it for a field holding `text`. Silently does nothing where there is no
@@ -7147,6 +7255,11 @@ func _touch_lift(size: Vector2) -> float:
 func _key_at(p: Vector2) -> String:
 	var size := get_viewport_rect().size
 	var at := p - Vector2(0.0, _touch_lift(size))
+	# This player's own thumbs, learnt from words they got right — see "learning
+	# your aim". Touch only, and only in a match: a mouse lands where it points.
+	if _touch_input and phase == Phase.PLAY:
+		at -= _aim_offset(p, Vector2(Keyboard.key_width(size, _kb_form()),
+			Keyboard.KEY_H * _kb_type_scale(size)))
 	if at.y < _key_band_top(size):
 		return ""
 
@@ -7206,6 +7319,114 @@ func _key_at(p: Vector2) -> String:
 	return "" if best_dist > limit else best
 
 
+# ------------------------------------------------------------ learning your aim
+#
+# Misses reported as "one letter to the side" are not a layout fault — the keys
+# are where they are drawn — they are a thumb. Where a thumb's contact patch
+# lands relative to where its owner is aiming is consistent for a person and
+# different between people, and between their two thumbs: `TOUCH_LIFT` is one
+# guess at the vertical half of that for everybody, and nothing corrected the
+# sideways half at all.
+#
+# So the keyboard learns it. Every word the game *accepts* is a set of taps whose
+# intended keys are known for certain — the letters of the word — so each one is
+# a measurement of where this player's thumb lands relative to the key it meant.
+# A slow average of those, one per thumb (left and right half of the glass),
+# becomes an offset applied before hit-testing.
+#
+# Kept honest three ways: only accepted words teach it, so a mistyped word
+# cannot train it towards the mistake; it does nothing until it has seen enough
+# taps to mean something; and it is capped at a quarter of a key, so it can
+# move a boundary but never make a key unreachable.
+
+## Taps that went into the word being typed, in order: {id, dx, dy, half}.
+## Offsets are in key widths and heights, so what is learnt on one screen size
+## means the same thing on another.
+var _word_taps: Array = []
+## Per thumb: [mean dx, mean dy, samples]. Loaded from the profile once.
+var _thumb_aim: Array = []
+var _aim_unsaved := 0
+
+const AIM_RATE := 0.03
+const AIM_WARMUP := 40
+const AIM_FULL := 160
+const AIM_CAP := 0.25
+
+
+func _aim_load() -> void:
+	_thumb_aim = [[0.0, 0.0, 0], [0.0, 0.0, 0]]
+	var saved = Profile.pref("aim")
+	if saved is Array and (saved as Array).size() == 2:
+		for h in 2:
+			var v = saved[h]
+			if v is Array and (v as Array).size() == 3:
+				_thumb_aim[h] = [float(v[0]), float(v[1]), int(v[2])]
+
+
+## Where on the key the tap at `p` landed, recorded against the word in progress.
+func _note_tap(id: String, p: Vector2) -> void:
+	if id.length() != 1 or phase != Phase.PLAY:
+		return
+	for k: Dictionary in _keyboard():
+		if k["id"] == id:
+			var r: Rect2 = k["rect"]
+			var size := get_viewport_rect().size
+			var at := p - Vector2(0.0, _touch_lift(size))
+			_word_taps.append({
+				"id": id,
+				"dx": (at.x - r.get_center().x) / r.size.x,
+				"dy": (at.y - r.get_center().y) / r.size.y,
+				"half": 0 if p.x < size.x * 0.5 else 1,
+			})
+			return
+
+
+## A word was accepted: its taps were aimed at exactly its letters.
+func _aim_learn(word: String, taps: Array) -> void:
+	if taps.size() != word.length():
+		return
+	for i in taps.size():
+		if String(taps[i]["id"]) != word[i]:
+			return
+	if _thumb_aim.is_empty():
+		_aim_load()
+	for t: Dictionary in taps:
+		var a: Array = _thumb_aim[int(t["half"])]
+		# A plain mean until the warm-up is done, then a slow moving average, so
+		# early samples count fully and later ones can still follow a player who
+		# changes how they hold the phone.
+		var rate := maxf(AIM_RATE, 1.0 / float(int(a[2]) + 1))
+		a[0] = lerpf(float(a[0]), float(t["dx"]), rate)
+		a[1] = lerpf(float(a[1]), float(t["dy"]), rate)
+		a[2] = int(a[2]) + 1
+	_aim_unsaved += taps.size()
+	# Saved in batches: `set_pref` writes the profile, and once a word is too
+	# often for that.
+	if _aim_unsaved >= 25:
+		_aim_save()
+
+
+func _aim_save() -> void:
+	if _thumb_aim.is_empty() or _aim_unsaved == 0:
+		return
+	_aim_unsaved = 0
+	Profile.set_pref("aim", _thumb_aim.duplicate(true))
+
+
+## The learnt offset for a tap at `p`, in screen units, for a key of `key_size`.
+## Fades in between the warm-up and full confidence rather than switching on.
+func _aim_offset(p: Vector2, key_size: Vector2) -> Vector2:
+	if _thumb_aim.is_empty():
+		_aim_load()
+	var a: Array = _thumb_aim[0 if p.x < get_viewport_rect().size.x * 0.5 else 1]
+	var n := int(a[2])
+	if n < AIM_WARMUP:
+		return Vector2.ZERO
+	var trust := clampf(float(n - AIM_WARMUP) / float(AIM_FULL - AIM_WARMUP), 0.0, 1.0)
+	return Vector2(clampf(float(a[0]), -AIM_CAP, AIM_CAP) * key_size.x,
+		clampf(float(a[1]), -AIM_CAP, AIM_CAP) * key_size.y) * trust
+
+
 ## The `typed` that `_lean_set` was built against. Starts as something no line
 ## can ever equal, so the first lookup always builds.
 var _lean_for := "￿"
@@ -7242,6 +7463,8 @@ func _press_key(id: String) -> void:
 	if id == "back":
 		if player.alive and not paused:
 			typed = typed.substr(0, maxi(0, typed.length() - 1))
+			if not _word_taps.is_empty():
+				_word_taps.pop_back()
 			Sfx.play("back", randf_range(0.94, 1.06))
 			Haptics.fire("back")
 		return
@@ -7251,6 +7474,7 @@ func _press_key(id: String) -> void:
 	if id == "clear":
 		if player.alive and not paused and typed != "":
 			typed = ""
+			_word_taps = []
 			# Pitched well under DEL and felt as a stop rather than as a tap, so
 			# the difference between losing a letter and losing the word is
 			# something you hear and feel without looking up from the board.
@@ -9953,7 +10177,19 @@ func _lobby_head_h() -> float:
 ## units high or 230 wide it falls back to the plain wordless panel used for
 ## Back, and these are the primary doors of the screen.
 func _lobby_door_h() -> float:
-	return 88.0 * _lobby_fill()
+	var h := 88.0 * _lobby_fill()
+	if portrait:
+		return h
+	# Landscape cannot scroll, and cross-play gave this screen a fourth door —
+	# which pushed Back to y=716 on a 720-high window, where nobody can press
+	# it. So in landscape the doors give up height until everything down to Back
+	# fits. Measured from the top of the doors without the centring offset,
+	# because the offset is itself worked out from this height.
+	var n := float(_lobby_doors().size())
+	var room: float = get_viewport_rect().size.y - safe_bottom \
+		- (_lobby_head_h() + safe_top) - (n - 1.0) * _lobby_door_gap() \
+		- 66.0 - 38.0 - 12.0
+	return minf(h, room / n)
 
 
 func _lobby_door_w() -> float:
@@ -10097,7 +10333,7 @@ func _lobby_doors() -> Array:
 	if _code_entry:
 		out.append({
 			"rect": Rect2(), "key": "ENTER", "stamp": "JOIN",
-			"label": "Join room", "sub": "Enter the %d-letter code, then JOIN" % EOSConfig.CODE_LENGTH,
+			"label": "Join room", "sub": "Enter the %d-character code, then JOIN" % EOSConfig.CODE_LENGTH,
 			"note": "", "rating": 0,
 			"accent": PLAYER_ACCENT if _code_text.length() == EOSConfig.CODE_LENGTH
 				else grey,
@@ -11279,11 +11515,40 @@ func _share_possible() -> bool:
 
 
 func _share_sub() -> String:
+	# While there is a reward still to earn, the button says what the next share
+	# is worth. This is the one place the ladder is seen at the moment a share
+	# is possible; the card on the title screen only comes round every few days.
+	var progress := _share_progress()
+	if progress != "":
+		return progress
 	if mode == Mode.SURVIVAL:
 		return "post your run"
 	if mode == Mode.DAILY:
 		return "post today's board"
 	return "post the result"
+
+
+## "2 more days for NEXUS", or "" once the ladder is done. Days rather than
+## shares, because that is what the ladder counts — a second share today moves
+## nothing, and a line that implied it would is a line that gets tested once.
+func _share_progress() -> String:
+	var have := Profile.shares()
+	var next := _next_share_step(have)
+	if next == 0:
+		return ""
+	var prize := ""
+	for slot: String in Profile.SLOTS:
+		for e: Dictionary in Profile.entries(slot):
+			if int((e.get("need", {}) as Dictionary).get("shares", -1)) == next:
+				prize = String(e.get("name", "")).to_upper()
+				break
+		if prize != "":
+			break
+	var left := next - have
+	var days := "1 more day" if left == 1 else "%d more days" % left
+	if Profile.share_days.has(daily_key()):
+		return "shared today · %s for %s" % [days, prize]
+	return "share · %s for %s" % [days, prize]
 
 
 ## Whoever was in the other seat. Found by walking the seats rather than kept in
@@ -13927,6 +14192,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				var key := _key_at(st.position)
 				if key != "":
 					_keys_down[st.index] = key
+					_note_tap(key, st.position)
+					_pop_key(key)
 					_press_key(key)
 					return
 		elif _keys_down.has(st.index):

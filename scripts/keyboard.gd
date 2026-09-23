@@ -12,6 +12,10 @@ class_name Keyboard
 ## everybody who has ever used a phone, and this is a game about typing fast.
 
 const ROWS := ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+## The number row, raised only for typing a room code. 2 to 9, because the code
+## alphabet leaves out 0 and 1 — they read as O and I — so a key for either
+## would be a key that can only ever be wrong.
+const DIGITS := "23456789"
 
 ## The two shapes this keyboard comes in.
 ##
@@ -181,10 +185,14 @@ static func key_width(size: Vector2, form := Form.FULL) -> float:
 ## bottom letter row now flanks ZXCVBNM the way iOS does — CLR where shift is,
 ## DEL where backspace is — and FIRE, freed of sharing, takes the whole action
 ## row. Every one of those is a bigger target than it was before.
-static func keys(size: Vector2, bottom: float, form := Form.FULL) -> Array:
+static func keys(size: Vector2, bottom: float, form := Form.FULL,
+		digits := false) -> Array:
 	var m := _metrics(size, bottom, form)
 	if form == Form.SPLIT:
-		return _split_keys(size, m)
+		var split := _split_keys(size, m)
+		if digits:
+			split.append_array(_digit_keys(size, m))
+		return split
 
 	var out: Array = []
 	var gap: float = m["gap"]
@@ -229,6 +237,28 @@ static func keys(size: Vector2, bottom: float, form := Form.FULL) -> Array:
 		"id": "fire", "label": "FIRE",
 		"rect": Rect2(block_x, y2, block, m["action_h"]),
 	})
+	if digits:
+		out.append_array(_digit_keys(size, m))
+	return out
+
+
+## The number row, one row above the letters and centred, at FULL's key width
+## whatever the form — eight keys across the whole glass, so there is no split to
+## honour and no thumb that cannot reach. Added on top of the letters rather than
+## pushing them down, so a letter key is exactly where it always is.
+static func _digit_keys(size: Vector2, m: Dictionary) -> Array:
+	var out: Array = []
+	var gap: float = m["gap"]
+	var key_h: float = m["key_h"]
+	var kw: float = _key_w(size.x - SIDE * 2.0, gap, Form.FULL)
+	var span: float = float(DIGITS.length()) * kw + float(DIGITS.length() - 1) * gap
+	var x: float = (size.x - span) * 0.5
+	var y: float = float(m["top"]) - key_h - gap
+	for i in DIGITS.length():
+		out.append({
+			"id": DIGITS[i], "label": DIGITS[i],
+			"rect": Rect2(x + float(i) * (kw + gap), y, kw, key_h),
+		})
 	return out
 
 
@@ -326,8 +356,9 @@ static func _split_keys(size: Vector2, m: Dictionary) -> Array:
 ## either way — SPLIT is narrower, not shorter, which is why `form` does not
 ## appear. It is still taken, so that a caller cannot be written that asks about
 ## the height of one form and is silently answered about the other.
-static func height(size: Vector2, _form := Form.FULL) -> float:
-	return (float(ROWS.size()) * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
+static func height(size: Vector2, _form := Form.FULL, digits := false) -> float:
+	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
+	return (rows * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
 
 
 ## How much to multiply a type size by so the lettering tracks the keys.
