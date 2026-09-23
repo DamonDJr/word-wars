@@ -43,6 +43,9 @@ const GAME_CONNECTIONS := {
 	# that knows whether there is a run worth interrupting — see the invite
 	# section in `multiplayer_manager.gd`.
 	"invite_offered": "_on_invite_offered",
+	# Over Epic: our own room is open and its code can be shared. The share
+	# sheet is the game's to raise, since only it knows which screen is up.
+	"invite_ready": "_on_invite_ready",
 }
 
 ## Signals the manager emits that nothing in `game.gd` connects to, on purpose.

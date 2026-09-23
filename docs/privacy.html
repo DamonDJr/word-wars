@@ -20,13 +20,16 @@
 <p class="lede">Word Wars has no servers, no accounts and no analytics. Nothing
 you do in the game is sent to us, because there is nowhere for it to be sent.</p>
 
-<p>This page explains what that means in practice, and what the two outside
-services the game uses &mdash; Apple and Google &mdash; do with your data.</p>
+<p>This page explains what that means in practice, and what the outside
+services the game uses &mdash; Apple, Google and Epic Games &mdash; do with your
+data.</p>
 
 <h2>What we collect</h2>
 <div class="card">
-  <p><strong>Nothing.</strong> The app makes no network requests of its own. It
-  has no backend, no sign-up, no analytics and no crash reporting of ours. We do
+  <p><strong>Nothing.</strong> The app makes no network requests to us. It
+  has no backend, no sign-up, no analytics and no crash reporting of ours. The
+  only traffic it sends goes to the services described below, and only when you
+  use the feature that needs them. We do
   not know who you are, whether you play, or how you did.</p>
 </div>
 
@@ -77,6 +80,38 @@ many adverts were shown.</p>
 Google uses data from apps that use its services is described at
 <a href="https://policies.google.com/technologies/partner-sites">policies.google.com/technologies/partner-sites</a>.</p>
 
+<h2 id="versus">Online versus &mdash; Epic Online Services</h2>
+<p>Versus matches against other people &mdash; Quick Match, invites and room
+codes &mdash; run on <strong>Epic Online Services</strong>, a free service from
+Epic Games. It is what lets iPhone and Android players play each other. Nothing
+is sent to Epic until you start a versus match; single-player modes never touch
+it.</p>
+<p>When you do, the game signs in to Epic <em>anonymously</em>. There is no Epic
+account, no email and no password. Epic receives:</p>
+<ul>
+  <li>a random identifier created for this device when you start a match, which
+  is replaced each time you open the game, so it cannot follow you from one
+  session to the next;</li>
+  <li>your device's model and operating system, which Epic uses for that
+  sign-in;</li>
+  <li>your IP address, as any internet service does;</li>
+  <li>the room you open or join, and the match moves passed between you and your
+  opponent while you play.</li>
+</ul>
+<p>Matches are routed through Epic's relay servers rather than directly between
+phones, so <strong>your opponent never sees your IP address</strong>, and you
+never see theirs. Your opponent sees the name your Game Center account shows,
+if you are signed in to Game Center on an iPhone; otherwise you appear as
+&ldquo;Opponent&rdquo;.</p>
+<p><strong>Invite links.</strong> Inviting a friend creates a five-letter room
+code and a link containing it. The link is sent by you, through whatever app you
+choose, and contains nothing but that code. The page it opens is a plain page on
+this site; it records nothing.</p>
+<p>Epic's handling of this data is governed by the
+<a href="https://www.epicgames.com/site/privacypolicy">Epic Games Privacy
+Policy</a>. We do not receive any of it: we have no access to Epic's records of
+who played whom.</p>
+
 <h2>We do not track you across apps</h2>
 <div class="card">
   <p>Word Wars does not ask for permission to track you, because it does not
@@ -86,11 +121,11 @@ Google uses data from apps that use its services is described at
 </div>
 
 <h2>Apple services</h2>
-<p><strong>Game Center</strong> is used for versus matches, the daily and
-survival leaderboards, and the <a href="#cloud">cloud save</a> described above.
-If you are signed in, other players in a match can see the display name your
-Game Center account shows, and a score you submit appears on the leaderboard
-under that name. Game Center is Apple's service and your data there is handled
+<p><strong>Game Center</strong> is used for the daily and survival
+leaderboards, achievements, and the <a href="#cloud">cloud save</a> described
+above. If you are signed in, a score you submit appears on the leaderboard under
+the display name your Game Center account shows, and that same name is what an
+opponent sees in a <a href="#versus">versus match</a>. Game Center is Apple's service and your data there is handled
 under
 <a href="https://www.apple.com/legal/privacy/">Apple's Privacy Policy</a>. You
 can play every single-player mode without signing in.</p>
@@ -110,7 +145,9 @@ including children, because we do not collect information at all.</p>
   Apple Advertising lets you limit ad personalisation system-wide. Buying the
   Premium pack removes the advert break from this game entirely.</li>
   <li><strong>Game Center.</strong> Sign out in iOS Settings, or simply do not
-  use Versus or the leaderboard.</li>
+  use the leaderboard.</li>
+  <li><strong>Epic Online Services.</strong> Do not play versus against other
+  people &mdash; nothing is sent to Epic otherwise. CPU matches do not use it.</li>
   <li><strong>Everything else.</strong> Deleting the app removes all local data.</li>
 </ul>
 
@@ -118,7 +155,7 @@ including children, because we do not collect information at all.</p>
 <p>Under the GDPR, the CCPA and similar laws you may request access to, or
 deletion of, personal data held about you. We hold none, so there is nothing for
 us to return or erase. Requests about advertising data should be directed to
-Google using the links above.</p>
+Google, and about versus matches to Epic Games, using the links above.</p>
 
 <h2>Changes</h2>
 <p>If this policy changes, the updated version will be posted here with a new

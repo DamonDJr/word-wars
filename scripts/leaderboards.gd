@@ -122,7 +122,7 @@ func _notification(what: int) -> void:
 ## Whether this build can reach Game Center leaderboards at all.
 ##
 ## Three separate things, and all three have to hold. The platform check comes
-## first for the same reason it does in `MultiplayerManager.available()`: the
+## first for the same reason it does in `MultiplayerManager.game_center_available()`: the
 ## desktop stub registers every class and answers `can_instantiate` with yes,
 ## then hands back null when you try. The id check is last because it is ours
 ## rather than Apple's — a build with no leaderboard configured is switched off
@@ -130,7 +130,7 @@ func _notification(what: int) -> void:
 func available() -> bool:
 	if DAILY_ID == "":
 		return false
-	if not MultiplayerManager.available():
+	if not MultiplayerManager.game_center_available():
 		return false
 	return ClassDB.can_instantiate("GKLeaderboard")
 
@@ -212,8 +212,8 @@ func _sv_wake() -> void:
 	if _sv_loading:
 		return
 	_sv_loading = true
-	GKLeaderboard.load_leaderboards(
-		PackedStringArray([SURVIVAL_ID]), _on_sv_loaded)
+	Apple.call_static("GKLeaderboard", "load_leaderboards", [
+		PackedStringArray([SURVIVAL_ID]), _on_sv_loaded])
 
 
 func _on_sv_loaded(boards: Array, error) -> void:
@@ -344,7 +344,7 @@ func open_view(board_id: String, scope: int = GLOBAL, time_scope: int = TODAY) -
 	view_total = 0
 	_view_seq += 1
 
-	if board_id == "" or not MultiplayerManager.available() \
+	if board_id == "" or not MultiplayerManager.game_center_available() \
 			or not ClassDB.can_instantiate("GKLeaderboard"):
 		_set_view(ViewState.OFF, "leaderboards need an Apple device")
 		return
@@ -359,8 +359,8 @@ func open_view(board_id: String, scope: int = GLOBAL, time_scope: int = TODAY) -
 	if board != null:
 		_view_fetch(board, _view_seq)
 		return
-	GKLeaderboard.load_leaderboards(PackedStringArray([board_id]),
-		_on_view_board_loaded.bind(board_id, _view_seq))
+	Apple.call_static("GKLeaderboard", "load_leaderboards", [PackedStringArray([board_id]),
+		_on_view_board_loaded.bind(board_id, _view_seq)])
 
 
 ## Ask again for whatever is already on screen. For a screen being reopened, or
@@ -610,10 +610,11 @@ func refresh_challenges() -> void:
 		return
 	if challenges_available() and not _challenges_loading:
 		_challenges_loading = true
-		GKChallenge.load_received_challenges(_on_challenges_loaded)
+		Apple.call_static("GKChallenge", "load_received_challenges", [_on_challenges_loaded])
 	if definitions_available() and not _defs_loading:
 		_defs_loading = true
-		GKChallengeDefinition.load_challenge_definitions(_on_definitions_loaded)
+		Apple.call_static("GKChallengeDefinition", "load_challenge_definitions",
+			[_on_definitions_loaded])
 
 
 ## The definitions this app has published, on their way to being asked whether
@@ -712,7 +713,7 @@ func active_challenge_board() -> String:
 ## definitions live and a challenge running, which is how the two stores turned
 ## out to be two stores. It now reports on both.
 func why_no_challenges() -> String:
-	if not MultiplayerManager.available():
+	if not MultiplayerManager.game_center_available():
 		return "challenges need an Apple device"
 	if DAILY_ID == "":
 		return "no leaderboard is configured in this build"
@@ -847,7 +848,8 @@ func open_challenges() -> void:
 		if ap != null:
 			ap.trigger_for_challenges(_on_dashboard_closed)
 			return
-	GKGameCenterViewController.show_type(GKGameCenterViewController.DASHBOARD)
+	Apple.call_static("GKGameCenterViewController", "show_type",
+		[Apple.k("GKGameCenterViewController", "DASHBOARD")])
 
 
 ## Apple's leaderboard screen, for one board. The game draws its own — see the
@@ -857,7 +859,8 @@ func open_challenges() -> void:
 func open_board(board_id: String, scope: int = GLOBAL, time_scope: int = TODAY) -> void:
 	if not available() or board_id == "":
 		return
-	GKGameCenterViewController.show_leaderboard_time_period(board_id, scope, time_scope)
+	Apple.call_static("GKGameCenterViewController", "show_leaderboard_time_period",
+		[board_id, scope, time_scope])
 
 
 ## The access point's triggers all take a completion handler and none of them
@@ -953,8 +956,8 @@ func _wake() -> void:
 		return
 	_loading_board = true
 	_set_state(State.LOADING, "reading the leaderboard")
-	GKLeaderboard.load_leaderboards(
-		PackedStringArray([DAILY_ID]), _on_boards_loaded)
+	Apple.call_static("GKLeaderboard", "load_leaderboards", [
+		PackedStringArray([DAILY_ID]), _on_boards_loaded])
 
 
 func _on_boards_loaded(boards: Array, error) -> void:
@@ -1026,7 +1029,7 @@ func _load_ranks() -> void:
 	# the field, not a page of other people's scores. The summary has a board on
 	# it already and it is the player's own history.
 	_board.load_local_player_entries(
-		GKLeaderboard.GLOBAL, GKLeaderboard.TODAY, 1, 1, _on_global)
+		Apple.k("GKLeaderboard", "GLOBAL"), Apple.k("GKLeaderboard", "TODAY"), 1, 1, _on_global)
 
 
 func _on_global(local, _entries: Array, range_total, error) -> void:
@@ -1040,7 +1043,8 @@ func _on_global(local, _entries: Array, range_total, error) -> void:
 	total = int(range_total) if range_total != null else 0
 	changed.emit()
 	_board.load_local_player_entries(
-		GKLeaderboard.FRIENDS_ONLY, GKLeaderboard.TODAY, 1, 1, _on_friends)
+		Apple.k("GKLeaderboard", "FRIENDS_ONLY"), Apple.k("GKLeaderboard", "TODAY"), 1, 1,
+		_on_friends)
 
 
 func _on_friends(local, _entries: Array, range_total, error) -> void:

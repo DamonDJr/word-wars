@@ -83,14 +83,23 @@ const SHEET_GRACE := 2.0
 ## A match whose players never finish attaching. Without this the game sits in
 ## "waiting for the other player" with no way out but force-quitting.
 const CONNECT_TIMEOUT := 30.0
+## Bumped whenever a packet changes meaning. Checked in the hello, so two builds
+## that would misread each other refuse to start rather than play nonsense.
+const PROTOCOL := 1
 
 var state: int = State.OFF
 var status := "offline"
 
-var game_center: GameCenterManager
-var local_player: GKLocalPlayer
-var current_match: GKMatch
-var _matchmaker: GKMatchmaker
+## All untyped. These are Game Center classes, and naming one in a type hint is
+## a parse error on Android, where the plugin has no library — see apple.gd.
+##
+## `current_match` holds whatever the running transport uses for a match: a
+## `GKMatch` over Game Center, an `EOSGMultiplayerPeer` over Epic. Everything
+## outside this file only ever asks whether it is null.
+var game_center = null  # GameCenterManager
+var local_player = null  # GKLocalPlayer
+var current_match = null
+var _matchmaker = null  # GKMatchmaker
 
 ## The other player's Game Center id, learned from their hello. Also the thing
 ## that decides seating: both ends sort the two ids the same way, so both agree
@@ -153,6 +162,18 @@ var invited := ""
 var peer_name := ""
 
 
+## Which network a match runs over. Game Center still signs the player in on
+## Apple devices either way — leaderboards, achievements and cloud saves all
+## read `local_player` from here — but only one of the two carries matches.
+enum Transport { GAME_CENTER, EOS }
+var transport: int = Transport.GAME_CENTER
+
+
+## Whether versus can run on this device at all, over either network.
+func available() -> bool:
+	return eos_possible() or game_center_available()
+
+
 ## Whether this build can talk to Game Center at all.
 ##
 ## Asking `ClassDB.can_instantiate` is not enough: the desktop stub registers
@@ -160,23 +181,42 @@ var peer_name := ""
 ## null. So the platform is checked first and the construction is checked after
 ## — which is what lets the whole file stay uncommented while the game runs on
 ## a PC with multiplayer simply switched off.
-func available() -> bool:
+func game_center_available() -> bool:
 	if not (OS.get_name() in ["iOS", "macOS"]):
 		return false
 	return ClassDB.can_instantiate("GameCenterManager")
 
 
+## Whether matches can go over Epic: credentials filled in, cross-play switched
+## on, and the EOS extension actually loaded in this build.
+func eos_possible() -> bool:
+	return EOSConfig.CROSSPLAY and EOSConfig.is_configured() \
+		and ClassDB.class_exists("EOSGMultiplayerPeer")
+
+
 func _ready() -> void:
-	if not available():
-		_set_state(State.OFF, "multiplayer needs an Apple device")
+	transport = Transport.EOS if eos_possible() else Transport.GAME_CENTER
+	print("[MP] matches go over %s" % Transport.keys()[transport])
+	if transport == Transport.EOS:
+		# Nothing to wait for: Epic signs in on the first search rather than at
+		# launch, so a player who never opens versus never touches Epic at all.
+		_set_state(State.READY, "ready")
+		# Deferred so the game's own `_ready` has connected `invite_offered` —
+		# autoloads are ready before the main scene is.
+		_check_link.call_deferred(true)
+	if not game_center_available():
+		if transport == Transport.GAME_CENTER:
+			_set_state(State.OFF, "multiplayer needs an Apple device")
 		return
-	game_center = GameCenterManager.new()
+	game_center = Apple.make("GameCenterManager")
 	if game_center == null:
-		_set_state(State.OFF, "Game Center is unavailable on this build")
+		if transport == Transport.GAME_CENTER:
+			_set_state(State.OFF, "Game Center is unavailable on this build")
 		return
 	game_center.authentication_result.connect(_on_authenticated)
 	game_center.authentication_error.connect(_on_auth_failed)
-	_set_state(State.AUTHENTICATING, "signing in to Game Center")
+	if transport == Transport.GAME_CENTER:
+		_set_state(State.AUTHENTICATING, "signing in to Game Center")
 	game_center.authenticate()
 
 
@@ -184,14 +224,20 @@ func _process(delta: float) -> void:
 	# Before every early return below, because an invitation is held across all
 	# of these states and the clock on it belongs to the sender rather than to
 	# whatever this device happens to be doing. See `INVITE_HOLD`.
-	if _held_invite != null:
+	if invite_waiting():
 		_invite_age += delta
 		if _invite_age >= INVITE_HOLD:
-			print("[GC] invite from '%s' expired unanswered" % invite_from)
+			print("[MP] invite from '%s' expired unanswered" % invite_from)
 			_clear_invite()
+
+	if transport == Transport.EOS:
+		_eos_process(delta)
 
 	if state == State.CONNECTING:
 		_wait_age += delta
+		if _quick_joining and _wait_age >= QUICK_CONNECT_TIMEOUT:
+			_skip_dead_room()
+			return
 		# Poll rather than trust `player_changed` alone: if both players were
 		# already attached when the match arrived, that signal has nothing left
 		# to fire and the only thing that ever moves is the count.
@@ -233,7 +279,7 @@ func _process(delta: float) -> void:
 	if _hello_timer <= 0.0:
 		_hello_timer = HELLO_EVERY
 		_hellos_sent += 1
-		_send_raw({"type": "hello", "id": _local_id})
+		_send_raw(_hello("hello"))
 		# Every fourth, so a stalled handshake leaves a heartbeat in the device
 		# log rather than fifteen seconds of nothing followed by a failure with
 		# no history behind it.
@@ -252,11 +298,22 @@ func _process(delta: float) -> void:
 func _on_authenticated(signed_in: bool = true) -> void:
 	if not signed_in:
 		local_player = null
+		if transport == Transport.EOS:
+			# Matches do not need Game Center here. Leaderboards and cloud saves
+			# do, and they listen to this signal to notice the sign-out.
+			state_changed.emit(status)
+			return
 		_local_id = ""
 		_set_state(State.OFF, "not signed in to Game Center")
 		return
 
 	local_player = game_center.local_player
+	if transport == Transport.EOS:
+		# Signed in for everything except matches. `_local_id` is the Epic id
+		# over EOS, so it is left alone, and no invite listener is registered:
+		# a Game Center invite would open a match on the wrong network.
+		state_changed.emit(status)
+		return
 	if local_player != null:
 		_local_id = _player_id(local_player)
 		# Without this, an invite accepted from outside the app arrives nowhere
@@ -278,6 +335,10 @@ func _on_authenticated(signed_in: bool = true) -> void:
 
 
 func _on_auth_failed(message: String) -> void:
+	if transport == Transport.EOS:
+		push_warning("Game Center: authentication failed — %s" % message)
+		state_changed.emit(status)
+		return
 	_set_state(State.OFF, "Game Center sign-in failed")
 	push_warning("Game Center: authentication failed — %s" % message)
 
@@ -285,7 +346,7 @@ func _on_auth_failed(message: String) -> void:
 ## Game Center identifies a player by `game_player_id`. Falls back to the display
 ## name, which is not guaranteed unique but is only ever used to break a tie
 ## between exactly two people.
-func _player_id(p: GKPlayer) -> String:
+func _player_id(p) -> String:
 	if p == null:
 		return ""
 	if String(p.game_player_id) != "":
@@ -295,16 +356,16 @@ func _player_id(p: GKPlayer) -> String:
 
 ## The shared matchmaker, built on first use. Kept because Apple's `cancel()`
 ## applies to the shared instance and we need to be able to call it.
-func _mm() -> GKMatchmaker:
+func _mm():
 	if _matchmaker == null:
-		_matchmaker = GKMatchmaker.new()
+		_matchmaker = Apple.make("GKMatchmaker")
 	return _matchmaker
 
 
 # ------------------------------------------------------------- matchmaking
 
-func _request(for_players: Array = []) -> GKMatchRequest:
-	var request := GKMatchRequest.new()
+func _request(for_players: Array = []):
+	var request = Apple.make("GKMatchRequest")
 	request.min_players = 2
 	request.max_players = 2
 	request.invite_message = "Join my Word Wars battle!"
@@ -322,6 +383,9 @@ func find_match() -> void:
 	if state != State.READY:
 		return
 	invited = ""
+	if transport == Transport.EOS:
+		_eos_find()
+		return
 	# Starting a search is a decision to stop waiting on Apple's screen. The flag
 	# is what the handshake holds for, and left standing after a sheet that never
 	# appeared it would make the next match wait `SHEET_GRACE` for nothing.
@@ -359,7 +423,7 @@ func find_match() -> void:
 enum Native { DEFAULT, NEARBY_ONLY, AUTOMATCH_ONLY, INVITE_ONLY }
 
 ## Held because the sheet is presented by an object Apple does not retain for us.
-var _native_vc: GKMatchmakerViewController
+var _native_vc = null  # GKMatchmakerViewController
 
 
 ## Put Apple's matchmaking screen up.
@@ -382,7 +446,8 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 	if _native_sheet_up:
 		print("[GC] native: a sheet was already asked for — asking again")
 
-	_native_vc = GKMatchmakerViewController.create_controller(_request())
+	_native_vc = Apple.call_static("GKMatchmakerViewController", "create_controller",
+		[_request()])
 	if _native_vc == null:
 		print("[GC] native: create_controller returned null")
 		_set_state(State.READY, "Game Center would not open its own screen")
@@ -461,7 +526,7 @@ func _on_native_cancelled(detail: String = "") -> void:
 		_wait_age = 0.0
 		if state == State.HANDSHAKING:
 			_set_state(State.HANDSHAKING, "saying hello")
-			_send_raw({"type": "hello", "id": _local_id})
+			_send_raw(_hello("hello"))
 			_begin_if_ready()
 		return
 	print("[GC] native: cancelled with no match — giving up (%s)" % detail)
@@ -500,8 +565,8 @@ func invite_players(players: Array) -> void:
 func _names_of(players: Array) -> String:
 	var names: PackedStringArray = []
 	for p in players:
-		if p is GKPlayer:
-			var n := String((p as GKPlayer).display_name)
+		if Apple.is_a(p, "GKPlayer"):
+			var n := String(p.display_name)
 			if n != "":
 				names.append(n)
 	if names.is_empty():
@@ -517,7 +582,10 @@ func _names_of(players: Array) -> String:
 func cancel_find() -> void:
 	if state != State.MATCHMAKING:
 		return
-	_mm().cancel()
+	if transport == Transport.EOS:
+		_eos_close()
+	else:
+		_mm().cancel()
 	invited = ""
 	_set_state(State.READY, "matchmaking cancelled")
 	match_ended.emit("cancelled")
@@ -525,7 +593,7 @@ func cancel_find() -> void:
 
 ## Someone chose friends in the Game Center app and asked for a match. The
 ## picking is already done, so this is just `invite_players` with Apple's list.
-func _on_match_requested(_player: GKPlayer, recipients: Array) -> void:
+func _on_match_requested(_player, recipients: Array) -> void:
 	invite_players(recipients)
 
 
@@ -572,20 +640,24 @@ const INVITE_HOLD := 20.0
 ## The invitation in hand, if any, and who sent it. `invite_from` is kept
 ## separately because it is what a banner prints, and reading a name off a
 ## `GKInvite` from drawing code would put a GameKit class in `game.gd`.
-var _held_invite: GKInvite = null
+var _held_invite = null  # GKInvite
+## The same thing over Epic: a room code that arrived in a link. Held exactly
+## like a `GKInvite` so the game's banner and its title-screen shortcut work
+## unchanged — only what accepting it does is different.
+var _held_code := ""
 var invite_from := ""
 var _invite_age := 0.0
 
 
 ## Whether there is an invitation waiting on an answer.
 func invite_waiting() -> bool:
-	return _held_invite != null
+	return _held_invite != null or _held_code != ""
 
 
 ## How much of the hold is left, for a banner to run a bar off. Zero when there
 ## is nothing waiting.
 func invite_left() -> float:
-	if _held_invite == null:
+	if not invite_waiting():
 		return 0.0
 	return maxf(0.0, INVITE_HOLD - _invite_age)
 
@@ -593,7 +665,7 @@ func invite_left() -> float:
 ## Somebody accepted an invitation — from a notification, or by tapping a link
 ## Apple's screen texted them. This is the whole of the receiving end and it has
 ## no sheet in it: the invitee never sees Apple's matchmaker, only the match.
-func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
+func _on_invite_accepted(_player, invite) -> void:
 	if not available() or invite == null:
 		return
 	# A second invitation while one is already held replaces it. Two banners is
@@ -612,9 +684,16 @@ func _on_invite_accepted(_player: GKPlayer, invite: GKInvite) -> void:
 ## there is no window in which the match is gone and the invite has not been
 ## acted on.
 func accept_invite() -> void:
+	if _held_code != "":
+		var code := _held_code
+		_clear_invite()
+		if current_match != null or state != State.READY:
+			leave_match()
+		join_code(code)
+		return
 	if _held_invite == null:
 		return
-	var invite := _held_invite
+	var invite = _held_invite
 	_clear_invite()
 	if not available():
 		return
@@ -628,9 +707,9 @@ func accept_invite() -> void:
 ## on a lobby invite — so from their side this is indistinguishable from nobody
 ## picking up, which is what it is.
 func decline_invite() -> void:
-	if _held_invite == null:
+	if not invite_waiting():
 		return
-	print("[GC] invite from '%s' declined" % invite_from)
+	print("[MP] invite from '%s' declined" % invite_from)
 	_clear_invite()
 
 
@@ -640,6 +719,7 @@ func decline_invite() -> void:
 ## is the thing that goes stale.
 func _clear_invite() -> void:
 	_held_invite = null
+	_held_code = ""
 	invite_from = ""
 	_invite_age = 0.0
 
@@ -648,9 +728,9 @@ func _clear_invite() -> void:
 ## object rather than the failure, which is how a real error code once went
 ## unseen for a fortnight.
 func _error_text(error) -> String:
-	if not (error is GKError):
+	if not Apple.is_a(error, "GKError"):
 		return str(error)
-	var e := error as GKError
+	var e = error
 	return "code %d (%s) — %s" % [e.code, e.domain, e.message]
 
 
@@ -724,8 +804,8 @@ func _check_connected() -> void:
 	# indistinguishable, from this side, from a peer who is ignoring us.
 	var who: PackedStringArray = []
 	for p in current_match.players:
-		if p is GKPlayer:
-			who.append(String((p as GKPlayer).display_name))
+		if Apple.is_a(p, "GKPlayer"):
+			who.append(String(p.display_name))
 	print("[GC] match ready — %d attached: %s" % [
 		who.size(), ", ".join(who) if not who.is_empty() else "NOBODY"])
 	# One opponent, so the first name is theirs. Kept even if the roster later
@@ -742,7 +822,7 @@ func _check_connected() -> void:
 	_begin_if_ready()
 
 
-func _on_player_changed(player: GKPlayer, connected: bool) -> void:
+func _on_player_changed(player, connected: bool) -> void:
 	if connected:
 		_check_connected()
 		return
@@ -759,8 +839,7 @@ func _on_match_error(message: String) -> void:
 ## The recipient-addressed form of the same delivery. Everything this game sends
 ## is a broadcast, so the recipient is always us and is thrown away — the point
 ## is only that the packet arrives at all.
-func _on_data_for(data: PackedByteArray, _recipient: GKPlayer,
-		from: GKPlayer) -> void:
+func _on_data_for(data: PackedByteArray, _recipient, from) -> void:
 	_note_delivery("for-recipient")
 	_on_data(data, from)
 
@@ -777,7 +856,7 @@ func _note_delivery(how: String) -> void:
 	print("[GC] data arriving via %s" % how)
 
 
-func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
+func _on_data(data: PackedByteArray, _player = null) -> void:
 	_note_delivery(_delivery if _delivery != "" else "from-remote-player")
 	var packet = JSON.parse_string(data.get_string_from_utf8())
 	if typeof(packet) != TYPE_DICTIONARY:
@@ -803,6 +882,16 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 		if not _peer_said_hello:
 			print("[GC] heard %s from %s" % [kind, packet.get("id", "?")])
 		_peer_id = String(packet.get("id", ""))
+		# Game Center names the opponent from its roster; Epic has no roster
+		# worth the name, so over EOS the name rides in the hello instead.
+		if peer_name == "":
+			peer_name = String(packet.get("name", "")).strip_edges().substr(0, 14)
+		# A build that speaks a different match protocol would play a match in
+		# which half the packets mean nothing. Refuse it while it is still a
+		# lobby. Absent means a build from before this field, which is 1.
+		if int(packet.get("v", 1)) != PROTOCOL:
+			_fail("they are on a different version of Word Wars — update both")
+			return
 		# Answer immediately as well as on the timer, so the pair converges in
 		# one round trip rather than waiting out another tick. Only `hello` is
 		# answered — replying to a reply is how two devices talk forever.
@@ -812,7 +901,7 @@ func _on_data(data: PackedByteArray, _player: GKPlayer) -> void:
 		# instead, and get their answer the moment the sheet comes down.
 		if kind == "hello":
 			_send_raw({"type": "holding"} if _native_sheet_up
-				else {"type": "hello_back", "id": _local_id})
+				else _hello("hello_back"))
 		_peer_said_hello = true
 		_begin_if_ready()
 		return
@@ -852,26 +941,478 @@ func leave_match() -> void:
 		return
 	if current_match != null:
 		_send_raw({"type": "bye"})
-		current_match.disconnect()
-		current_match = null
+		_drop_match()
 	_peer_id = ""
 	_peer_said_hello = false
 	invited = ""
 	if available():
-		_set_state(State.READY, "signed in")
+		_set_state(State.READY, "ready" if transport == Transport.EOS else "signed in")
 	else:
 		_set_state(State.OFF, "multiplayer needs an Apple device")
 
 
 func _fail(reason: String) -> void:
-	if current_match != null:
-		current_match.disconnect()
-		current_match = null
+	_drop_match()
 	_peer_said_hello = false
 	invited = ""
 	_native_sheet_up = false
 	_set_state(State.READY if available() else State.OFF, reason)
 	match_ended.emit(reason)
+
+
+# --------------------------------------------------------------------- Epic
+#
+# Cross-play. Over EOS the lobby is only a meeting point: two devices find each
+# other through it, open a P2P connection host-to-client, and from then on the
+# connection is a bag of bytes exactly like a `GKMatch` — so everything below
+# `_on_data`, the hello, the holding logic, `is_first`, all runs unchanged.
+#
+#   quick match   search the QUICK_BUCKET for a room with a seat; join it, or
+#                 open one and wait there
+#   invite        open a room whose bucket is a fresh five-letter code, and
+#                 hand the code to the share sheet as a link
+#   join by code  search that bucket, join the room it finds
+#
+# Signed in with a Device ID: no Epic account, no login screen. The id is
+# recreated on every launch, so it cannot follow a player between sessions.
+#
+# The lobby is closed once the two ends are connected. The match does not need
+# it, and a full room sitting in the directory is a room somebody else's search
+# will keep finding and failing to join.
+
+## Answered once and then remembered: Epic's platform can only be created once
+## per run, and signing in is a round trip nobody should pay twice.
+var _eos_ready := false
+var _eos_signing_in := false
+## The room this device is in, host or client. An `HLobby`.
+var _lobby = null
+## The connection, before and during a match. It only becomes `current_match`
+## once the other end is actually attached — `current_match != null` is how the
+## rest of the game knows a versus match is live, and a host sitting alone in a
+## room is not one.
+var _eos_peer = null
+## Whether the room we are sitting in is a quick-match room we opened.
+var _quick_hosting := false
+var _research_age := 0.0
+var _researching := false
+## Every async flow checks this after each await and gives up if it moved:
+## cancelling, leaving and starting again all bump it, so a search that the
+## player abandoned cannot come back three seconds later and join something.
+var _attempt := 0
+
+## The code of the invite room we are hosting, for the share link. Empty when
+## there is none.
+var invite_code := ""
+## A room is open and its code can be shared. The link itself is `invite_link`.
+signal invite_ready(code: String)
+
+## A quick-match room whose host never answers. Rooms outlive the app that
+## opened them — kill it while it waits and the room stays listed until Epic
+## notices — so a stranger's search can land in one. Rather than make them sit
+## out the full CONNECT_TIMEOUT, a quick match gives up on the room early, notes
+## its owner, and looks again. A code join keeps the long wait: there, the room
+## is the one the player asked for and there is nowhere else to go.
+const QUICK_CONNECT_TIMEOUT := 8.0
+var _quick_joining := false
+var _dead_owners := {}
+
+## How long a host waits alone in a quick-match room before looking again for
+## somebody else doing the same. See `_eos_process`.
+const RESEARCH_EVERY := 4.0
+## A fresh room takes a few seconds to appear in search. Without retries a
+## friend who taps the link the moment it arrives finds nothing.
+const CODE_TRIES := 5
+const CODE_GAP := 2.0
+
+
+func invite_link(code: String = invite_code) -> String:
+	return EOSConfig.INVITE_URL % code
+
+
+## Room codes are typed by people, so case, spaces and dashes are forgiven.
+## Anything outside the alphabet is dropped — it has no 0, O, 1 or I, so no
+## real code can contain one.
+static func clean_code(text: String) -> String:
+	var out := ""
+	for ch in text.strip_edges().to_upper():
+		if EOSConfig.CODE_ALPHABET.contains(ch):
+			out += ch
+	return out.substr(0, EOSConfig.CODE_LENGTH)
+
+
+## Open a room for a friend and wait in it. `invite_ready` fires once the code
+## is live, which is the moment to put the share sheet up.
+func host_invite() -> void:
+	if transport != Transport.EOS or state != State.READY:
+		return
+	var attempt := _new_attempt()
+	_set_state(State.MATCHMAKING, "opening a room")
+	if not await _eos_sign_in(attempt):
+		return
+	var code := ""
+	for _i in EOSConfig.CODE_LENGTH:
+		code += EOSConfig.CODE_ALPHABET[randi() % EOSConfig.CODE_ALPHABET.length()]
+	if await _eos_host(attempt, code):
+		invite_code = code
+		invited = "your friend"
+		_set_state(State.MATCHMAKING, "room %s — waiting for your friend" % code)
+		invite_ready.emit(code)
+
+
+## Join a friend's room by its code, from a link or typed in.
+func join_code(text: String) -> void:
+	if transport != Transport.EOS or state != State.READY:
+		return
+	var code := clean_code(text)
+	if code.length() != EOSConfig.CODE_LENGTH:
+		_set_state(State.READY, "room codes are %d letters" % EOSConfig.CODE_LENGTH)
+		return
+	var attempt := _new_attempt()
+	_set_state(State.MATCHMAKING, "looking for room %s" % code)
+	if not await _eos_sign_in(attempt):
+		return
+	for i in CODE_TRIES:
+		var found = await HLobbies.search_by_bucket_id_async(code)
+		if _stale(attempt):
+			return
+		for lobby in (found if found != null else []):
+			if lobby.available_slots > 0:
+				await _eos_join(attempt, lobby)
+				return
+		if i < CODE_TRIES - 1:
+			await get_tree().create_timer(CODE_GAP).timeout
+			if _stale(attempt):
+				return
+	_eos_give_up("no room %s — check the code, or ask them to send a new one" % code)
+
+
+## A code arrived from outside the game — a tapped link. Held as an invitation
+## so the game decides when to take it; see the invite section above.
+func offer_code(text: String) -> void:
+	var code := clean_code(text)
+	if transport != Transport.EOS or code.length() != EOSConfig.CODE_LENGTH:
+		return
+	_held_code = code
+	_held_invite = null
+	_invite_age = 0.0
+	invite_from = "a friend"
+	print("[MP] invite link held for room %s" % code)
+	invite_offered.emit(invite_from)
+
+
+## Did the game open from an invite link? Asked at launch and on every resume:
+## a link tapped while the game is already running brings it to the front
+## without a relaunch, so launch alone would miss it.
+##
+## Android hands the link to `GodotApp` (see tools/android-template.sh), which
+## holds it until asked. On a desktop `--join=CODE` stands in for a link.
+func _check_link(at_launch: bool = false) -> void:
+	if transport != Transport.EOS:
+		return
+	var link := ""
+	if OS.get_name() == "Android":
+		var app = JavaClassWrapper.wrap("com.godot.game.GodotApp")
+		if app != null:
+			link = String(app.takeLink())
+	if at_launch:
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--join="):
+				link = arg.substr(7)
+	var code := code_from_link(link)
+	if code != "":
+		print("[MP] opened from an invite link — room %s" % code)
+		offer_code(code)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_RESUMED:
+		_check_link()
+
+
+## The room code out of anything that might carry one: the page's link
+## (`…/j/?c=K7QMX`), the app scheme (`wordwars://join/K7QMX`), or a bare code.
+static func code_from_link(link: String) -> String:
+	if link == "":
+		return ""
+	var at := link.find("c=")
+	var raw := link.substr(at + 2).get_slice("&", 0) if at >= 0 \
+		else link.get_slice("?", 0).trim_suffix("/").get_file()
+	var code := clean_code(raw)
+	return code if code.length() == EOSConfig.CODE_LENGTH else ""
+
+
+func _eos_find() -> void:
+	var attempt := _new_attempt()
+	_set_state(State.MATCHMAKING, "finding an opponent")
+	if not await _eos_sign_in(attempt):
+		return
+	var open: Array = await _open_quick_rooms()
+	if _stale(attempt):
+		return
+	if not open.is_empty():
+		await _eos_join(attempt, open[0])
+		return
+	if await _eos_host(attempt, EOSConfig.QUICK_BUCKET):
+		_quick_hosting = true
+		_research_age = 0.0
+		_set_state(State.MATCHMAKING, "waiting for an opponent")
+
+
+## Quick-match rooms somebody else opened that still have a seat, oldest owner
+## id first — the order both ends of a collision agree on, see `_eos_process`.
+func _open_quick_rooms() -> Array:
+	var found = await HLobbies.search_by_bucket_id_async(EOSConfig.QUICK_BUCKET)
+	var open: Array = []
+	for lobby in (found if found != null else []):
+		if lobby.available_slots > 0 and lobby.owner_product_user_id != _local_id \
+				and not _dead_owners.has(lobby.owner_product_user_id):
+			open.append(lobby)
+	open.sort_custom(func(a, b): return a.owner_product_user_id < b.owner_product_user_id)
+	return open
+
+
+## Bring Epic up and sign in, once per run. False, with the state already set
+## to say why, if it could not.
+func _eos_sign_in(attempt: int) -> bool:
+	while _eos_signing_in:
+		await get_tree().process_frame
+	if _stale(attempt):
+		return false
+	if _eos_ready:
+		return true
+	_eos_signing_in = true
+	var ok := await _eos_start()
+	_eos_signing_in = false
+	if _stale(attempt):
+		return false
+	if not ok:
+		_eos_give_up("could not reach Epic — check your connection")
+	return ok
+
+
+func _eos_start() -> bool:
+	if not await HPlatform.setup_eos_async(EOSConfig.make_credentials()):
+		push_warning("EOS: platform setup failed")
+		return false
+	# Relayed only. A direct connection hands each player the other's IP
+	# address; through Epic's relays neither sees it. The cost is a few tens of
+	# milliseconds, which a word game does not feel.
+	HP2P.set_relay_control(EOS.P2P.RelayControl.ForceRelays)
+	# Presence needs an Epic account, which a Device ID sign-in does not have.
+	HLobbies.presence_enabled = false
+	# Epic insists on a display name for the sign-in; it is never shown to
+	# anybody — the opponent's label comes from the hello.
+	var shown := my_name()
+	# Twice. The Device ID sign-in deletes and recreates the device's id, and a
+	# second copy of the game doing the same at the same moment — a test rig, or
+	# a relaunch on top of a dying process — gets DuplicateNotAllowed once.
+	var signed := false
+	for i in 2:
+		signed = await HAuth.login_anonymous_async(shown if shown != "" else "Player")
+		if signed:
+			break
+		await get_tree().create_timer(1.5).timeout
+	if not signed:
+		push_warning("EOS: sign-in failed — check the client policy allows Device ID and Lobbies")
+		return false
+	_local_id = HAuth.product_user_id
+	_eos_ready = true
+	print("[MP] signed in to Epic as %s" % _local_id)
+	return true
+
+
+## Open a room in `bucket` and wait in it with a server socket.
+func _eos_host(attempt: int, bucket: String) -> bool:
+	var opts := EOS.Lobby.CreateLobbyOptions.new()
+	opts.bucket_id = bucket
+	opts.max_lobby_members = 2
+	opts.permission_level = EOS.Lobby.LobbyPermissionLevel.PublicAdvertised
+	opts.presence_enabled = false
+	var lobby = await HLobbies.create_lobby_async(opts)
+	if _stale(attempt):
+		if lobby != null:
+			lobby.destroy_async()
+		return false
+	if lobby == null:
+		_eos_give_up("Epic would not open a room")
+		return false
+	_lobby = lobby
+	var peer = ClassDB.instantiate("EOSGMultiplayerPeer")
+	if peer.create_server(EOSConfig.SOCKET) != OK:
+		_eos_give_up("could not open a connection")
+		return false
+	# Otherwise every arrival waits on an accept that nothing ever sends.
+	peer.set_auto_accept_connection_requests(true)
+	_attach(peer)
+	return true
+
+
+## Take the seat in `lobby` and connect to whoever opened it.
+func _eos_join(attempt: int, lobby) -> void:
+	var joined = await HLobbies.join_async(lobby)
+	if _stale(attempt):
+		if joined != null:
+			joined.leave_async()
+		return
+	if joined == null:
+		# Almost always somebody else took the seat between our search and our
+		# join. For a quick match that just means look again.
+		if lobby.bucket_id == EOSConfig.QUICK_BUCKET:
+			_set_state(State.READY, "ready")
+			_eos_find()
+		else:
+			_eos_give_up("that room is full or closed")
+		return
+	_lobby = joined
+	var peer = ClassDB.instantiate("EOSGMultiplayerPeer")
+	if peer.create_client(EOSConfig.SOCKET, lobby.owner_product_user_id) != OK:
+		_eos_give_up("could not reach the other player")
+		return
+	_attach(peer)
+	_quick_joining = lobby.bucket_id == EOSConfig.QUICK_BUCKET
+	_joined_owner = lobby.owner_product_user_id
+	_wait_age = 0.0
+	_set_state(State.CONNECTING, "connecting")
+
+
+var _joined_owner := ""
+
+
+func _skip_dead_room() -> void:
+	print("[MP] quick room from %s never answered — looking again" % _joined_owner)
+	_dead_owners[_joined_owner] = true
+	_eos_close()
+	_set_state(State.READY, "ready")
+	_eos_find()
+
+
+func _attach(peer) -> void:
+	_eos_peer = peer
+	peer.peer_connected.connect(_on_eos_connected)
+	peer.peer_disconnected.connect(_on_eos_disconnected)
+
+
+## Both ends land here once the connection is up — the host when the client
+## attaches, the client when it reaches the host. From here it is the same
+## handshake Game Center uses.
+func _on_eos_connected(_id: int) -> void:
+	if current_match != null:
+		return
+	print("[MP] connected over Epic")
+	current_match = _eos_peer
+	_quick_hosting = false
+	_quick_joining = false
+	invite_code = ""
+	_close_lobby()
+	_peer_id = ""
+	peer_name = ""
+	_peer_said_hello = false
+	_hellos_sent = 0
+	_send_failures = 0
+	_wait_age = 0.0
+	_hello_timer = 0.0
+	_set_state(State.HANDSHAKING, "saying hello")
+
+
+func _on_eos_disconnected(_id: int) -> void:
+	if state in [State.HANDSHAKING, State.PLAYING, State.CONNECTING]:
+		_fail("the other player left")
+
+
+## Called every frame while Epic is the transport. The peer is not handed to
+## Godot's multiplayer API — the packets are this file's own JSON, not RPCs — so
+## polling and reading it is our job.
+func _eos_process(delta: float) -> void:
+	if _eos_peer != null:
+		_eos_peer.poll()
+		# `poll` can close the connection underneath us, and `_on_data` can end
+		# the match, so the peer is re-read each time round.
+		while _eos_peer != null and _eos_peer.get_available_packet_count() > 0:
+			_on_data(_eos_peer.get_packet())
+
+	# Two players pressing Quick Match in the same second both search, both find
+	# nothing, and both open a room — then sit in separate rooms waiting for each
+	# other. So a host alone in a quick room keeps looking, and if it finds
+	# another open room whose owner sorts lower, it closes its own and goes
+	# there. Both ends apply the same rule, so exactly one of them moves.
+	if not _quick_hosting or state != State.MATCHMAKING or current_match != null:
+		return
+	_research_age += delta
+	if _research_age < RESEARCH_EVERY or _researching:
+		return
+	_research_age = 0.0
+	_researching = true
+	var attempt := _attempt
+	var open: Array = await _open_quick_rooms()
+	_researching = false
+	if _stale(attempt) or not _quick_hosting or current_match != null:
+		return
+	if not open.is_empty() and String(open[0].owner_product_user_id) < _local_id:
+		print("[MP] another quick room is waiting — moving to it")
+		var there = open[0]
+		# `_eos_close` retires the current attempt, so the move is a new one.
+		_eos_close()
+		await _eos_join(_attempt, there)
+
+
+func _eos_send(bytes: PackedByteArray, reliable: bool) -> int:
+	if _eos_peer == null:
+		return ERR_UNCONFIGURED
+	_eos_peer.transfer_mode = MultiplayerPeer.TRANSFER_MODE_RELIABLE if reliable \
+		else MultiplayerPeer.TRANSFER_MODE_UNRELIABLE
+	_eos_peer.set_target_peer(MultiplayerPeer.TARGET_PEER_BROADCAST)
+	return _eos_peer.put_packet(bytes)
+
+
+## Hang up and leave the room, whatever stage things were at.
+func _eos_close() -> void:
+	_attempt += 1
+	_quick_hosting = false
+	_quick_joining = false
+	invite_code = ""
+	if _eos_peer != null:
+		# Closed on the next frame, never here. The commonest way to arrive is a
+		# `bye` read out of the packet loop in `_eos_process`, and closing an
+		# EOSG peer from inside that loop segfaults — measured, on the first
+		# match that ever ended. Deferred, nothing is mid-read when it goes.
+		var peer = _eos_peer
+		_eos_peer = null
+		for sig in [[peer.peer_connected, _on_eos_connected],
+				[peer.peer_disconnected, _on_eos_disconnected]]:
+			if (sig[0] as Signal).is_connected(sig[1]):
+				(sig[0] as Signal).disconnect(sig[1])
+		peer.close.call_deferred()
+	_close_lobby()
+
+
+## Fire-and-forget: the requests go out before the first await, and nothing
+## that calls this should have to become async to do it.
+func _close_lobby() -> void:
+	if _lobby == null:
+		return
+	var lobby = _lobby
+	_lobby = null
+	if lobby.is_owner():
+		lobby.destroy_async()
+	else:
+		lobby.leave_async()
+
+
+func _eos_give_up(reason: String) -> void:
+	_eos_close()
+	invited = ""
+	_set_state(State.READY, reason)
+	match_ended.emit(reason)
+
+
+func _new_attempt() -> int:
+	_attempt += 1
+	return _attempt
+
+
+## Whether an async flow has been overtaken — cancelled, restarted, or left.
+func _stale(attempt: int) -> bool:
+	return attempt != _attempt or state == State.READY or state == State.OFF
 
 
 # ------------------------------------------------------------------ sending
@@ -889,11 +1430,11 @@ func send_event(type: String, payload: Dictionary = {}) -> void:
 func send_state(payload: Dictionary) -> void:
 	if state != State.PLAYING or current_match == null:
 		return
-	_send({"type": "state", "payload": payload}, GKMatch.SendDataMode.UNRELIABLE)
+	_send({"type": "state", "payload": payload}, false)
 
 
 func _send_raw(packet: Dictionary) -> void:
-	_send(packet, GKMatch.SendDataMode.RELIABLE)
+	_send(packet, true)
 
 
 ## Every outgoing packet, so one place can notice that sending is failing.
@@ -902,11 +1443,16 @@ func _send_raw(packet: Dictionary) -> void:
 ## floor. That is how a handshake which never left the device looked exactly like
 ## a peer who never answered: thirty hellos, no error anywhere, and a log whose
 ## only evidence was that nothing came back. The two have opposite fixes.
-func _send(packet: Dictionary, mode: int) -> void:
+func _send(packet: Dictionary, reliable: bool) -> void:
 	if current_match == null:
 		return
-	var err: int = current_match.send_data_to_all_players(
-		JSON.stringify(packet).to_utf8_buffer(), mode)
+	var bytes := JSON.stringify(packet).to_utf8_buffer()
+	var err: int
+	if transport == Transport.EOS:
+		err = _eos_send(bytes, reliable)
+	else:
+		err = current_match.send_data_to_all_players(bytes,
+			Apple.k("GKMatch", "RELIABLE" if reliable else "UNRELIABLE"))
 	if err == OK:
 		return
 	_send_failures += 1
@@ -916,6 +1462,30 @@ func _send(packet: Dictionary, mode: int) -> void:
 		print("[GC] send failed (error %d) on '%s' — %d failed so far" % [
 			err, packet.get("type", "?"), _send_failures])
 		push_warning("Game Center: send failed — error %d" % err)
+
+
+## The hello, and its answer. `name` and `v` are new with cross-play; a Game
+## Center build from before them simply ignores both.
+func _hello(kind: String) -> Dictionary:
+	return {"type": kind, "id": _local_id, "name": my_name(), "v": PROTOCOL}
+
+
+## What the other player sees this board called. Game Center's own name where
+## there is one; otherwise nothing, and the far side falls back to OPPONENT.
+func my_name() -> String:
+	if local_player != null:
+		return String(local_player.display_name)
+	return ""
+
+
+## Close whatever the match is running over. Both transports, because `_fail`
+## and `leave_match` are shared and must not care which one is in use.
+func _drop_match() -> void:
+	if transport == Transport.EOS:
+		_eos_close()
+	elif current_match != null:
+		current_match.disconnect()
+	current_match = null
 
 
 func in_match() -> bool:

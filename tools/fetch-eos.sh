@@ -14,11 +14,13 @@ VERSION="2.3.0"
 HASH="e84320567a3a17d305478f5796707e69d2bdac4f"
 BASE="https://github.com/3ddelano/epic-online-services-godot/releases/download/${VERSION}"
 
-# Platforms we actually ship. Android is skipped because it is not a target.
+# Platforms we actually ship.
 # iOS is here now that the export path is proven: without it the phone build
 # links no EOS library at all, and the GDExtension fails at load with every EOS
 # script failing to parse behind it.
-PLATFORMS=(linux windows macos ios)
+PLATFORMS=(linux windows macos ios android)
+# Or just the ones named — CI building one platform needs only that one.
+if [[ $# -gt 0 ]]; then PLATFORMS=("$@"); fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADDON="${ROOT}/addons/epic-online-services-godot"

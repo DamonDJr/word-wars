@@ -50,23 +50,18 @@ jobs:
           mv templates "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
           echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
 
-      - name: Disable EOS native extension for iOS
+      - name: Fetch the EOS binaries
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-      
-          p = Path("addons/epic-online-services-godot/eosg.gdextension")
-          s = p.read_text()
-      
-          lines = [
-              line for line in s.splitlines()
-              if not line.startswith("ios.debug =")
-              and not line.startswith("ios.release =")
-          ]
-      
-          p.write_text("\n".join(lines) + "\n")
-          PY
-      
+          set -euo pipefail
+          # addons/.../bin is gitignored, so the checkout has the GDScript half
+          # of EOS and none of the native half. Versus runs over Epic on every
+          # platform now (cross-play with Android), so the phone build needs
+          # it: without it the export references xcframeworks that are not
+          # there, or — with the extension stripped, as this step used to do —
+          # the game ships with versus switched off.
+          tools/fetch-eos.sh ios
+          test -d addons/epic-online-services-godot/bin/ios
+
 
       - name: Import the project
         run: |
@@ -260,6 +255,18 @@ jobs:
           app="$(find verify/Payload -maxdepth 1 -name '*.app' | head -1)"
 
           echo "App: $app"
+
+          # Cross-play is the other invisible failure: a build without Epic's
+          # frameworks installs, runs, and quietly has no versus. Both have to
+          # be embedded — the SDK, and EOSG's glue, which Godot converts from a
+          # bare .dylib into a framework on export.
+          for fw in EOSSDK.framework libeosg.ios.template_release.arm64.framework; do
+            test -d "$app/Frameworks/$fw" || {
+              echo "::error::$fw is not in the app — EOS cross-play would be missing"
+              ls "$app/Frameworks" || true
+              exit 1
+            }
+          done
 
           echo "=== Bundle ID ==="
           /usr/libexec/PlistBuddy \

@@ -70,6 +70,32 @@ Linux binary and checking the word count, instead of assuming.
 The Windows build is not code-signed, so SmartScreen will warn about an unknown
 publisher.
 
+## Android
+
+```bash
+tools/fetch-eos.sh android      # once per clone: EOS binaries are gitignored
+tools/android-template.sh       # installs android/build and wires EOS + invite links
+godot --headless --export-debug "Android" build/android/WordWars.apk
+```
+
+The preset uses a Gradle build, because Epic's SDK has a Java half that must be
+initialised in `GodotApp.onCreate` — `tools/android-template.sh` explains each
+edit it makes. `android/` itself is gitignored; that script is the source.
+
+The Game Center and StoreKit scripts reach Apple's classes through
+`scripts/apple.gd` rather than naming them: the Apple plugins have no Android
+library, so a type hint like `GKPlayer` is a parse error there and takes every
+dependent script down with it.
+
+An emulator (`WordWars_Pixel`, Android 16, hardware keyboard):
+
+```bash
+/opt/android-sdk/emulator/emulator -avd WordWars_Pixel
+```
+
+Invite links only skip the browser once `damondjr.github.io` serves
+`.well-known/assetlinks.json` — see `deploy/damondjr.github.io/`.
+
 ## The launcher
 
 `launcher/` is a separate Godot project that checks the GitHub releases API,
@@ -344,6 +370,19 @@ python3 tools/build_wordlists.py
 ```
 
 ## Versus — two players over a network
+
+> **Now:** versus runs through `MultiplayerManager` over **Epic Online
+> Services**, so iPhone, Android and desktop share one pool. Quick Match searches
+> a shared bucket of rooms; **Invite** opens a room with a five-letter code and
+> shares `damondjr.github.io/word-wars/j/?c=CODE`; **Join with a code** types one
+> in. Android opens the game straight from that link. Game Center still signs
+> the player in on iPhone for leaderboards, achievements and cloud saves, and
+> `EOSConfig.CROSSPLAY = false` puts Apple matches back on Game Center. The
+> `Link`/noray description below is the earlier design, kept for its reasoning.
+>
+> Test from this machine with `tools/eosprobe.gd`, a screenless second player:
+> `godot --headless --path . -s tools/eosprobe.gd -- host` prints a room code
+> for a phone or the emulator to join (`quick` and `join CODE` also work).
 
 `V` on the title screen opens the lobby. Set your name (it is remembered), pick a
 backend, then **host** or **join**. Once both players are in the room they each

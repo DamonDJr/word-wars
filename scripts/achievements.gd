@@ -112,7 +112,7 @@ func push() -> void:
 		if pct <= float(_sent.get(id, -1.0)):
 			continue
 		_sent[id] = pct
-		var a = GKAchievement.make(PREFIX + id)
+		var a = Apple.call_static("GKAchievement", "make", [PREFIX + id])
 		if a == null:
 			continue
 		a.percent_complete = pct
@@ -125,7 +125,7 @@ func push() -> void:
 	if batch.is_empty():
 		return
 	_busy = true
-	GKAchievement.report_achievement(batch, _on_reported)
+	Apple.call_static("GKAchievement", "report_achievement", [batch, _on_reported])
 
 
 ## Where one requirement stands, as a percentage.

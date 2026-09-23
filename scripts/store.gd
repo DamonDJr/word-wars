@@ -52,8 +52,10 @@ var status := "not available"
 ## it wrong is a refund request.
 var price := ""
 
-var _manager: StoreKitManager
-var _product: StoreProduct = null
+## Untyped, and reached through `Apple`: naming StoreKit classes in a type hint
+## is a parse error on Android, where the plugin has no library. See apple.gd.
+var _manager = null
+var _product = null
 
 
 func available() -> bool:
@@ -66,7 +68,7 @@ func _ready() -> void:
 	if not available():
 		_note(State.OFF, "the store needs an iPhone or a Mac")
 		return
-	_manager = StoreKitManager.new()
+	_manager = Apple.make("StoreKitManager")
 	if _manager == null:
 		_note(State.OFF, "the store is unavailable on this build")
 		return
@@ -113,8 +115,13 @@ func restore() -> void:
 
 # ------------------------------------------------------------------ callbacks
 
+## `StoreKitManager.StoreKitStatus.<name>`, by name. See apple.gd.
+func _status(name: String) -> int:
+	return Apple.k("StoreKitManager", name)
+
+
 func _on_products(products: Array, status_code: int) -> void:
-	if status_code != StoreKitManager.StoreKitStatus.OK or products.is_empty():
+	if status_code != _status("OK") or products.is_empty():
 		# The commonest cause by a distance is a product that exists in App Store
 		# Connect but has not propagated yet, which can take hours on a first
 		# submission and looks exactly like a wrong id. Said plainly, because a
@@ -124,9 +131,9 @@ func _on_products(products: Array, status_code: int) -> void:
 			status_code, products.size()])
 		return
 	for p in products:
-		if p is StoreProduct and String((p as StoreProduct).product_id) == PREMIUM_ID:
+		if Apple.is_a(p, "StoreProduct") and String(p.product_id) == PREMIUM_ID:
 			_product = p
-			price = String((p as StoreProduct).display_price)
+			price = String(p.display_price)
 	if _product == null:
 		_note(State.FAILED, "the pack is not available right now")
 		return
@@ -134,36 +141,36 @@ func _on_products(products: Array, status_code: int) -> void:
 	_note(State.READY, price)
 
 
-func _on_purchased(transaction: StoreTransaction, status_code: int,
+func _on_purchased(transaction, status_code: int,
 		error_message: String) -> void:
-	match status_code:
-		StoreKitManager.StoreKitStatus.OK:
-			_award(transaction, "purchase")
-		StoreKitManager.StoreKitStatus.USER_CANCELLED, \
-				StoreKitManager.StoreKitStatus.CANCELLED:
-			# Not a failure and must not read as one. Backing out of Apple's sheet
-			# is an answer, and an error message for it is the app telling somebody
-			# off for changing their mind.
-			_note(State.READY, price)
-		StoreKitManager.StoreKitStatus.PURCHASE_PENDING:
-			# Ask to Buy, waiting on a parent. The transaction arrives later
-			# through `transaction_updated`, which is why `start` runs at launch.
-			_note(State.READY, "waiting for approval")
-		_:
-			print("[Store] purchase failed — status %d: %s" % [
-				status_code, error_message])
-			_note(State.FAILED, "that did not go through")
+	# An if-chain rather than `match`: the statuses are read from the plugin at
+	# runtime, and `match` wants constants it can see at parse time.
+	if status_code == _status("OK"):
+		_award(transaction, "purchase")
+	elif status_code in [_status("USER_CANCELLED"), _status("CANCELLED")]:
+		# Not a failure and must not read as one. Backing out of Apple's sheet
+		# is an answer, and an error message for it is the app telling somebody
+		# off for changing their mind.
+		_note(State.READY, price)
+	elif status_code == _status("PURCHASE_PENDING"):
+		# Ask to Buy, waiting on a parent. The transaction arrives later
+		# through `transaction_updated`, which is why `start` runs at launch.
+		_note(State.READY, "waiting for approval")
+	else:
+		print("[Store] purchase failed — status %d: %s" % [
+			status_code, error_message])
+		_note(State.FAILED, "that did not go through")
 
 
 ## Anything Apple hands over outside a purchase this session: a restore, an
 ## entitlement found at launch, a deferred approval, a purchase made on another
 ## device. All of them mean the same thing and take the same path.
-func _on_transaction(transaction: StoreTransaction) -> void:
+func _on_transaction(transaction) -> void:
 	_award(transaction, "transaction")
 
 
 func _on_restored(status_code: int, error_message: String) -> void:
-	if status_code != StoreKitManager.StoreKitStatus.OK:
+	if status_code != _status("OK"):
 		print("[Store] restore failed — status %d: %s" % [status_code, error_message])
 		_note(State.READY if _product != null else State.FAILED,
 			"nothing to restore")
@@ -175,7 +182,7 @@ func _on_restored(status_code: int, error_message: String) -> void:
 	changed.emit()
 
 
-func _on_unverified(transaction: StoreTransaction, verification_error: int) -> void:
+func _on_unverified(transaction, verification_error: int) -> void:
 	# Never granted. StoreKit could not vouch for this, and the one thing a store
 	# with no server must not do is take an unverifiable transaction's word for it.
 	print("[Store] refusing unverified transaction for %s — error %d" % [
@@ -187,7 +194,7 @@ func _on_unverified(transaction: StoreTransaction, verification_error: int) -> v
 ## `revocation_date` is checked as well as the id: Apple sets it on a refunded or
 ## family-revoked purchase, and a refund that leaves the pack in place is a
 ## refund the player was paid for.
-func _award(transaction: StoreTransaction, how: String) -> void:
+func _award(transaction, how: String) -> void:
 	if String(transaction.product_id) != PREMIUM_ID:
 		return
 	if transaction.revocation_date > 0.0:

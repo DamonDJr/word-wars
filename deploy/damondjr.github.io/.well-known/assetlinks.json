@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.damonj.wordwars",
+      "sha256_cert_fingerprints": [
+        "89:2E:EA:33:D4:72:63:B1:6A:E2:7B:A2:C4:23:0E:CA:98:50:F7:A8:A2:93:5C:F3:85:25:0F:6D:F4:17:C2:03"
+      ]
+    }
+  }
+]

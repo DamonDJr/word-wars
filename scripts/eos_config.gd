@@ -40,6 +40,27 @@ const SOCKET := "wordwars"
 const BROWSE_KEY := "WWGAME"
 const BROWSE_VALUE := "1"
 
+## Versus goes over Epic on every platform, so an iPhone and an Android phone
+## land in the same pool. False puts Apple devices back on Game Center
+## matchmaking — and leaves Android with no versus at all, since Game Center is
+## all it would have had.
+const CROSSPLAY := true
+
+## Every quick-match lobby is created in this bucket and a quick match searches
+## only this bucket, so invite rooms (whose bucket is their code) never turn up
+## in a stranger's search. The protocol number is in the name so that builds
+## which cannot play each other are never offered to each other.
+const QUICK_BUCKET := "quick-v1"
+
+## Room codes. Five characters from an alphabet with no 0/O or 1/I, because a
+## code is as likely to be read aloud across a room as tapped in a link.
+const CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const CODE_LENGTH := 5
+
+## Where an invite link points. `docs/j/` on the Pages site: it opens the game
+## when the game is installed, and says how to get it when it is not.
+const INVITE_URL := "https://damondjr.github.io/word-wars/j/?c=%s"
+
 
 ## True once real credentials are present. Everything EOS-related is gated on
 ## this so an unconfigured checkout behaves exactly as it did before.

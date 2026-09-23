@@ -896,6 +896,7 @@ func _notification(what: int) -> void:
 func _ready() -> void:
 	MultiplayerManager.match_started.connect(_on_match_started)
 	MultiplayerManager.match_ended.connect(_on_match_ended)
+	MultiplayerManager.invite_ready.connect(_on_invite_ready)
 	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
 	MultiplayerManager.invite_offered.connect(_on_invite_offered)
@@ -2438,10 +2439,24 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 
 	if phase == Phase.LOBBY:
+		# Typing a code: letters go into it, and the only other keys are the
+		# ones the two doors on screen advertise.
+		if _code_entry:
+			match k.keycode:
+				KEY_ENTER, KEY_KP_ENTER: _code_key("fire")
+				KEY_BACKSPACE: _code_key("clear" if k.ctrl_pressed else "back")
+				KEY_ESCAPE: _activate("versus_code_back")
+				_:
+					var ch := char(k.unicode).to_upper() if k.unicode > 0 else ""
+					if ch != "" and EOSConfig.CODE_ALPHABET.contains(ch):
+						_code_key(ch)
+			return
 		# The keys the doors advertise. ENTER is quick match while there is one
 		# to start and Stop once there is — the same swap the first door makes,
 		# so the key and the plate never disagree about what they do.
 		match k.keycode:
+			KEY_J: _activate("versus_code")
+			KEY_S: _activate("versus_share")
 			KEY_ENTER, KEY_KP_ENTER:
 				_activate("versus_cancel" if _versus_busy() else "versus_quick")
 			KEY_I: _activate("versus_invite")
@@ -3974,6 +3989,7 @@ func _take_invite() -> void:
 	_lobby_search = 0.0
 	# The lobby rather than the title: it is the screen that says what
 	# matchmaking is doing, and joining an invite is matchmaking.
+	_code_entry = false
 	phase = Phase.LOBBY
 	Sfx.play("count", 1.2)
 
@@ -6606,6 +6622,8 @@ func _draw_emote_head(at: Rect2, alpha: float) -> void:
 
 ## Whether the drawn keyboard is up and listening.
 func _keys_live() -> bool:
+	if phase == Phase.LOBBY:
+		return portrait and _code_entry
 	return portrait and phase == Phase.PLAY and not paused and player.alive
 
 
@@ -6641,6 +6659,8 @@ func _back_action() -> String:
 			# Backing out of a running search stops it rather than leaving it
 			# going behind you. The chevron is the only way off this screen in
 			# portrait, so if it did not cancel there would be no way to.
+			if _code_entry:
+				return "versus_code_back"
 			return "versus_cancel" if _versus_busy() else "title"
 	return ""
 
@@ -7212,6 +7232,9 @@ func _letter_lives(ch: String) -> bool:
 ## device rather than a second implementation of the game.
 func _press_key(id: String) -> void:
 	if id == "":
+		return
+	if phase == Phase.LOBBY:
+		_code_key(id)
 		return
 	if id == "fire":
 		_fire_pressed()
@@ -7816,6 +7839,10 @@ func _draw_overlay() -> void:
 			_draw_solo(size)
 		elif phase == Phase.LOBBY:
 			_draw_lobby(size)
+			# The same keyboard a match is typed on, so a room code is typed the
+			# way everything else in this game is.
+			if _code_entry and portrait:
+				_draw_keyboard()
 		elif phase == Phase.PRACTICE:
 			_draw_practice(size)
 		elif phase == Phase.MASTERY:
@@ -9884,6 +9911,11 @@ const LOBBY_FALLBACK := 20.0
 ## `_process` so the status line counts up rather than sitting still.
 var _lobby_search := 0.0
 
+## Typing a friend's room code. The lobby swaps its doors for Join and Back and
+## raises the keyboard; nothing else about the screen changes.
+var _code_entry := false
+var _code_text := ""
+
 ## Who the CPU door offers. Fixed for the life of the screen rather than rolled
 ## per frame, because a door whose name changes while you are reading it is a
 ## door you do not trust.
@@ -9983,6 +10015,71 @@ func _lobby_search_line() -> String:
 		int(_lobby_search)]
 
 
+## Whether versus runs over Epic on this device — the cross-play doors, the
+## room codes and the links — rather than over Game Center.
+func _crossplay() -> bool:
+	return MultiplayerManager.transport == MultiplayerManager.Transport.EOS
+
+
+## One key of a room code, from the drawn keyboard or a real one. FIRE joins.
+func _code_key(id: String) -> void:
+	if not _code_entry:
+		return
+	match id:
+		"fire":
+			var code := MultiplayerManager.clean_code(_code_text)
+			if code.length() != EOSConfig.CODE_LENGTH:
+				Sfx.play("reject", 1.2)
+				Haptics.fire("reject")
+				return
+			_code_entry = false
+			_code_text = ""
+			net_status = ""
+			_lobby_search = 0.0
+			MultiplayerManager.join_code(code)
+			Sfx.play("count", 1.2)
+		"back":
+			_code_text = _code_text.substr(0, maxi(0, _code_text.length() - 1))
+			Sfx.play("back", randf_range(0.94, 1.06))
+		"clear":
+			_code_text = ""
+			Sfx.play("back", 0.72)
+		_:
+			var ch := MultiplayerManager.clean_code(id)
+			if ch == "" or _code_text.length() >= EOSConfig.CODE_LENGTH:
+				Sfx.play("reject", 1.2)
+				return
+			_code_text += ch
+			Haptics.fire("key")
+			Sfx.play("key", randf_range(0.92, 1.10))
+
+
+## The code as it is being typed, with the empty places shown so the length is
+## never a guess: "K7Q _ _".
+func _code_shown() -> String:
+	var out := PackedStringArray()
+	for i in EOSConfig.CODE_LENGTH:
+		out.append(_code_text[i] if i < _code_text.length() else "_")
+	return " ".join(out)
+
+
+## Put the share sheet up with a room's link. Called when the room opens and
+## again from its door, so a dismissed sheet is not a lost invite.
+func _share_invite(code: String) -> void:
+	var link := MultiplayerManager.invite_link(code)
+	var text := "Word Wars — come and play me. Tap to join, or enter code %s: %s" % [code, link]
+	if not Sharing.share_text("Word Wars", "Play me at Word Wars", text):
+		# No share sheet here — a desktop. The code is on screen and the link is
+		# on the clipboard, which is the share sheet's job done by hand.
+		DisplayServer.clipboard_set(link)
+		net_status = "link copied — room %s" % code
+
+
+func _on_invite_ready(code: String) -> void:
+	if phase == Phase.LOBBY:
+		_share_invite(code)
+
+
 ## The doors, in order, without their rectangles.
 ##
 ## Split from `_lobby_door_rects` on purpose: the rects are positioned from
@@ -9992,7 +10089,24 @@ func _lobby_doors() -> Array:
 	var out: Array = []
 	var can: bool = MultiplayerManager.available()
 	var grey := Color("#4d5878")
-	var why := "needs an iPhone signed in to Game Center"
+	var why := "needs an internet connection" if _crossplay() \
+		else "needs an iPhone signed in to Game Center"
+
+	# Typing a code: the doors that make sense with a keyboard up, and nothing
+	# that would sit underneath it.
+	if _code_entry:
+		out.append({
+			"rect": Rect2(), "key": "ENTER", "stamp": "JOIN",
+			"label": "Join room", "sub": "Enter the %d-letter code, then JOIN" % EOSConfig.CODE_LENGTH,
+			"note": "", "rating": 0,
+			"accent": PLAYER_ACCENT if _code_text.length() == EOSConfig.CODE_LENGTH
+				else grey,
+			"action": "versus_join"})
+		out.append({
+			"rect": Rect2(), "key": "ESC", "stamp": "BACK", "label": "Back",
+			"sub": "", "note": "", "rating": 0, "accent": Color("#8d99bd"),
+			"action": "versus_code_back"})
+		return out
 
 	# The search takes the first slot whether it is idle or running, so cancelling
 	# does not shuffle the two doors underneath it.
@@ -10014,12 +10128,31 @@ func _lobby_doors() -> Array:
 			"accent": Color("#c77dff") if can else grey,
 			"action": "versus_quick"})
 
-	out.append({
-		"rect": Rect2(), "key": "I", "stamp": "INV", "label": "Invite a friend",
-		"sub": "Text a link to anyone in your contacts" if can else why,
-		"note": "", "rating": 0,
-		"accent": PLAYER_ACCENT if can else grey,
-		"action": "versus_invite"})
+	if _crossplay() and MultiplayerManager.invite_code != "":
+		# Waiting in our own room. The door that opened it becomes the way to
+		# send the link again — to the same friend, or to someone else.
+		out.append({
+			"rect": Rect2(), "key": "S", "stamp": "SEND",
+			"label": "Send the link again",
+			"sub": "Room %s · anyone with the code can join" % MultiplayerManager.invite_code,
+			"note": "", "rating": 0, "accent": PLAYER_ACCENT,
+			"action": "versus_share"})
+	else:
+		out.append({
+			"rect": Rect2(), "key": "I", "stamp": "INV", "label": "Invite a friend",
+			"sub": ("Send a link — iPhone or Android" if _crossplay()
+				else "Text a link to anyone in your contacts") if can else why,
+			"note": "", "rating": 0,
+			"accent": PLAYER_ACCENT if can else grey,
+			"action": "versus_invite"})
+
+	if _crossplay():
+		out.append({
+			"rect": Rect2(), "key": "J", "stamp": "JOIN", "label": "Join with a code",
+			"sub": "Type the code a friend sent you" if can else why,
+			"note": "", "rating": 0,
+			"accent": (Color("#7bdff2") if not _versus_busy() else grey) if can else grey,
+			"action": "versus_code"})
 
 	# Always present, and never only a consolation prize behind a failed search.
 	# With nobody else online this is the one door in the room that opens, and a
@@ -10042,6 +10175,10 @@ func _lobby_doors() -> Array:
 ## searching. Whichever of the two is wrong, the running search is the one the
 ## player can see the consequences of.
 func _lobby_head() -> String:
+	if _code_entry:
+		return _code_shown()
+	if _versus_busy() and MultiplayerManager.invite_code != "":
+		return "ROOM %s" % MultiplayerManager.invite_code
 	if _versus_busy():
 		return "LOOKING FOR SOMEBODY"
 	if not MultiplayerManager.available():
@@ -10053,8 +10190,11 @@ func _lobby_head() -> String:
 ## so in as many words — the door below has already turned gold by then, and a
 ## card still cheerfully saying "looking" would be arguing with it.
 func _lobby_note() -> String:
+	if _code_entry:
+		return "the code is in the link your friend sent"
 	if not MultiplayerManager.available() and not _versus_busy():
-		return "versus needs an iPhone signed in to Game Center"
+		return "versus needs an internet connection" if _crossplay() \
+			else "versus needs an iPhone signed in to Game Center"
 	if _versus_busy():
 		if _lobby_offering():
 			return "%ds and nobody yet — the CPU match starts straight away" \
@@ -10065,6 +10205,8 @@ func _lobby_note() -> String:
 	# say and this is the only screen left to say it on.
 	if net_status != "":
 		return net_status
+	if _crossplay():
+		return "quick match finds a stranger · iPhone and Android play together"
 	return "quick match finds a stranger · invite reaches anyone you can text"
 
 
@@ -10089,7 +10231,8 @@ func _draw_lobby(size: Vector2) -> void:
 	var accent: Color = Color("#ffd166") if _versus_busy() else (
 		PLAYER_ACCENT if MultiplayerManager.available() else Color("#4d5878"))
 	_panel(card, Color("#141b33"), Color(accent, 0.45), 10.0, 2.0)
-	_otext(_font, Vector2(cx, card.position.y + 22.0), "GAME CENTER", 10,
+	_otext(_font, Vector2(cx, card.position.y + 22.0),
+		"ROOM CODE" if _code_entry else ("ONLINE" if _crossplay() else "GAME CENTER"), 10,
 		Color("#7c88ad"))
 	_text_fit_overlay(_font_bold, Vector2(cx, card.position.y + 48.0),
 		_lobby_head(), 20, card.size.x - 24.0, Color("#e6ecff"), 13)
@@ -14057,6 +14200,7 @@ func _activate(action: String) -> void:
 		# opponent for as long as the screen is up.
 		if not _versus_busy():
 			_lobby_bot = AiOpponent.ROSTER.pick_random()
+		_code_entry = false
 		phase = Phase.LOBBY
 		Sfx.play("count", 1.2)
 	elif action.begins_with("emote:"):
@@ -14080,6 +14224,39 @@ func _activate(action: String) -> void:
 			net_status = ""
 			_lobby_search = 0.0
 			MultiplayerManager.find_match()
+			Sfx.play("count", 1.2)
+	elif action == "versus_code":
+		if _versus_busy() or not _crossplay():
+			Sfx.play("reject", 1.2)
+		else:
+			net_status = ""
+			_code_entry = true
+			_code_text = ""
+			Sfx.play("count", 1.2)
+	elif action == "versus_code_back":
+		_code_entry = false
+		_code_text = ""
+		Sfx.play("back")
+	elif action == "versus_join":
+		_code_key("fire")
+	elif action == "versus_share":
+		# The room is already open; this only puts the sheet back up, for the
+		# player who dismissed it or wants to send the link to somebody else.
+		if MultiplayerManager.invite_code == "":
+			Sfx.play("reject", 1.2)
+		else:
+			_share_invite(MultiplayerManager.invite_code)
+	elif action == "versus_invite" and _crossplay():
+		# Over Epic an invite is a room with a code, and the code travels as a
+		# link through whatever the player already talks to people with. The
+		# share sheet goes up from `invite_ready`, once the room actually exists
+		# — a link to a room that failed to open is worse than no link.
+		if _versus_busy():
+			Sfx.play("reject", 1.2)
+		else:
+			net_status = ""
+			_lobby_search = 0.0
+			MultiplayerManager.host_invite()
 			Sfx.play("count", 1.2)
 	elif action == "versus_invite":
 		# Apple's sheet, narrowed to the one door worth having it for: Invite
