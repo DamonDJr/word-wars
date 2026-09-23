@@ -75,7 +75,7 @@ publisher.
 ```bash
 tools/fetch-eos.sh android      # once per clone: EOS binaries are gitignored
 tools/android-template.sh       # installs android/build and wires EOS + invite links
-godot --headless --export-debug "Android" build/android/WordWars.apk
+godot --headless --export-debug "Android (emulator)" build/android/WordWars.apk
 ```
 
 The preset uses a Gradle build, because Epic's SDK has a Java half that must be

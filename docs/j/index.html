@@ -113,9 +113,18 @@ room stays open while your friend waits in it.</p>
   // iPadOS reports itself as a Mac, so a Mac with a touchscreen is an iPad.
   var ios = /iPhone|iPad|iPod/i.test(ua) ||
     (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  // Messenger, Instagram, Facebook and friends open links in a browser of
+  // their own, and those will not open another app from a wordwars:// link.
+  var inApp = /FBAN|FBAV|FB_IAB|FBIOS|Instagram|Messenger|Line\/|MicroMessenger|Snapchat|TikTok/i.test(ua);
   var open = document.getElementById('open');
   var steps = document.getElementById('steps');
   var scheme = 'wordwars://join/' + code;
+  // Android's own form of the same link. Chrome and the WebView that in-app
+  // browsers are built on both honour it, and when the game is not installed it
+  // lands on the Play listing instead of an error page.
+  var intent = 'intent://join/' + code + '#Intent;scheme=wordwars;package=com.damonj.wordwars;' +
+    'S.browser_fallback_url=' +
+    encodeURIComponent('https://play.google.com/store/apps/details?id=com.damonj.wordwars') + ';end';
 
   // The copy has to happen inside the tap itself — browsers only allow it
   // there — so both buttons call this synchronously and never await it.
@@ -143,9 +152,23 @@ room stays open while your friend waits in it.</p>
   if (android) {
     // Android hands the whole link to the game, so this drops straight into
     // the room. The copy is only a spare, in case it opens to the title.
-    open.href = scheme;
+    open.href = intent;
     open.addEventListener('click', copy);
     steps.textContent = 'Or open the game yourself: Versus → Join with a code.';
+  } else if (ios && inApp) {
+    // No way out of this browser into the game, so the button does the part it
+    // can — the copy — and says how to do the rest.
+    open.textContent = 'Copy the code';
+    open.href = '#';
+    open.addEventListener('click', function (e) {
+      e.preventDefault();
+      copy();
+      open.textContent = 'Copied ' + code;
+    });
+    document.getElementById('copy').style.display = 'none';
+    steps.innerHTML = 'This app’s browser can’t open games. Open <b>Word Wars</b> yourself, ' +
+      'then <b>Versus</b> → <b>Join with a code</b> → <b>Paste</b>.<br>' +
+      'Or tap <b>⋯</b> and choose <b>Open in Safari</b>.';
   } else if (ios) {
     // iOS opens the game from wordwars:// but cannot pass it the link, so the
     // code travels on the clipboard: copied here, pasted in the game.
