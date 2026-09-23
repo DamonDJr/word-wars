@@ -9851,6 +9851,9 @@ func _draw_weekly_row(r: Rect2, m: Dictionary) -> void:
 ## best chain and choosing a victory animation are not the same errand, and the
 ## grid was pushing the record down to a strip of eight tiles.
 func _draw_cosmetics(size: Vector2) -> void:
+	if portrait:
+		_draw_cosmetics_portrait(size)
+		return
 	var cx := size.x * 0.5
 	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
 		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
@@ -9936,14 +9939,178 @@ func _draw_cosmetics(size: Vector2) -> void:
 		_otext(_font, Vector2(cx, foot + 12.0), hint, 14, Color("#ffd166"))
 
 
+## The wardrobe on a phone — see "the wardrobe on a phone" for why it differs.
+func _draw_cosmetics_portrait(size: Vector2) -> void:
+	var cx := size.x * 0.5
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, 0.94), true)
+	_draw_decor()
+
+	var hy := safe_top + _menu_offset(_cosmetics_laid())
+	_otext(_font_bold, Vector2(cx, hy + 58.0), "COSMETICS", 34, Color("#e6ecff"))
+	var worn_title := Profile.title_text()
+	_otext(_font, Vector2(cx, hy + 92.0),
+		"wearing %s" % (worn_title.to_upper() if worn_title != "" else "no title"),
+		13, Color("#7c88ad"))
+
+	var slot: String = Profile.SLOTS[mastery_slot]
+
+	# The chips. The one on show is filled; the rest are outlines.
+	for b: Dictionary in _menu_buttons():
+		if not b.has("chip"):
+			continue
+		var r: Rect2 = b["rect"]
+		var here: bool = String(b["chip"]) == slot
+		var hot: bool = _hover_action == String(b["action"])
+		_panel(r, Color(PLAYER_ACCENT, 0.9) if here
+			else (Color("#1b2444") if hot else Color("#141b33")),
+			Color(PLAYER_ACCENT, 1.0 if here else 0.28), 12.0, 2.0)
+		_text_fit_overlay(_font_bold, r.get_center(),
+			String(COS_CHIP_NAMES.get(b["chip"], b["chip"])), 16, r.size.x - 14.0,
+			Color("#0b1020") if here else Color("#c9d3f2"))
+
+	# The preview: what is equipped, or the card last pressed.
+	var showing := Profile.worn(slot)
+	for e: Dictionary in _mastery_cards():
+		if _hover_action == String(e["action"]) and Profile.meets(e["need"]):
+			showing = String(e["id"])
+	var pw: float = size.x - GRID_MARGIN * 2.0
+	var pbox := Rect2(cx - pw * 0.5, _preview_top(), pw, _preview_height())
+	_draw_cosmetic_preview(pbox, slot, showing)
+	# Its caption, inside the top edge, so the panel says what it is showing.
+	var shown_name := String(Profile.entry(slot, showing).get("name", showing)).to_upper()
+	var cap := "%s  ·  %s" % [String(Profile.SLOT_NAMES[slot]), shown_name]
+	var cw: float = _font_bold.get_string_size(cap, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 24.0
+	var cr := Rect2(cx - cw * 0.5, pbox.position.y + 10.0, cw, 24.0)
+	_panel(cr, Color(bg_top, 0.78), Color(PLAYER_ACCENT, 0.25), 12.0, 1.0)
+	_otext(_font_bold, cr.get_center(), cap, 12, Color("#c9d3f2"))
+
+	var worn := Profile.worn(slot)
+	for c: Dictionary in _mastery_cards():
+		_draw_cos_card(c, slot, worn)
+
+
+## One card in the phone layout: a picture where the slot has one, the name, and
+## either EQUIPPED, nothing (it is yours — the tap is obvious), or what unlocks it.
+func _draw_cos_card(c: Dictionary, slot: String, worn: String) -> void:
+	var r: Rect2 = c["rect"]
+	var id := String(c["id"])
+	var got: bool = Profile.meets(c["need"])
+	var on: bool = got and id == worn
+	var hot: bool = _hover_action == String(c["action"])
+	if hot:
+		r = Rect2(r.position - Vector2(0, 3), r.size)
+	var edge := Color("#2a3355")
+	if on:
+		edge = Color("#ffd166")
+	elif got:
+		edge = Color(PLAYER_ACCENT, 0.9 if hot else 0.35)
+	_panel(r, Color("#1b2444") if hot else Color("#141b33"), edge, 12.0,
+		3.0 if on else 2.0)
+
+	var pad := 10.0
+	var thumb := Rect2(r.position + Vector2(pad, pad), Vector2(r.size.y - pad * 2.0,
+		r.size.y - pad * 2.0))
+	var has_pic := _draw_cos_thumb(thumb, slot, id, got)
+	var tx: float = (thumb.end.x + 14.0) if has_pic else (r.position.x + 18.0)
+	var tw: float = r.end.x - tx - 12.0
+	var name := String(c["name"]).to_upper()
+	var ink := Color("#e6ecff") if got else Color("#5d6a92")
+
+	var sub := ""
+	var sub_ink := Color("#7c88ad")
+	if on:
+		sub = "EQUIPPED"
+		sub_ink = Color("#ffd166")
+	elif not got:
+		sub = String(Profile.standing(c["need"])["what"])
+		sub_ink = Color("#8a7a5a")
+	var name_y: float = r.get_center().y - (9.0 if sub != "" else 0.0)
+	_text_fit_left(_font_bold, Vector2(tx, name_y + 7.0), name, 19, tw, ink)
+	if sub != "":
+		_text_fit_left(_font_bold if on else _font, Vector2(tx, name_y + 30.0),
+			sub, 12, tw, sub_ink)
+	if not got:
+		var st := Profile.standing(c["need"])
+		var frac: float = clampf(float(st["have"]) / float(maxi(1, int(st["want"]))), 0.0, 1.0)
+		var bar := Rect2(tx, r.end.y - 14.0, tw, 4.0)
+		_overlay.draw_rect(bar, Color("#0b1020"), true)
+		_overlay.draw_rect(Rect2(bar.position, Vector2(bar.size.x * frac, bar.size.y)),
+			Color("#ffd166", 0.6), true)
+
+
+## A little picture for a card, if its slot has something to picture. False when
+## it drew nothing, so the name can take the space.
+func _draw_cos_thumb(box: Rect2, slot: String, id: String, got: bool) -> bool:
+	var dim := 1.0 if got else 0.45
+	match slot:
+		"theme":
+			var top := Cosmetics.theme_color(id, "top")
+			var bot := Cosmetics.theme_color(id, "bottom")
+			var pic := _theme_art(id)
+			if pic != null:
+				# The middle of the painting, square.
+				var asz := Vector2(pic.get_width(), pic.get_height())
+				var side: float = minf(asz.x, asz.y)
+				var src := Rect2((asz - Vector2(side, side)) * 0.5, Vector2(side, side))
+				_overlay.draw_texture_rect_region(pic, box, src, Color(dim, dim, dim, 1.0))
+			else:
+				# A plain theme: its wash, with its panel and ruling in the middle.
+				for i in 8:
+					var f := float(i) / 8.0
+					_overlay.draw_rect(Rect2(box.position.x, box.position.y + f * box.size.y,
+						box.size.x, box.size.y / 8.0 + 1.0), top.lerp(bot, f) * Color(dim, dim, dim), true)
+				var pan := box.grow(-box.size.x * 0.22)
+				_overlay.draw_rect(pan, Color(Cosmetics.theme_color(id, "panel"), 0.9 * dim), true)
+				var grid := Color(Cosmetics.theme_color(id, "grid"), 0.35 * dim)
+				for g in range(1, 3):
+					_overlay.draw_rect(Rect2(pan.position.x + pan.size.x * g / 3.0, pan.position.y,
+						1.0, pan.size.y), grid, true)
+			_overlay.draw_rect(box, Color(Cosmetics.theme_tint(id, "frame", PLAYER_ACCENT),
+				0.8 * dim), false, 1.5)
+			return true
+		"blocks":
+			var br := box.grow(-4.0)
+			var bink := Cosmetics.draw_block_face(_overlay, br,
+				WWBoard.TIER_COLORS[3] * Color(dim, dim, dim), id, false, 1.0)
+			_text_fit_overlay(_font_bold, br.get_center(), "AB", 16, br.size.x - 6.0,
+				Color(bink, dim))
+			return true
+		"character":
+			var anim: Dictionary = Cosmetics.character_anim(id).get(0, {})
+			var sheet := _emote_texture(String(anim.get("sheet", "")))
+			if sheet == null:
+				return false
+			var halo := Cosmetics.character_glow(id)
+			_overlay.draw_circle(box.get_center(), box.size.x * 0.46, Color(halo, 0.18 * dim))
+			_overlay.draw_texture_rect_region(sheet, box, _emote_frame(anim, 0.0),
+				Color(dim, dim, dim, 1.0))
+			return true
+	return false
+
+
 ## The unlock grid for the category on show. Doubles as the hit-test source, so
 ## a card that is drawn is always a card that can be clicked.
 func _mastery_cards() -> Array:
 	var slot: String = Profile.SLOTS[mastery_slot]
 	var list: Array = Profile.entries(slot)
 	var out: Array = []
-	var rects := _grid_rects(list.size(), _mastery_grid_top(), 5, 202.0,
-		70.0 * _cosmetics_fill(), 10.0, 190.0, 10.0 * _cosmetics_spread())
+	var rects: Array
+	if portrait:
+		# Two fixed columns, not `_grid_rects`, which centres a short last row —
+		# right for a row of doors, wrong for a list, where a lone last card
+		# floating in the middle reads as a different kind of thing.
+		rects = []
+		var vw := get_viewport_rect().size.x
+		var cw: float = (vw - GRID_MARGIN * 2.0 - COS_CARD_GAP) * 0.5
+		var top := _mastery_grid_top()
+		for i in list.size():
+			rects.append(Rect2(GRID_MARGIN + float(i % 2) * (cw + COS_CARD_GAP),
+				top + float(i / 2) * (COS_CARD_H + COS_CARD_GAP), cw, COS_CARD_H))
+	else:
+		rects = _grid_rects(list.size(), _mastery_grid_top(), 5, 202.0,
+			70.0 * _cosmetics_fill(), 10.0, 190.0, 10.0 * _cosmetics_spread())
 	for i in list.size():
 		var e: Dictionary = list[i]
 		out.append({
@@ -10028,10 +10195,71 @@ func _cosmetics_spread() -> float:
 
 
 func _preview_height() -> float:
-	return (132.0 if portrait else 150.0) * _cosmetics_fill()
+	if portrait:
+		return _cos_preview_h(Profile.SLOTS[mastery_slot])
+	return 150.0 * _cosmetics_fill()
+
+
+# ------------------------------------------------- the wardrobe on a phone
+#
+# The screen was laid out for a desktop, and on a phone that meant: a preview
+# a third of the width that showed a painted board as a thumbnail you could not
+# see, eight categories behind two small arrows (so nobody could tell there
+# were eight), and cards that were a name and the words "tap to wear" — Volcano
+# and Midnight indistinguishable until worn.
+#
+# Portrait gets its own arrangement. Every category is a chip, two rows of
+# four, so the whole wardrobe is visible and any part of it is one tap away. The
+# preview takes the full width and is as tall as its category needs — tallest
+# for boards, where the painting and its weather are the thing being sold. And
+# the cards are two across with a picture on the ones that have one: the art for
+# a board, a block for a block style, the character for a character.
+#
+# Landscape keeps the desktop layout it was designed for.
+
+const COS_CHIP_H := 52.0
+const COS_CHIP_GAP := 10.0
+const COS_CARD_H := 86.0
+const COS_CARD_GAP := 12.0
+## From the top of the screen's block to the first chip: the header and the
+## "wearing" line above it.
+const COS_HEAD := 124.0
+
+
+## Short names for the chips; the long ones are for the preview's caption.
+const COS_CHIP_NAMES := {
+	"title": "TITLE", "theme": "BOARD", "blocks": "BLOCKS", "character": "BUDDY",
+	"typing": "TYPING", "attack": "ATTACK", "cursor": "CURSOR", "victory": "VICTORY",
+}
+
+
+func _cos_preview_h(slot: String) -> float:
+	match slot:
+		"theme":
+			return 400.0
+		"character":
+			return 260.0
+		"blocks":
+			return 190.0
+	return 150.0
+
+
+func _cos_chip_rects() -> Array:
+	var top: float = safe_top + _menu_offset(_cosmetics_laid()) + COS_HEAD
+	return _grid_rects(Profile.SLOTS.size(), top, 4, 200.0, COS_CHIP_H,
+		COS_CHIP_GAP, 0.0, COS_CHIP_GAP)
+
+
+func _cos_chips_h() -> float:
+	return COS_CHIP_H * 2.0 + COS_CHIP_GAP
 
 
 func _cosmetics_laid() -> float:
+	if portrait:
+		var n := Profile.entries(Profile.SLOTS[mastery_slot]).size()
+		var rows := float((n + 1) / 2)
+		return COS_HEAD + _cos_chips_h() + 22.0 + _preview_height() + 22.0 \
+			+ rows * COS_CARD_H + maxf(0.0, rows - 1.0) * COS_CARD_GAP + 60.0
 	var f := _cosmetics_fill()
 	var sp := _cosmetics_spread()
 	var rows: float = 4.0 if portrait else 3.0
@@ -10040,6 +10268,8 @@ func _cosmetics_laid() -> float:
 
 
 func _preview_top() -> float:
+	if portrait:
+		return safe_top + _menu_offset(_cosmetics_laid()) + COS_HEAD + _cos_chips_h() + 22.0
 	return 186.0 + safe_top + _menu_offset(_cosmetics_laid())
 
 
@@ -10047,7 +10277,7 @@ func _mastery_grid_top() -> float:
 	# Under the preview panel. It used to be measured off the record strip because the
 	# two shared a screen; the wardrobe has the screen to itself now, so the grid
 	# sits under its own header instead of under somebody else's stats.
-	return _preview_top() + _preview_height() + 46.0
+	return _preview_top() + _preview_height() + (22.0 if portrait else 46.0)
 
 
 ## The bottom of the unlock grid. Everything below it — the back button, the
@@ -10537,6 +10767,17 @@ func _text_fit_overlay(font: Font, center: Vector2, text: String, size: int,
 	while s > min_size and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
 		s -= 1
 	_otext(font, center, text, s, color)
+
+
+## `_text_fit_overlay`, left-aligned: shrink until it fits, then draw from `at`.
+func _text_fit_left(font: Font, at: Vector2, text: String, size: int,
+		max_width: float, color: Color, min_size: int = 9) -> void:
+	if font == null or text == "":
+		return
+	var s := size
+	while s > min_size and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
+		s -= 1
+	_otext_left(font, at, text, s, color)
 
 
 func _draw_rules_panel(size: Vector2) -> void:
@@ -13391,6 +13632,15 @@ func _menu_buttons() -> Array:
 				"rect": Rect2(cx - 90.0, mfoot + 54.0, 180.0, 40.0), "key": "ESC",
 				"label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
+	elif phase == Phase.COSMETICS and portrait:
+		# Every category as a chip — see "the wardrobe on a phone". Marked so the
+		# screen draws them itself rather than as menu plates.
+		var chips := _cos_chip_rects()
+		for i in Profile.SLOTS.size():
+			out.append({
+				"rect": chips[i], "key": "", "label": "", "sub": "", "note": "",
+				"rating": 0, "accent": Color("#8d99bd"), "action": "slot_to:%d" % i,
+				"chip": String(Profile.SLOTS[i])})
 	elif phase == Phase.COSMETICS:
 		# The category arrows straddle the label, which sits just above the grid
 		# — so they travel with it when the record strip above wraps to two rows.
@@ -14781,6 +15031,15 @@ func _activate(action: String) -> void:
 		Boards.open_challenges()
 	elif action == "gcboard":
 		Boards.open_board(_board_id(), board_scope, _board_time())
+	elif action.begins_with("slot_to:"):
+		var to := clampi(int(action.substr(8)), 0, Profile.SLOTS.size() - 1)
+		if to != mastery_slot:
+			mastery_slot = to
+			_hover_action = ""
+			# A new category is a new list; starting it scrolled halfway down the
+			# last one's would hide the first cards.
+			_scroll = 0.0
+			Sfx.play("key", 1.2)
 	elif action.begins_with("slot:"):
 		mastery_slot = posmod(mastery_slot + int(action.substr(5)), Profile.SLOTS.size())
 		_hover_action = ""

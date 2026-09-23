@@ -372,6 +372,139 @@ const MOTIONS := ["leaves", "embers", "caustics", "starfield", "scanlines",
 	"drift", "haze", "ribbons", "aether"]
 
 
+# ----------------------------------------------------------- soft sprites
+#
+# The first versions of these effects drew with `draw_circle` and `draw_rect`,
+# and that is most of why they read as basic: every shape had a hard edge. An
+# ember with a hard edge is an orange dot, a star with one is a white dot, and a
+# cloud made of hard discs is a stack of discs however they are arranged. Glow is
+# a falloff, and immediate-mode primitives do not have one.
+#
+# So there are four small textures, generated once and then only ever tinted and
+# scaled: a soft dot, a four-pointed glint, a cloud puff with a ragged edge, and
+# a leaf. Built in code rather than shipped as files, so there is nothing to
+# import, nothing to lose from an export filter, and the shapes live next to the
+# effects that use them.
+
+static var _tex_cache := {}
+
+
+static func _cached(key: String, build: Callable) -> Texture2D:
+	if not _tex_cache.has(key):
+		_tex_cache[key] = ImageTexture.create_from_image(build.call())
+	return _tex_cache[key]
+
+
+## White, fading to nothing: a bright centre and a long soft tail, which is what
+## reads as light rather than as paint.
+static func soft_dot() -> Texture2D:
+	return _cached("dot", func() -> Image:
+		var n := 64
+		var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		for y in n:
+			for x in n:
+				var d := Vector2(x + 0.5 - n * 0.5, y + 0.5 - n * 0.5).length() / (n * 0.5)
+				var a := clampf(1.0 - d, 0.0, 1.0)
+				# Two falloffs summed: a tight core and a wide halo.
+				a = clampf(pow(a, 3.0) * 0.75 + pow(a, 1.6) * 0.45, 0.0, 1.0)
+				img.set_pixel(x, y, Color(1, 1, 1, a))
+		return img)
+
+
+## A star's glint: a soft core with four thin rays. Rotated slowly where it is
+## drawn, the rays catch like light off something far away.
+static func glint() -> Texture2D:
+	return _cached("glint", func() -> Image:
+		var n := 96
+		var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		for y in n:
+			for x in n:
+				var u := (x + 0.5) / n * 2.0 - 1.0
+				var v := (y + 0.5) / n * 2.0 - 1.0
+				var d := sqrt(u * u + v * v)
+				var core := pow(clampf(1.0 - d * 2.2, 0.0, 1.0), 2.0)
+				var ray_h := exp(-absf(v) * 60.0) * pow(clampf(1.0 - absf(u), 0.0, 1.0), 2.0)
+				var ray_v := exp(-absf(u) * 60.0) * pow(clampf(1.0 - absf(v), 0.0, 1.0), 2.0)
+				var halo := pow(clampf(1.0 - d, 0.0, 1.0), 4.0) * 0.35
+				img.set_pixel(x, y, Color(1, 1, 1, clampf(core + ray_h + ray_v + halo, 0.0, 1.0)))
+		return img)
+
+
+## One puff of cumulus: dense in the middle, with an edge broken up by noise so a
+## cluster of them reads as vapour rather than as overlapping circles.
+static func cloud_puff() -> Texture2D:
+	return _cached("puff", func() -> Image:
+		var n := 128
+		var noise := FastNoiseLite.new()
+		noise.seed = 7
+		noise.frequency = 0.022
+		noise.fractal_octaves = 3
+		var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		for y in n:
+			for x in n:
+				var p := Vector2(x + 0.5 - n * 0.5, y + 0.5 - n * 0.5)
+				var d := p.length() / (n * 0.5)
+				# The noise moves the edge, not the middle.
+				var edge := d + noise.get_noise_2d(x, y) * 0.22
+				var a := clampf((1.0 - edge) / 0.45, 0.0, 1.0)
+				a = a * a * (3.0 - 2.0 * a)
+				img.set_pixel(x, y, Color(1, 1, 1, a))
+		return img)
+
+
+## A leaf, pale so it can be tinted: a pointed oval with a darker midrib and a
+## little shading towards the edges. Drawn along +x.
+static func leaf() -> Texture2D:
+	return _cached("leaf", func() -> Image:
+		var w := 64
+		var h := 32
+		var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+		for y in h:
+			for x in w:
+				var u := (x + 0.5) / w * 2.0 - 1.0
+				var v := (y + 0.5) / h * 2.0 - 1.0
+				# Width along the leaf: zero at both tips, fullest a little
+				# behind the middle, which is the shape of most real leaves.
+				var half := pow(clampf(1.0 - u * u, 0.0, 1.0), 0.75) * (1.0 - 0.18 * u)
+				var inside := half - absf(v)
+				if inside <= 0.0:
+					img.set_pixel(x, y, Color(1, 1, 1, 0))
+					continue
+				var a := clampf(inside * 10.0, 0.0, 1.0)
+				var shade := 0.78 + 0.22 * clampf(inside / maxf(half, 0.001), 0.0, 1.0)
+				# Midrib and a hint of veins running off it.
+				if absf(v) < 0.07 and u > -0.9:
+					shade *= 0.72
+				elif absf(fmod(u * 4.0 + absf(v) * 2.2 + 8.0, 1.0) - 0.5) < 0.06 and absf(v) < half * 0.8:
+					shade *= 0.88
+				img.set_pixel(x, y, Color(shade, shade, shade, a))
+		return img)
+
+
+## A soft-edged shaft of light: a quad whose colour fades to nothing at both
+## long edges, so it reads as a beam through haze rather than a pale trapezium.
+static func _beam(node: CanvasItem, top_l: Vector2, top_r: Vector2,
+		bot_r: Vector2, bot_l: Vector2, col: Color) -> void:
+	var mid_t := (top_l + top_r) * 0.5
+	var mid_b := (bot_l + bot_r) * 0.5
+	var clear := Color(col, 0.0)
+	node.draw_polygon(PackedVector2Array([top_l, mid_t, mid_b, bot_l]),
+		PackedColorArray([clear, col, col, clear]))
+	node.draw_polygon(PackedVector2Array([mid_t, top_r, bot_r, mid_b]),
+		PackedColorArray([col, clear, clear, col]))
+
+
+## A textured sprite centred on `at`, `size` across, turned by `angle`.
+static func _sprite(node: CanvasItem, tex: Texture2D, at: Vector2, size: Vector2,
+		col: Color, angle := 0.0) -> void:
+	if angle == 0.0:
+		node.draw_texture_rect(tex, Rect2(at - size * 0.5, size), false, col)
+		return
+	node.draw_set_transform(at, angle, Vector2.ONE)
+	node.draw_texture_rect(tex, Rect2(-size * 0.5, size), false, col)
+	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
 ## A stable pseudo-random in 0..1 for index `i`, salted by `k` so one index can
 ## carry several independent numbers.
 static func _hash01(i: int, k: float) -> float:
@@ -410,75 +543,190 @@ static func draw_motion(node: CanvasItem, kind: String, size: Vector2, t: float,
 		"aether": _motion_aether(node, size, t, tint, bound)
 
 
-## Forest. Shafts of light coming through the canopy from the upper left, and
-## leaves turning over as they come down through them.
+## Forest. Shafts of light through the canopy with dust hanging in them, and
+## leaves coming down through it all.
+##
+## How a leaf falls is most of this effect. It does not drop; it swings — side
+## to side like a pendulum, tilting into each swing and slowing at the end of it
+## — and some of them tumble end over end as they go. Rectangles doing that read
+## as confetti, so each one is `leaf()`, a pointed oval with a midrib, in a range
+## of greens with the odd one already turning.
 static func _motion_leaves(node: CanvasItem, size: Vector2, t: float,
 		tint: Color, bound := false) -> void:
-	for i in 3:
-		var x: float = size.x * (0.12 + float(i) * 0.26)
-		var sway: float = sin(t * 0.28 + float(i) * 1.3) * size.x * 0.035
-		var wide: float = size.x * (0.07 + 0.02 * float(i))
-		var a: float = 0.05 + 0.025 * sin(t * 0.45 + float(i))
-		var sky: float = 0.0 if bound else -20.0
-		node.draw_colored_polygon(PackedVector2Array([
-			Vector2(x + sway - wide * 0.4, sky),
-			Vector2(x + sway + wide * 0.4, sky),
-			Vector2(x + sway + wide * 1.7, size.y),
-			Vector2(x + sway + wide * 0.2, size.y),
-		]), Color(1.0, 1.0, 0.86, a))
+	var k: float = clampf(size.x / 720.0, 0.3, 1.5)
+	var dot := soft_dot()
+	var lf := leaf()
 
-	# Off a screen a leaf falls in from above and out past the bottom; inside a
-	# panel it has to do its whole life within the frame or it pops.
-	var over: float = 0.0 if bound else 60.0
-	for i in 26:
+	# Light shafts, soft at both edges, slanting from the upper left and swaying
+	# very slightly as the canopy moves.
+	var sky: float = 0.0 if bound else -20.0
+	for i in 3:
+		var x: float = size.x * (0.10 + float(i) * 0.28)
+		var sway: float = sin(t * 0.28 + float(i) * 1.3) * size.x * 0.03
+		var wide: float = size.x * (0.08 + 0.025 * float(i))
+		var a: float = 0.13 + 0.05 * sin(t * 0.45 + float(i))
+		var slant: float = size.x * 0.22
+		var bot: float = size.y
+		if bound:
+			slant = minf(slant, size.x - x - wide * 1.2)
+		_beam(node, Vector2(x + sway - wide * 0.5, sky), Vector2(x + sway + wide * 0.5, sky),
+			Vector2(x + sway + slant + wide * 1.1, bot), Vector2(x + sway + slant - wide * 0.1, bot),
+			Color(1.0, 0.97, 0.80, a))
+
+		# Dust in the beam: motes drifting on the air, glinting as they turn.
+		for m in 7:
+			var hm := _hash01(i * 7 + m, 40.0)
+			var hn := _hash01(i * 7 + m, 41.0)
+			var f: float = fmod(hn + t * (0.012 + hm * 0.02), 1.0)
+			var mx: float = x + sway + slant * f + (hm - 0.5) * wide * (0.6 + f)
+			var my: float = sky + (bot - sky) * f + sin(t * 0.8 + float(m)) * 6.0 * k
+			var glint: float = pow(0.5 + 0.5 * sin(t * (1.5 + hm * 2.0) + float(m) * 3.0), 3.0)
+			if bound and (mx < 0.0 or mx > size.x):
+				continue
+			_sprite(node, dot, Vector2(mx, my), Vector2(6, 6) * k * (0.6 + glint),
+				Color(1.0, 0.98, 0.85, 0.15 + 0.5 * glint))
+
+	# The leaves. Off a screen they fall in from above and out past the bottom;
+	# inside a panel they live their whole fall within the frame.
+	var over: float = 0.0 if bound else 60.0 * k
+	var greens := [Color(0.40, 0.72, 0.28), Color(0.55, 0.80, 0.30), Color(0.30, 0.60, 0.25),
+		Color(0.62, 0.78, 0.35), Color(0.90, 0.72, 0.25), Color(0.88, 0.50, 0.20)]
+	for i in 34:
 		var hx := _hash01(i, 1.0)
 		var hs := _hash01(i, 2.0)
-		var fall: float = 26.0 + hs * 42.0
-		var y: float = fmod(t * fall + hx * (size.y + 200.0),
-			size.y + over * 2.0) - over
-		# Drifting sideways as it falls, and a little faster than it tumbles, so
-		# no two leaves are ever in step.
-		var x: float = hx * size.x + sin(t * 0.7 + float(i) * 1.7) * size.x * 0.07
-		var w: float = 5.0 + hs * 7.0
-		# Squashed on its own cycle, which is the whole of what makes a rectangle
-		# read as a leaf turning over rather than as a falling chip.
-		var flip: float = absf(cos(t * 1.6 + float(i) * 0.9))
-		var green := Color(0.42 + hs * 0.35, 0.72, 0.26).lerp(tint, 0.3)
-		node.draw_set_transform(Vector2(x, y), sin(t + float(i)) * 0.6, Vector2.ONE)
-		node.draw_rect(Rect2(-w * 0.5, -w * 0.2, w, w * 0.18 + w * 0.42 * flip),
-			Color(green, 0.30 + 0.25 * flip), true)
+		var hc := _hash01(i, 42.0)
+		var depth: float = float(i % 3) / 2.0
+		var fall: float = (22.0 + hs * 26.0) * (0.6 + depth * 0.7) * k
+		# Its own hash for where in the fall it starts — reusing `hx`, which also
+		# places it across the screen, lined every leaf up on one diagonal.
+		var hy := _hash01(i, 47.0)
+		var y: float = fmod(t * fall + hy * (size.y + 200.0), size.y + over * 2.0) - over
+		# The swing. `phase` runs steadily; the leaf is at the ends of its swing
+		# when sin(phase) is ±1, which is where it tilts hardest and slows.
+		var phase: float = t * (0.9 + hs * 0.6) + float(i) * 1.7
+		var swing: float = sin(phase) * (28.0 + hs * 30.0) * k * (0.6 + depth * 0.6)
+		var x: float = fmod(hx * size.x + swing + size.x, size.x)
+		var tilt: float = cos(phase) * 0.9 + hx * 6.28
+		# Some tumble end over end: the leaf narrows to its edge and back.
+		var turn: float = 1.0
+		if hc > 0.6:
+			turn = cos(t * (2.0 + hs * 2.0) + float(i))
+		var len: float = (22.0 + hs * 16.0) * k * (0.6 + depth * 0.6)
+		# Mostly green; one in five already turning.
+		var col: Color = greens[int(hc * 4.0) % 4] if hc < 0.8 else greens[4 + i % 2]
+		col = col.lerp(tint, 0.2).darkened(0.25 * (1.0 - depth))
+		var a: float = 0.55 + depth * 0.4
+		if bound and (x < len or x > size.x - len):
+			continue
+		node.draw_set_transform(Vector2(x, y), tilt, Vector2(1.0, absf(turn) * 0.85 + 0.15))
+		node.draw_texture_rect(lf, Rect2(-len * 0.5, -len * 0.25, len, len * 0.5), false,
+			Color(col, a))
 	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-## Volcano. Embers going up, and a heat bloom along the bottom that breathes at
-## a different rate so the two never quite line up.
+## Volcano. Embers lifting off the ground and dying on the way up, a few of them
+## big enough to glow, the odd fast spark, and ash drifting across it all — over
+## a heat bloom that breathes at its own rate so nothing lines up.
+##
+## ## What makes an ember read as one
+##
+## A life, mostly. The first version sent dots straight from the bottom edge to
+## the top at constant brightness, which is snow falling upwards. A real ember
+## is born hot and bright, cools through orange into deep red as it climbs, and
+## goes out somewhere on the way — not at the top of the screen. It rides the
+## hot air, so it corkscrews rather than rising on a rail, and the bright ones
+## have a halo of their own light around them. Each of those is one line below.
 static func _motion_embers(node: CanvasItem, size: Vector2, t: float,
 		tint: Color, bound := false) -> void:
+	var k: float = clampf(size.x / 720.0, 0.3, 1.5)
+	var dot := soft_dot()
 	var breathe: float = 0.5 + 0.5 * sin(t * 0.8)
-	# A disc wider than the screen, centred just below it. Only its top edge is
-	# ever seen, which is what makes it read as heat off the ground rather than
-	# as a circle — so in a panel, where the whole disc would show, it is left
-	# out and the embers carry the effect on their own.
-	if not bound:
-		for i in 4:
-			var f := float(i) / 3.0
-			node.draw_circle(Vector2(size.x * 0.5, size.y * 1.02),
-				size.x * (0.35 + f * 0.75),
-				Color(tint, (0.055 - f * 0.012) * (0.6 + 0.4 * breathe)))
 
-	for i in 58:
+	# Heat off the ground: a soft bloom along the bottom edge, not a disc. In a
+	# panel it is kept low and small, so it cannot spill onto the next one.
+	var bloom_w: float = size.x * (1.6 if not bound else 1.0)
+	var bloom_h: float = size.y * (0.55 if not bound else 0.30)
+	_sprite(node, dot, Vector2(size.x * 0.5, size.y + bloom_h * (0.18 if not bound else 0.5)),
+		Vector2(bloom_w, bloom_h), Color(tint, 0.20 * (0.65 + 0.35 * breathe)))
+	_sprite(node, dot, Vector2(size.x * 0.3, size.y + bloom_h * 0.3),
+		Vector2(bloom_w * 0.5, bloom_h * 0.6),
+		Color(1.0, 0.75, 0.3, 0.08 * (0.6 + 0.4 * sin(t * 1.3 + 1.0))))
+
+	# Ash: pale grey flakes drifting sideways, slowly, behind everything else.
+	for i in 16:
+		var hx := _hash01(i, 30.0)
+		var hs := _hash01(i, 31.0)
+		var y: float = fmod(hs * size.y + t * (6.0 + hs * 8.0), size.y)
+		var x: float = fmod(hx * size.x + t * (10.0 + hx * 12.0), size.x)
+		var r: float = (1.2 + hs * 1.8) * k
+		node.draw_set_transform(Vector2(x, y), t * (0.6 + hx) + hs * 6.0, Vector2(1.0, 0.45))
+		node.draw_rect(Rect2(-r, -r, r * 2.0, r * 2.0), Color(0.72, 0.66, 0.62, 0.20), true)
+	node.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	# The embers. Three depths: far ones small, slow and dim; near ones larger,
+	# faster, and every sixth of them one of the big glowing ones.
+	for i in 84:
 		var hx := _hash01(i, 3.0)
 		var hs := _hash01(i, 4.0)
-		var rise: float = 48.0 + hs * 130.0
-		var y: float = size.y - fmod(t * rise + hx * 1400.0, size.y + 90.0)
-		var x: float = hx * size.x + sin(t * 1.1 + float(i) * 0.8) * 16.0
-		var w: float = 1.4 + hs * 2.6
-		# Guttering, so an ember reads as burning rather than as a dot.
-		var flick: float = 0.30 + 0.70 * absf(sin(t * 4.2 + float(i) * 2.1))
-		# They cool as they climb: orange low, dull red by the top.
-		var high: float = 1.0 - clampf(y / size.y, 0.0, 1.0)
-		var col := Color(1.0, 0.55 - high * 0.30, 0.12).lerp(tint, 0.25)
-		node.draw_circle(Vector2(x, y), w, Color(col, 0.55 * flick * (1.0 - high * 0.5)))
+		var hl := _hash01(i, 32.0)
+		var depth: float = float(i % 3) / 2.0
+		var rise: float = (38.0 + hs * 60.0) * (0.6 + depth * 0.8)
+		# How high this one gets before it goes out, as a share of the screen.
+		var reach: float = 0.45 + hl * 0.55
+		var travel: float = size.y * reach
+		var life: float = travel / rise
+		var age: float = fmod(t + hx * 97.0, life + 0.6 + hs * 1.4)
+		if age > life:
+			continue
+		var f: float = age / life
+		var y: float = size.y + 8.0 * k - f * travel
+		# Corkscrewing on the hot air: two sines at different rates, widening as
+		# it climbs because the column spreads.
+		var swirl: float = sin(t * (1.1 + hs) + float(i) * 0.8) * (8.0 + 26.0 * f) * k \
+			+ sin(t * 2.7 + float(i) * 1.9) * 4.0 * k
+		# A wind that leans the whole column a little to the right.
+		var x: float = fmod(hx * size.x + swirl + f * size.x * 0.06 + size.x, size.x)
+		var big: bool = i % 6 == 0 and depth > 0.4
+		var r: float = (2.6 + hs * 2.6 + depth * 2.4) * k * (1.6 if big else 1.0)
+		# Guttering: fast and irregular, so it burns rather than blinks.
+		var flick: float = 0.62 + 0.38 * sin(t * (7.0 + hs * 5.0) + float(i) * 2.1) \
+			* sin(t * 3.1 + float(i))
+		# Cooling as it climbs: white-yellow, orange, deep red, gone.
+		var hot := Color(1.0, 0.93, 0.62)
+		var warm := Color(1.0, 0.52, 0.16).lerp(tint, 0.2)
+		var cool := Color(0.78, 0.16, 0.06)
+		var col: Color = hot.lerp(warm, clampf(f * 2.2, 0.0, 1.0)) if f < 0.45 \
+			else warm.lerp(cool, clampf((f - 0.45) / 0.55, 0.0, 1.0))
+		# Fades in over its first moment and out over its last third.
+		var alive: float = clampf(f * 8.0, 0.0, 1.0) * clampf((1.0 - f) * 3.0, 0.0, 1.0)
+		var a: float = alive * flick * (0.55 + depth * 0.45)
+		if bound and (x < r or x > size.x - r or y < r or y > size.y - r):
+			continue
+		# The halo, then the core. Only the near embers get a halo worth the name.
+		var halo: float = r * (9.0 if big else 5.0)
+		_sprite(node, dot, Vector2(x, y), Vector2(halo, halo) * 2.0,
+			Color(col, a * (0.85 if big else 0.50) * (0.8 + 0.2 * sin(t * 2.0 + float(i)))))
+		_sprite(node, dot, Vector2(x, y), Vector2(r, r) * 2.6, Color(col.lightened(0.35), minf(1.0, a * 1.3)))
+		# A white-hot pip in the brightest ones, which is what sells the glow.
+		if f < 0.5:
+			_sprite(node, dot, Vector2(x, y), Vector2(r, r) * 1.1, Color(1, 1, 0.9, a * (1.0 - f * 2.0)))
+
+	# Sparks: a rare fast one with a short trail, spat off the ground.
+	for i in 5:
+		var hx := _hash01(i, 33.0)
+		var period: float = 2.6 + hx * 3.4
+		var age: float = fmod(t + hx * 11.0, period)
+		if age > 0.7:
+			continue
+		var f: float = age / 0.7
+		var x0: float = size.x * (0.1 + hx * 0.8)
+		var head := Vector2(x0 + (hx - 0.5) * 140.0 * k * f, size.y - f * size.y * (0.35 + hx * 0.25))
+		var tail := head + Vector2(-(hx - 0.5) * 30.0 * k, 26.0 * k)
+		if bound and (head.y < 0.0 or tail.y > size.y):
+			continue
+		var a: float = (1.0 - f) * 0.85
+		node.draw_line(tail, head, Color(1.0, 0.7, 0.3, a * 0.6), 1.6 * k, true)
+		_sprite(node, dot, head, Vector2(7, 7) * k, Color(1.0, 0.9, 0.6, a))
 
 
 ## Ocean. The moving bands of light on a sea floor, and bubbles going up through
@@ -507,44 +755,96 @@ static func _motion_caustics(node: CanvasItem, size: Vector2, t: float,
 		node.draw_arc(Vector2(x, y), r, 0.0, TAU, 10, Color(tint, 0.30), 1.2, true)
 
 
-## Space. Stars at three depths, the near ones drifting visibly and the far ones
-## barely at all, which is the only trick here — parallax is what stops a field
-## of dots reading as a texture.
+## Space. Nebulae breathing behind three depths of stars, the brightest few with
+## a glint that turns and shimmers, and now and then a shooting star.
+##
+## Parallax is still the first trick — near stars drift, far ones barely — but a
+## field of round dots is a texture however it moves. What makes a star read as
+## a star is the glint: rays that catch and turn, on a handful of them only, so
+## the eye has something to find. And colour temperature: real stars are not all
+## white, and a sprinkling of blue and warm ones is what separates a sky from a
+## screen of pixels.
 static func _motion_starfield(node: CanvasItem, size: Vector2, t: float,
 		tint: Color, bound := false) -> void:
-	# Nebulae, which are only nebulae because the frame cuts them. Whole, in a
-	# preview panel, they are three lilac circles.
-	#
-	# They breathe, and that is not decoration — it is most of what this effect
-	# does. Stars are the obvious idea for a space backdrop and the wrong one on
-	# their own: a hundred one-pixel dots twinkling move about a tenth of a
-	# percent of the screen, which is below the threshold at which anybody
-	# registers that the board is alive at all. The clouds are the large slow
-	# thing, and the stars are the detail on top of them.
-	if not bound:
-		for i in 3:
-			var f := float(i) / 2.0
-			var swell: float = 0.72 + 0.28 * sin(t * 0.31 + float(i) * 2.2)
-			var wander: float = sin(t * 0.17 + float(i)) * size.x * 0.02
-			node.draw_circle(
-				Vector2(size.x * (0.62 - f * 0.1) + wander,
-					size.y * (0.28 + f * 0.06)),
-				size.x * (0.20 + f * 0.30) * (0.94 + 0.06 * swell),
-				Color(tint, 0.042 * (1.0 - f * 0.5) * swell))
+	var k: float = clampf(size.x / 720.0, 0.3, 1.5)
+	var dot := soft_dot()
+	var gl := glint()
 
-	for i in 150:
+	# Nebulae: large soft glows that swell and wander. Kept inside a panel, where
+	# a glow wider than the preview would land on its neighbour.
+	for i in 3:
+		var f := float(i) / 2.0
+		var swell: float = 0.72 + 0.28 * sin(t * 0.31 + float(i) * 2.2)
+		var wander: float = sin(t * 0.17 + float(i)) * size.x * 0.02
+		var c := Vector2(size.x * (0.62 - f * 0.22) + wander, size.y * (0.26 + f * 0.24))
+		var w: float = size.x * (0.9 + f * 0.5) * (0.94 + 0.06 * swell)
+		if bound:
+			w = minf(w, size.x * 0.9)
+		var col: Color = tint.lerp(Color(0.35, 0.55, 1.0), f * 0.6)
+		_sprite(node, dot, c, Vector2(w, w * 0.7), Color(col, 0.14 * (1.0 - f * 0.4) * swell))
+
+	# The field. Far stars are points; nearer ones get the soft dot so they have
+	# a little bloom.
+	var temps := [Color(1, 1, 1), Color(0.75, 0.85, 1.0), Color(1.0, 0.9, 0.75),
+		Color(0.9, 0.8, 1.0)]
+	for i in 170:
 		var hx := _hash01(i, 7.0)
 		var hy := _hash01(i, 8.0)
+		var hc := _hash01(i, 34.0)
 		var depth := float(i % 3)
-		var speed: float = 6.0 + depth * 12.0
+		var speed: float = (2.0 + depth * 6.0) * k
 		var x: float = fmod(hx * size.x + t * speed, size.x)
 		var y: float = hy * size.y
-		var r: float = 1.0 + depth * 1.0
-		# Not every star twinkles, and the ones that do are not in step. A field
-		# where all of them pulse together reads as the screen flickering.
-		var tw: float = 0.45 + 0.55 * sin(t * (1.2 + hx * 2.4) + float(i))
-		var col := Color.WHITE.lerp(tint, hy * 0.5)
-		node.draw_circle(Vector2(x, y), r, Color(col, (0.25 + depth * 0.22) * tw))
+		# Most stars hold steady; some twinkle, each on its own clock.
+		var tw: float = 1.0
+		if hc > 0.55:
+			tw = 0.55 + 0.45 * sin(t * (1.6 + hx * 3.0) + float(i) * 1.3)
+		var col: Color = (temps[int(hc * 4.0) % 4] as Color).lerp(tint, 0.15)
+		var a: float = (0.45 + depth * 0.25) * tw
+		if depth < 1.0:
+			node.draw_rect(Rect2(x, y, 1.6 * k, 1.6 * k), Color(col, a), true)
+		else:
+			var r: float = (depth + hc) * 3.0 * k
+			_sprite(node, dot, Vector2(x, y), Vector2(r, r) * 2.0, Color(col, a))
+
+	# The bright few: a glint that turns slowly and shimmers, each at its own
+	# pace, over a small bloom. Nine, spread so there is always one in view.
+	for i in 9:
+		var hx := _hash01(i, 35.0)
+		var hy := _hash01(i, 36.0)
+		var x: float = fmod(hx * size.x + t * 3.0 * k, size.x)
+		var y: float = size.y * (0.05 + hy * 0.9)
+		var shimmer: float = 0.5 + 0.5 * sin(t * (0.9 + hx * 1.4) + float(i) * 2.0)
+		# Now and then a star flares for a moment, which is the shimmer people
+		# notice from across a room.
+		var flare: float = pow(maxf(0.0, sin(t * 0.37 + float(i) * 1.7)), 24.0)
+		var s: float = (26.0 + hy * 16.0) * k * (0.75 + 0.35 * shimmer + 0.7 * flare)
+		var col: Color = (temps[i % 4] as Color).lerp(tint, 0.2)
+		if bound and (x < s * 0.5 or x > size.x - s * 0.5):
+			continue
+		_sprite(node, dot, Vector2(x, y), Vector2(s, s) * 0.9,
+			Color(col, 0.35 + 0.25 * shimmer))
+		_sprite(node, gl, Vector2(x, y), Vector2(s, s) * 2.2,
+			Color(col, minf(1.0, 0.70 + 0.30 * shimmer + 0.2 * flare)), t * 0.15 + float(i))
+
+	# A shooting star, every seven seconds or so, somewhere different each time.
+	if not bound:
+		var period := 7.0
+		var n: int = int(t / period)
+		var age: float = fmod(t, period)
+		if age < 0.9:
+			var f: float = age / 0.9
+			var sx: float = size.x * (0.2 + _hash01(n, 37.0) * 0.7)
+			var sy: float = size.y * (0.05 + _hash01(n, 38.0) * 0.35)
+			var dir := Vector2(-1.0, 0.45).normalized()
+			var head := Vector2(sx, sy) + dir * f * size.x * 0.55
+			var len: float = size.x * 0.16 * (1.0 - f * 0.4)
+			var a: float = sin(f * PI)
+			for j in 8:
+				var u := float(j) / 8.0
+				node.draw_line(head - dir * len * u, head - dir * len * (u + 0.125),
+					Color(1, 1, 1, a * (1.0 - u) * 0.8), 2.2 * k * (1.0 - u * 0.7), true)
+			_sprite(node, dot, head, Vector2(10, 10) * k, Color(1, 1, 1, a))
 
 
 ## Cyber. A scan bar crawling down the whole screen, CRT rows under it, and
@@ -583,79 +883,110 @@ static func _motion_scanlines(node: CanvasItem, size: Vector2, t: float,
 			Color(col, 0.22 * on), true)
 
 
-## Clouds. Cumulus crossing at three depths. Nothing rises, nothing falls — the
-## board is already in the sky, and the only honest motion up there is wind.
+## Clouds. Cumulus crossing at three depths, thin wisps behind them, and the
+## light coming from the upper left.
 ##
-## ## Why this one had to be rebuilt
+## Nothing rises, nothing falls — the board is already in the sky, and the only
+## honest motion up there is wind.
 ##
-## The first version was three overlapping white discs at five percent alpha,
-## which is a perfectly good cloud over a dark backdrop and nothing at all over
-## this one. Clouds is the only board whose art is already white, and white at
-## five percent on white is invisible — the effect was running the whole time
-## and could not be seen.
+## ## Why this one was rebuilt twice
 ##
-## So it stopped painting with brightness and started painting with *shape*.
-## Each cloud now carries a shaded underside as well as a lit top: the shadow is
-## what reads against a bright sky, and it is what makes the thing look like a
-## cumulus with a bottom to it rather than a smudge. The alpha is up by roughly
-## three times, which it can afford to be now that the darker half is doing the
-## work.
+## The first version was three white discs at five percent alpha, invisible on
+## the only board whose art is already white. The second shaded the discs, which
+## made them visible and made them discs: five hard-edged circles along an arc
+## read as a caterpillar however they are coloured.
+##
+## A cloud is vapour, so this one is built from `cloud_puff`, whose edge is torn
+## by noise, and a dozen of them are laid out the way cumulus actually grows —
+## a flat base where the air stops rising and a dome of heaped towers above
+## it. Three passes paint it: a blue-grey underside offset down, the lit body,
+## and a bright rim on the towers facing the sun. The shadow is what makes it
+## read against a pale sky; the rim is what makes it look lit rather than
+## printed.
 static func _motion_drift(node: CanvasItem, size: Vector2, t: float,
 		tint: Color, bound := false) -> void:
-	# Far masses first: very large, very slow, very faint. They are the reason
-	# the sky reads as deep rather than as a flat plate with clouds on it.
-	if not bound:
-		for i in 3:
-			var hb := _hash01(i, 20.0)
-			var bx: float = fmod(hb * size.x * 1.6 + t * 3.5, size.x + size.x * 0.7) \
-				- size.x * 0.35
-			var by: float = size.y * (0.10 + hb * 0.62)
-			var br: float = size.x * (0.26 + hb * 0.16)
-			node.draw_circle(Vector2(bx, by), br, Color(1, 1, 1, 0.045))
-			node.draw_circle(Vector2(bx + br * 0.55, by + br * 0.18), br * 0.72,
-				Color(1, 1, 1, 0.045))
+	var k: float = clampf(size.x / 720.0, 0.3, 1.5)
+	var puff := cloud_puff()
 
-	for i in 11:
+	# Wisps: long thin streaks of high cloud, far away and slow.
+	for i in 4:
+		var hb := _hash01(i, 20.0)
+		var w: float = size.x * (0.55 + hb * 0.35)
+		var span: float = size.x + (w if not bound else 0.0)
+		var x: float = fmod(hb * span + t * (3.0 + hb * 2.0) * k, span) - (w * 0.5 if not bound else 0.0)
+		if bound:
+			x = clampf(x, w * 0.5, size.x - w * 0.5) if w < size.x else size.x * 0.5
+			w = minf(w, size.x)
+		var y: float = size.y * (0.08 + hb * 0.55)
+		# The soft dot rather than the puff: stretched this thin, the puff's torn
+		# edge becomes a hard one and a wisp becomes a bar.
+		var dot := soft_dot()
+		_sprite(node, dot, Vector2(x, y), Vector2(w, w * 0.10), Color(1, 1, 1, 0.20))
+		_sprite(node, dot, Vector2(x + w * 0.15, y + w * 0.025), Vector2(w * 0.7, w * 0.07),
+			Color(1, 1, 1, 0.14))
+
+	# The shape of a cumulus: [x, y, size] in units of the cloud's radius. The
+	# base row is wide and flat; the towers above it get bigger towards the
+	# middle and a little to the left, where the sun is.
+	var shape := [
+		[-1.35, 0.30, 0.95], [-0.70, 0.36, 1.05], [0.00, 0.38, 1.10],
+		[0.70, 0.36, 1.05], [1.35, 0.30, 0.90],
+		[-0.95, -0.05, 1.05], [-0.25, -0.25, 1.35], [0.50, -0.12, 1.20],
+		[1.10, 0.02, 0.90],
+		[-0.50, -0.62, 1.05], [0.20, -0.72, 1.15], [0.75, -0.45, 0.85],
+	]
+	var shade := Color(0.50, 0.60, 0.78).lerp(tint, 0.2)
+	var lit := Color(1.0, 1.0, 1.0).lerp(tint, 0.06)
+
+	for i in 9:
 		var hx := _hash01(i, 10.0)
 		var hy := _hash01(i, 11.0)
 		var hr := _hash01(i, 21.0)
 		var depth := float(i % 3)
-		var speed: float = 5.0 + depth * 11.0
-		var r: float = size.x * (0.042 + hr * 0.040) * (0.72 + depth * 0.34)
-		# On a screen a cloud enters from beyond the edge; in a panel it wraps
-		# inside one, which costs the entrance and keeps the wind.
-		var edge: float = r * 2.6 if not bound else 0.0
-		var span: float = size.x + edge * 2.0
-		var x: float = fmod(hx * span + t * speed, span) - edge
-		# Bobbing, barely. A cloud that only ever translates sideways reads as a
-		# sprite on a rail.
-		var y: float = hy * size.y + sin(t * 0.32 + float(i) * 1.7) * r * 0.16
-		var lift: float = 0.45 + depth * 0.28
+		var speed: float = (4.0 + depth * 9.0) * k
+		var r: float = size.x * (0.050 + hr * 0.035) * (0.70 + depth * 0.32)
+		var reach: float = r * 1.9
+		var edge: float = reach if not bound else 0.0
+		var span: float = size.x + edge * 2.0 - (reach * 2.0 if bound else 0.0)
+		var x: float = fmod(hx * span + t * speed, span) - edge + (reach if bound else 0.0)
+		var y: float = size.y * (0.08 + hy * 0.84) + sin(t * 0.3 + float(i) * 1.7) * r * 0.12
+		if bound:
+			y = clampf(y, reach, size.y - reach)
+		# Far clouds are paler and flatter against the sky; near ones are dense.
+		var dense: float = 0.45 + depth * 0.27
+		var squash: float = 0.82 + depth * 0.06
 
-		# Five lobes along a shallow arc with a flat base, rather than three in a
-		# row. The flat bottom is most of what separates a cumulus from a
-		# caterpillar.
-		var lobes := [
-			[-1.05, 0.16, 0.62], [-0.48, -0.16, 0.86], [0.08, -0.26, 1.0],
-			[0.66, -0.06, 0.80], [1.16, 0.18, 0.58],
-		]
-		# The shaded underside, offset down. Drawn first so the lit lobes sit on
-		# top of it and only its lower edge shows — which is how a shadow works.
-		var shade := Color(0.42, 0.52, 0.68).lerp(tint, 0.25)
-		for l: Array in lobes:
-			node.draw_circle(
-				Vector2(x + r * float(l[0]), y + r * float(l[1]) + r * 0.22),
-				r * float(l[2]), Color(shade, 0.085 * lift))
-		var lit := Color.WHITE.lerp(tint, 0.10)
-		for l: Array in lobes:
-			node.draw_circle(
-				Vector2(x + r * float(l[0]), y + r * float(l[1])),
-				r * float(l[2]), Color(lit, 0.13 * lift))
-		# A bright crown on the two tallest lobes, where the sun would be.
-		for l: Array in [lobes[1], lobes[2]]:
-			node.draw_circle(
-				Vector2(x + r * float(l[0]), y + r * float(l[1]) - r * 0.16),
-				r * float(l[2]) * 0.55, Color(1, 1, 1, 0.10 * lift))
+		# This cloud's own version of the shape: every puff nudged and resized by
+		# the cloud's hash, and some towers left out, so no two are the same
+		# cloud stamped twice. A wider stretch makes some of them long and low.
+		var stretch: float = 0.85 + _hash01(i, 43.0) * 0.5
+		var mine: Array = []
+		for j in shape.size():
+			var p: Array = shape[j]
+			var jx := _hash01(i * 13 + j, 44.0) - 0.5
+			var jy := _hash01(i * 13 + j, 45.0) - 0.5
+			var js := _hash01(i * 13 + j, 46.0)
+			if j >= 9 and js < 0.3:
+				continue
+			mine.append([float(p[0]) * stretch + jx * 0.35, float(p[1]) + jy * 0.2,
+				float(p[2]) * (0.8 + js * 0.4), j])
+		# Underside: every puff, offset down, in blue-grey.
+		for p: Array in mine:
+			var c := Vector2(x + r * float(p[0]), y + r * (float(p[1]) * squash + 0.28))
+			var d: float = r * float(p[2]) * 1.9
+			_sprite(node, puff, c, Vector2(d, d * 0.9), Color(shade, 0.30 * dense))
+		# Body.
+		for p: Array in mine:
+			var c := Vector2(x + r * float(p[0]), y + r * float(p[1]) * squash)
+			var d: float = r * float(p[2]) * 1.9
+			_sprite(node, puff, c, Vector2(d, d * 0.92), Color(lit, 0.34 * dense))
+		# Sunlit rim on the upper towers, nudged towards the upper left.
+		for p: Array in mine:
+			if int(p[3]) < 5:
+				continue
+			var c := Vector2(x + r * (float(p[0]) - 0.12), y + r * (float(p[1]) * squash - 0.16))
+			var d: float = r * float(p[2]) * 1.15
+			_sprite(node, puff, c, Vector2(d, d * 0.9), Color(1, 1, 1, 0.30 * dense))
 
 
 ## Desert. Heat coming off the sand: bands near the bottom that wobble, and dust
