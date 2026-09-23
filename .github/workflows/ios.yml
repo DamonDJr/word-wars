@@ -93,6 +93,37 @@ jobs:
             }
           done
           
+      - name: Make each generated framework claim the iOS it was built for
+        run: |
+          set -euo pipefail
+          # App Store Connect rejected the EOS build with ITMS-90208:
+          #   "The bundle WordWars.app/Frameworks/libeosg.ios.template_release.
+          #    arm64.framework does not support the minimum OS Version specified
+          #    in the Info.plist."
+          # EOSG ships its iOS library as a bare .dylib, and Godot's export wraps
+          # it in a framework with an Info.plist of its own — MinimumOSVersion
+          # 14.0 — around a binary built for 15.0. A plist that claims less than
+          # its binary is exactly what 90208 refuses. The number is read from
+          # the binary rather than typed here, so the next EOSG build cannot
+          # reopen this by raising its floor again.
+          fixed=0
+          while IFS= read -r -d '' fw; do
+            plist="$fw/Info.plist"
+            [ -f "$plist" ] || continue
+            exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist" 2>/dev/null || true)"
+            [ -n "$exe" ] && [ -f "$fw/$exe" ] || continue
+            built="$(xcrun vtool -show-build "$fw/$exe" 2>/dev/null | awk '/minos/ {print $2; exit}')"
+            [ -n "$built" ] || continue
+            claimed="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist" 2>/dev/null || echo none)"
+            if [ "$claimed" != "$built" ]; then
+              echo "$(basename "$fw"): Info.plist said $claimed, binary is built for $built — fixing"
+              /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $built" "$plist" 2>/dev/null \
+                || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $built" "$plist"
+              fixed=$((fixed + 1))
+            fi
+          done < <(find build/ios -path '*dylibs*' -name '*.framework' -type d -print0)
+          echo "frameworks corrected: $fixed"
+
       - name: Install Apple signing credentials
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
@@ -264,6 +295,20 @@ jobs:
             test -d "$app/Frameworks/$fw" || {
               echo "::error::$fw is not in the app — EOS cross-play would be missing"
               ls "$app/Frameworks" || true
+              exit 1
+            }
+          done
+
+          # And the upload check App Store Connect runs (ITMS-90208), run here
+          # first: a framework whose plist claims less than its binary needs is
+          # refused after upload, twenty minutes later, not by the build.
+          for fw in "$app"/Frameworks/*.framework; do
+            exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$fw/Info.plist" 2>/dev/null || true)"
+            [ -n "$exe" ] && [ -f "$fw/$exe" ] || continue
+            built="$(xcrun vtool -show-build "$fw/$exe" 2>/dev/null | awk '/minos/ {print $2; exit}')"
+            claimed="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$fw/Info.plist" 2>/dev/null || echo none)"
+            [ -z "$built" ] || [ "$claimed" = "$built" ] || {
+              echo "::error::$(basename "$fw") Info.plist says iOS $claimed but its binary needs $built — App Store Connect will reject it (90208)"
               exit 1
             }
           done
