@@ -57,35 +57,35 @@ const STEPS := [
 			+ "as a block.",
 		"body_touch": "Any word at all. Its LAST letters land on your "
 			+ "opponent as a block.",
-		"hint": "three letters or more — press SPACE to fire",
-		"hint_touch": "three letters or more — tap FIRE to send",
+		"hint": "three letters or more, then SPACE to fire",
+		"hint_touch": "three letters or more, then tap FIRE",
 	},
 	{
 		"id": "answer",
 		"title": "AND THEIRS COME BACK",
 		"body": "Type a word that STARTS with the letters on the block. "
-			+ "It is the only way to clear it.",
-		"hint": "attacking will not save you",
+			+ "It's the only way to clear it.",
+		"hint": "attacking won't save you",
 	},
 	{
 		"id": "danger",
 		"title": "YOU GET THREE CHANCES",
 		"body": "Let the stack reach the top and you lose a life and the whole "
-			+ "board — but not the match. You have three.",
+			+ "board, but not the match. You have three.",
 		"hint": "get the stack down",
 	},
 	{
 		"id": "always",
 		"title": "NEVER STOP TYPING",
-		"body": "You do not have to wait for blocks. Every word you fire is "
+		"body": "You don't have to wait for blocks. Every word you fire is "
 			+ "points, damage, and one less thing to answer.",
-		"hint": "keep firing — anything counts",
+		"hint": "keep firing, any word counts",
 	},
 	{
 		"id": "done",
-		"title": "THAT IS THE WHOLE GAME",
+		"title": "THAT'S THE WHOLE GAME",
 		"body": "Power words, salvos and chains are all built on those rules. "
-			+ "Go and play one.",
+			+ "Go play a match.",
 		"hint": "press SPACE to start · R to run through it again",
 		"hint_touch": "tap FIRE to start · tap RESTART to run it again",
 	},

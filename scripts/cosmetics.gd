@@ -80,6 +80,8 @@ const THEMES := {
 		"glow": "#3fa02a", "glow_a": 0.18,
 		"art": "res://boards/forest.png", "art_a": 0.85, "art_dim": 0.30,
 		"motion": "leaves",
+		"font": "res://fonts/boards/BreeSerif.ttf", "font_axes": {},
+		"font_scale": 1.04, "font_dy": -0.066,
 	},
 	"volcano": {
 		"top": "#190704", "bottom": "#331008", "panel": "#260a05", "panel_a": 0.46,
@@ -91,6 +93,8 @@ const THEMES := {
 		"glow": "#ff4500", "glow_a": 0.26,
 		"art": "res://boards/volcano.png", "art_a": 0.90, "art_dim": 0.34,
 		"motion": "embers",
+		"font": "res://fonts/boards/Bungee.ttf", "font_axes": {},
+		"font_scale": 0.95, "font_dy": 0.0,
 	},
 	"ocean": {
 		"top": "#041526", "bottom": "#0a2f4d", "panel": "#062033", "panel_a": 0.40,
@@ -102,6 +106,8 @@ const THEMES := {
 		"glow": "#1e88c7", "glow_a": 0.22,
 		"art": "res://boards/ocean.png", "art_a": 0.88, "art_dim": 0.30,
 		"motion": "caustics",
+		"font": "res://fonts/boards/Fredoka.ttf", "font_axes": {"wght": 600, "wdth": 100},
+		"font_scale": 1.0, "font_dy": -0.019,
 	},
 	"space": {
 		"top": "#08041c", "bottom": "#1b0a3a", "panel": "#140a2e", "panel_a": 0.44,
@@ -113,6 +119,8 @@ const THEMES := {
 		"glow": "#7b2fd4", "glow_a": 0.28,
 		"art": "res://boards/space.png", "art_a": 0.90, "art_dim": 0.26,
 		"motion": "starfield",
+		"font": "res://fonts/boards/Orbitron.ttf", "font_axes": {"wght": 800},
+		"font_scale": 0.95, "font_dy": -0.024,
 	},
 	"cyber": {
 		"top": "#060619", "bottom": "#140a33", "panel": "#0c0a24", "panel_a": 0.42,
@@ -124,6 +132,8 @@ const THEMES := {
 		"glow": "#c81ce0", "glow_a": 0.26,
 		"art": "res://boards/cyber.png", "art_a": 0.90, "art_dim": 0.32,
 		"motion": "scanlines",
+		"font": "res://fonts/boards/ChakraPetch-Bold.ttf", "font_axes": {},
+		"font_scale": 1.0, "font_dy": 0.008,
 	},
 	# The one bright board, and the only theme in the game that prints dark type
 	# on a light key. Everything that decides ink asks the theme for it, so this
@@ -140,6 +150,8 @@ const THEMES := {
 		"glow": "#ffffff", "glow_a": 0.20,
 		"art": "res://boards/clouds.png", "art_a": 0.92, "art_dim": 0.12,
 		"motion": "drift",
+		"font": "res://fonts/boards/Comfortaa.ttf", "font_axes": {"wght": 700},
+		"font_scale": 0.9, "font_dy": 0.067,
 	},
 	"desert": {
 		"top": "#1a0c05", "bottom": "#35190a", "panel": "#2b1408", "panel_a": 0.42,
@@ -151,6 +163,8 @@ const THEMES := {
 		"glow": "#ff8f1f", "glow_a": 0.22,
 		"art": "res://boards/desert.png", "art_a": 0.88, "art_dim": 0.30,
 		"motion": "haze",
+		"font": "res://fonts/boards/AlfaSlabOne.ttf", "font_axes": {},
+		"font_scale": 0.9, "font_dy": 0.038,
 	},
 	"aurora": {
 		"top": "#04121f", "bottom": "#0a2a3f", "panel": "#06202e", "panel_a": 0.40,
@@ -162,6 +176,8 @@ const THEMES := {
 		"glow": "#1fd9a8", "glow_a": 0.22,
 		"art": "res://boards/aurora.png", "art_a": 0.90, "art_dim": 0.24,
 		"motion": "ribbons",
+		"font": "res://fonts/boards/JosefinSans.ttf", "font_axes": {"wght": 700},
+		"font_scale": 1.0, "font_dy": 0.101,
 	},
 
 	# The ninth, and the only board in the game that is not for sale.
@@ -172,11 +188,10 @@ const THEMES := {
 	# picture, a weather, a frame and a face. What differs is the lock on the
 	# door, and locks live in `Profile`, not here.
 	#
-	# Its art is the one piece in the set that arrived at full size rather than
-	# sliced out of a contact sheet, and it is nearly square where the others
-	# are 9:16. `_draw_board_art` centre-crops to the screen's own aspect, and
-	# the middle of this picture is the portal, the sun and the plaza — so a
-	# phone gets the composition the painting was built around.
+	# Its art is nearly square where the others are 9:16. `_draw_board_art`
+	# centre-crops to the screen's own aspect, and the middle of this picture
+	# is the portal, the sun and the plaza, so a phone gets the part of the
+	# picture that matters.
 	"nexus": {
 		"top": "#0c0a1c", "bottom": "#221a33", "panel": "#140f2a", "panel_a": 0.40,
 		"grid": "#ffe9b8", "grid_a": 0.12, "nodes": true,
@@ -187,6 +202,8 @@ const THEMES := {
 		"glow": "#c9973f", "glow_a": 0.26,
 		"art": "res://boards/nexus.png", "art_a": 0.92, "art_dim": 0.28,
 		"motion": "aether",
+		"font": "res://fonts/boards/Cinzel.ttf", "font_axes": {"wght": 800},
+		"font_scale": 1.0, "font_dy": 0.048,
 	},
 }
 
@@ -221,6 +238,18 @@ const THEME_EXTRAS := {
 	"art": "", "art_a": 1.0, "art_dim": 0.0,
 	# Which of `draw_motion`'s effects runs over the picture. Empty is still.
 	"motion": "",
+	# The board's own lettering: block stamps, the INCOMING/SENT chips, the
+	# word being typed and the keyboard. Empty keeps the house faces. Only the
+	# Premium boards have one, which is part of what the pack sells.
+	#
+	# `font_axes` picks a weight (and width) from a variable font.
+	# `font_scale` evens out cap heights against the house face, and `font_dy`
+	# moves the letters down by that fraction of their size, because each face
+	# sits its capitals at a different height in its line box and the game
+	# centres on the box. `Fonts.for_board` bakes it into the face as a
+	# baseline offset. Both were measured from the font files (cap height,
+	# hhea ascent and descent), not guessed.
+	"font": "", "font_axes": {}, "font_scale": 1.0, "font_dy": 0.0,
 	# How hard the board's frame breathes, as a fraction of its own alpha.
 	# Zero holds it at a constant brightness, which is what every painted-wash
 	# theme did and should keep doing.

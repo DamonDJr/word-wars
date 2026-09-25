@@ -98,6 +98,8 @@ var _art_next := 0
 
 var _font: Font
 var _font_bold: Font
+## The worn board's lettering size, see `set_stamp_font`.
+var _stamp_scale := 1.0
 var _panel_sb: StyleBoxFlat
 var _block_sb: Array = []
 var _block_sb_hot: Array = []
@@ -105,11 +107,9 @@ var _jitter := Vector2.ZERO
 
 
 func _ready() -> void:
-	_font = ThemeDB.fallback_font
-	var fv := FontVariation.new()
-	fv.base_font = _font
-	fv.variation_embolden = 0.55
-	_font_bold = fv
+	_font = Fonts.body()
+	# Stamps and score ghosts are read at a glance, so they get the display face.
+	_font_bold = Fonts.display()
 
 	_panel_sb = StyleBoxFlat.new()
 	_panel_sb.bg_color = Color("#0e142a")
@@ -169,6 +169,15 @@ func set_frame(c: Color, alpha: float, pulse := 0.0) -> void:
 	_frame_pulse = pulse
 	if _panel_sb:
 		_panel_sb.border_color = Color(c, alpha)
+
+
+## The face the stamps are set in. A Premium board brings its own, with a size
+## scale measured for it (`font_scale` in `Cosmetics.THEME_EXTRAS`). Null puts
+## the house display face back.
+func set_stamp_font(f: Font, scale := 1.0) -> void:
+	_font_bold = f if f != null else Fonts.display()
+	_stamp_scale = scale
+	queue_redraw()
 
 
 ## Bright points where the ruling crosses, which turns a sheet of ruled paper
@@ -676,8 +685,18 @@ func _draw_block(b: Blk, hot: bool) -> void:
 	var squash := b.squash * 6.0
 	var rect := Rect2(b.vis.x + 3.0 - squash * 0.5, b.vis.y + 3.0 + squash, w - 6.0 + squash, h - 6.0 - squash)
 
+	# A block spawns up to three rows above where it lands, and on a full board
+	# that is above the board itself, over the rival's name and the INCOMING
+	# label. Cut it at the frame instead, so it slides in through the top edge.
+	var ceiling := -6.0
+	if rect.end.y <= ceiling:
+		return
+	var whole_h := rect.size.y
+	if rect.position.y < ceiling:
+		rect = Rect2(rect.position.x, ceiling, rect.size.x, rect.end.y - ceiling)
+
 	# Motion streak, so a fast drop reads as speed rather than teleporting.
-	if b.vel > 400.0:
+	if b.vel > 400.0 and rect.size.y >= whole_h:
 		var tail: float = clampf(b.vel * 0.022, 5.0, 34.0)
 		draw_rect(Rect2(rect.position - Vector2(0, tail), Vector2(rect.size.x, tail)),
 			Color(TIER_COLORS[b.tier], 0.16), true)
@@ -735,15 +754,14 @@ func _draw_block(b: Blk, hot: bool) -> void:
 				Color(1, 1, 1, 0.10), false, 1.0)
 
 
+	# Half a block poking through the top edge has no room for its letters yet.
+	if rect.size.y < whole_h * 0.55:
+		return
 	# Stamps run up to five letters, so the type has to give way on small tiles.
-	var font_size := 17 + 5 * mini(b.h, 3)
+	# The compressed face is what lets a four-letter stamp stay large on a 1x1.
+	var font_size := int(float(22 + 6 * mini(b.h, 3)) * _stamp_scale)
 	_draw_fit(_font_bold, rect.get_center(), b.prefix.to_upper(), font_size,
-		rect.size.x - 10.0, ink)
-
-	if b.w * b.h > 2:
-		var sub := "%d" % (b.w * b.h)
-		_draw_centered(_font, rect.get_center() + Vector2(0, font_size * 0.85), sub,
-			12, Color(0, 0, 0, 0.45))
+		rect.size.x - 8.0, ink)
 
 
 func _draw_bits() -> void:

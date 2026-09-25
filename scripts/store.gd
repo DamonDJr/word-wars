@@ -126,7 +126,7 @@ func _on_products(products: Array, status_code: int) -> void:
 		# Connect but has not propagated yet, which can take hours on a first
 		# submission and looks exactly like a wrong id. Said plainly, because a
 		# store row reading "unavailable" with no reason is a bug report.
-		_note(State.FAILED, "the pack is not available right now")
+		_note(State.FAILED, "the pack isn't available right now")
 		print("[Store] products request failed — status %d, %d returned" % [
 			status_code, products.size()])
 		return
@@ -135,7 +135,7 @@ func _on_products(products: Array, status_code: int) -> void:
 			_product = p
 			price = String(p.display_price)
 	if _product == null:
-		_note(State.FAILED, "the pack is not available right now")
+		_note(State.FAILED, "the pack isn't available right now")
 		return
 	print("[Store] premium pack available at %s" % price)
 	_note(State.READY, price)
@@ -159,7 +159,7 @@ func _on_purchased(transaction, status_code: int,
 	else:
 		print("[Store] purchase failed — status %d: %s" % [
 			status_code, error_message])
-		_note(State.FAILED, "that did not go through")
+		_note(State.FAILED, "that didn't go through")
 
 
 ## Anything Apple hands over outside a purchase this session: a restore, an

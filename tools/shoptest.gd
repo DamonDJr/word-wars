@@ -34,6 +34,7 @@ func _init() -> void:
 	_premium_theme_actually_differs()
 	_the_painted_boards_are_painted()
 	_the_faces_match_the_boards()
+	_the_boards_bring_their_lettering()
 	_the_share_ladder_is_not_for_sale()
 	_a_day_is_the_unit_of_sharing()
 	_the_pitch_is_owed_once()
@@ -548,6 +549,29 @@ func _the_menu_knows_every_block_style() -> void:
 			Cosmetics.BLOCK_STYLES.has(id))
 	_expect("and the menu claims no style the catalogue lacks",
 		Cosmetics.BLOCK_STYLES.size() == catalogue.size())
+
+
+## Every Premium board carries its own face, it loads, and a variable one is
+## set at a weight rather than falling back to its lightest. That last check
+## is the one that matters: Godot 4.7 takes `"wght"` as an axis name without a
+## word of complaint and ignores it, so the face drew at 400 on four boards
+## until the axes were converted to numeric tags.
+func _the_boards_bring_their_lettering() -> void:
+	print("--- every premium board brings its own lettering ---")
+	var ts := TextServerManager.get_primary_interface()
+	for id: String in Cosmetics.THEMES:
+		var path := String(Cosmetics.theme_opt(id, "font"))
+		if Cosmetics.theme_opt(id, "art") == "":
+			_expect("%s (a wash) keeps the house face" % id, path == "")
+			continue
+		var f := Fonts.for_theme(id)
+		_expect("%s has a face that loads" % id, f != null)
+		var axes: Dictionary = Cosmetics.theme_opt(id, "font_axes")
+		if f is FontVariation and not axes.is_empty():
+			var set: Dictionary = (f as FontVariation).variation_opentype
+			for k in axes:
+				_expect("%s sets %s by its numeric tag" % [id, k],
+					set.get(ts.name_to_tag(String(k)), -1) == axes[k])
 
 
 func _expect(what: String, ok: bool) -> void:

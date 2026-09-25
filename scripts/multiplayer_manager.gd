@@ -287,7 +287,7 @@ func _process(delta: float) -> void:
 			print("[GC] hello #%d sent at %.1fs — heard back: %s" % [
 				_hellos_sent, _wait_age, _peer_said_hello])
 	if _wait_age >= HANDSHAKE_TIMEOUT:
-		_fail("the other player never answered after %d hellos" % _hellos_sent)
+		_fail("the other player didn't respond (%d tries)" % _hellos_sent)
 
 
 # ----------------------------------------------------------------- sign-in
@@ -450,7 +450,7 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 		[_request()])
 	if _native_vc == null:
 		print("[GC] native: create_controller returned null")
-		_set_state(State.READY, "Game Center would not open its own screen")
+		_set_state(State.READY, "Game Center didn't open")
 		return
 
 	_native_vc.matchmaking_mode = mode
@@ -481,7 +481,7 @@ func open_native_matchmaker(mode: int = Native.DEFAULT) -> void:
 	# Phrased as the ask rather than the result, because this line is only ever
 	# read in the case where the result did not happen: if the sheet is up it is
 	# covering the screen this is drawn on.
-	_set_state(State.READY, "asked Game Center to open its own screen")
+	_set_state(State.READY, "opening Game Center")
 	print("[GC] native: presenting (mode %d)" % mode)
 	_native_vc.present()
 	print("[GC] native: present() returned — sheet should be up")
@@ -539,7 +539,7 @@ func _on_native_failed(message: String) -> void:
 	print("[GC] native: failed — %s" % message)
 	_native_sheet_up = false
 	_native_vc = null
-	_set_state(State.READY, "Game Center could not set that up")
+	_set_state(State.READY, "Game Center couldn't set that up")
 	match_ended.emit("matchmaking failed")
 
 
@@ -741,11 +741,11 @@ func _error_text(error) -> String:
 func _on_found_match(found, error = null) -> void:
 	if error != null:
 		push_warning("Game Center: matchmaking failed — %s" % str(error))
-		_set_state(State.READY, "could not find a match")
+		_set_state(State.READY, "no match found")
 		match_ended.emit("matchmaking failed")
 		return
 	if found == null:
-		_set_state(State.READY, "could not find a match")
+		_set_state(State.READY, "no match found")
 		match_ended.emit("matchmaking failed")
 		return
 
@@ -890,7 +890,7 @@ func _on_data(data: PackedByteArray, _player = null) -> void:
 		# which half the packets mean nothing. Refuse it while it is still a
 		# lobby. Absent means a build from before this field, which is 1.
 		if int(packet.get("v", 1)) != PROTOCOL:
-			_fail("they are on a different version of Word Wars — update both")
+			_fail("you're on different versions of Word Wars. Update both.")
 			return
 		# Answer immediately as well as on the timer, so the pair converges in
 		# one round trip rather than waiting out another tick. Only `hello` is
@@ -1055,7 +1055,7 @@ func host_invite() -> void:
 	if await _eos_host(attempt, code):
 		invite_code = code
 		invited = "your friend"
-		_set_state(State.MATCHMAKING, "room %s — waiting for your friend" % code)
+		_set_state(State.MATCHMAKING, "room %s · waiting for your friend" % code)
 		invite_ready.emit(code)
 
 
@@ -1083,7 +1083,7 @@ func join_code(text: String) -> void:
 			await get_tree().create_timer(CODE_GAP).timeout
 			if _stale(attempt):
 				return
-	_eos_give_up("no room %s — check the code, or ask them to send a new one" % code)
+	_eos_give_up("no room %s. Check the code, or ask for a new one." % code)
 
 
 ## A code arrived from outside the game — a tapped link. Held as an invitation
@@ -1196,7 +1196,7 @@ func _eos_sign_in(attempt: int) -> bool:
 	if _stale(attempt):
 		return false
 	if not ok:
-		_eos_give_up("could not reach Epic — check your connection")
+		_eos_give_up("couldn't connect. Check your internet connection.")
 	return ok
 
 
@@ -1244,7 +1244,7 @@ func _eos_host(attempt: int, bucket: String) -> bool:
 			lobby.destroy_async()
 		return false
 	if lobby == null:
-		_eos_give_up("Epic would not open a room")
+		_eos_give_up("couldn't open a room")
 		return false
 	_lobby = lobby
 	var peer = ClassDB.instantiate("EOSGMultiplayerPeer")
@@ -1276,7 +1276,7 @@ func _eos_join(attempt: int, lobby) -> void:
 	_lobby = joined
 	var peer = ClassDB.instantiate("EOSGMultiplayerPeer")
 	if peer.create_client(EOSConfig.SOCKET, lobby.owner_product_user_id) != OK:
-		_eos_give_up("could not reach the other player")
+		_eos_give_up("couldn't reach the other player")
 		return
 	_attach(peer)
 	_quick_joining = lobby.bucket_id == EOSConfig.QUICK_BUCKET

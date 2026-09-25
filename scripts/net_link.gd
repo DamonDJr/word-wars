@@ -151,9 +151,9 @@ func _process(delta: float) -> void:
 		_join_countdown -= delta
 		if _join_countdown <= 0.0 and active and not connected and not is_host:
 			leave()
-			status = ("nobody answered that code — is it right and are they hosting?"
+			status = ("no one answered that code. Is it right, and are they hosting?"
 				if backend == Backend.ROOM
-				else "no answer from there — is the host running and reachable?")
+				else "no answer. Is the host running?")
 			room_changed.emit()
 
 
@@ -187,7 +187,7 @@ func host(which: int) -> void:
 	else:
 		var enet := ENetMultiplayerPeer.new()
 		if enet.create_server(PORT, MAX_PEERS) != OK:
-			status = "could not open port %d — already hosting?" % PORT
+			status = "couldn't open port %d. Already hosting?" % PORT
 			room_changed.emit()
 			return
 		multiplayer.multiplayer_peer = enet
@@ -291,7 +291,7 @@ func _host_by_code() -> void:
 	active = true
 	is_host = true
 	room_code = Noray.oid
-	status = "share your code — waiting for a challenger"
+	status = "share your code · waiting for a challenger"
 	room_changed.emit()
 
 
@@ -317,7 +317,7 @@ func _on_noray_nat(address: String, port: int) -> void:
 	if err != OK and not is_host and not _relay_tried:
 		# Punchthrough refused. Relaying through noray is slower but works.
 		_relay_tried = true
-		status = "direct route blocked — relaying"
+		status = "direct route blocked, relaying"
 		room_changed.emit()
 		Noray.connect_relay(_host_code)
 
@@ -467,7 +467,7 @@ func _on_connected_to_host() -> void:
 
 
 func _on_connect_failed() -> void:
-	status = "connection failed — check the address and that they are hosting"
+	status = "connection failed. Check the address and that they're hosting."
 	leave()
 	room_changed.emit()
 
@@ -555,7 +555,7 @@ func _ensure_eos() -> bool:
 	status = "connecting to Epic"
 	room_changed.emit()
 	if not await HPlatform.setup_eos_async(EOSConfig.make_credentials()):
-		status = "could not start Epic Online Services"
+		status = "online play couldn't start"
 		leave()
 		room_changed.emit()
 		return false
@@ -564,7 +564,7 @@ func _ensure_eos() -> bool:
 	room_changed.emit()
 	if not await HAuth.login_anonymous_async(my_name):
 		# Overwhelmingly the cause is portal-side rather than anything local.
-		status = "Epic sign-in failed — check the client policy allows Device ID and Lobbies"
+		status = "online sign-in failed. Try again in a moment."
 		leave()
 		room_changed.emit()
 		return false
@@ -596,7 +596,7 @@ func _host_by_eos() -> void:
 
 	var lobby: HLobby = await HLobbies.create_lobby_async(opts)
 	if lobby == null:
-		status = "Epic would not open a room"
+		status = "couldn't open a room"
 		leave()
 		room_changed.emit()
 		return
@@ -616,7 +616,7 @@ func _host_by_eos() -> void:
 	active = true
 	is_host = true
 	room_code = code
-	status = "share your code — waiting for a challenger"
+	status = "share your code · waiting for a challenger"
 	room_changed.emit()
 
 
@@ -651,7 +651,7 @@ func _join_by_eos(code: String) -> void:
 				return
 
 	if lobbies == null or lobbies.is_empty():
-		status = "no room with code %s — is it right, and are they still hosting?" % wanted
+		status = "no room with code %s. Check the code, and that they're still hosting." % wanted
 		leave()
 		room_changed.emit()
 		return

@@ -805,9 +805,9 @@ var challenge_run: Dictionary = {}
 ## How often ambient garbage arrives in training, and what to call it. Practice
 ## is worthless if it is not at a speed you would actually meet.
 const TRAINING_PACE := [
-	{"name": "Calm", "note": "room to think", "every": 9.0},
-	{"name": "Steady", "note": "about a real match", "every": 5.5},
-	{"name": "Relentless", "note": "faster than anyone plays", "every": 2.8},
+	{"name": "Calm", "note": "slow and forgiving", "every": 9.0},
+	{"name": "Steady", "note": "a fair fight", "every": 5.5},
+	{"name": "Relentless", "note": "brutally fast", "every": 2.8},
 ]
 
 ## Single-player setup: the three rival seats, and which one the roster fills.
@@ -840,6 +840,13 @@ var _font_title: Font
 ## un-bolded: at this size the strokes can afford it, and iOS sets its own
 ## keycaps lighter than its body text for the same reason.
 var _font_key: Font
+## The letters you play with: block stamps, attack chips, the typed word and
+## the keyboard. The house faces, unless the worn board brings its own; see
+## `_apply_theme`. `_face_scale` evens that face's size out against Barlow.
+var _font_stamp: Font
+var _font_typed: Font
+var _face_scale := 1.0
+var _face_own := false
 var _splash: Texture2D
 var _splash_tall: Texture2D
 var _overlay: Node2D
@@ -938,24 +945,13 @@ func _ready() -> void:
 	Notify.refresh()
 
 	randomize()
-	_font = ThemeDB.fallback_font
-	var fv := FontVariation.new()
-	fv.base_font = _font
-	fv.variation_embolden = 0.6
-	_font_bold = fv
-
-	var kv := FontVariation.new()
-	kv.base_font = _font
-	kv.variation_embolden = KEY_WEIGHT
-	_font_key = kv
-
-	# The wordmark gets its own face; everything else stays on the plain one,
-	# which is what keeps a display font from becoming a headache to read. Both
-	# fall back rather than crash, so a build that lost an asset still runs.
-	_font_title = _load_or_null("res://fonts/RubikGlitch-Regular.ttf") as Font
-	if _font_title == null:
-		push_warning("Game: title font missing — falling back to the plain face")
-		_font_title = _font_bold
+	# Real weights of one family. See `Fonts` for what each face is for.
+	_font = Fonts.body()
+	_font_bold = Fonts.bold()
+	_font_key = Fonts.key()
+	_font_title = Fonts.display()
+	_font_stamp = Fonts.display()
+	_font_typed = _font_bold
 	_splash = _load_or_null("res://splashScreen.png") as Texture2D
 	# The portrait cut, for phones. Optional on purpose: without it the landscape
 	# art is used in both orientations, which is worse but not broken.
@@ -1215,6 +1211,19 @@ func _apply_theme() -> void:
 	_fire_edge = Cosmetics.theme_tint(id, "fire_edge", PLAYER_ACCENT)
 	_glow = Cosmetics.theme_tint(id, "glow", Color.BLACK)
 	_glow_a = float(Cosmetics.theme_opt(id, "glow_a"))
+
+	# A Premium board's own lettering. It reaches the four places you read
+	# letters mid-match (stamps, chips, your word, the keys) and nothing else:
+	# menus and small print stay in Barlow, where a display face would only get
+	# in the way of reading.
+	var face := Fonts.for_theme(id)
+	_face_own = face != null
+	_face_scale = float(Cosmetics.theme_opt(id, "font_scale")) if _face_own else 1.0
+	_font_stamp = face if _face_own else Fonts.display()
+	_font_typed = face if _face_own else _font_bold
+	_font_key = face if _face_own else Fonts.key()
+	for s2: SideState in sides:
+		s2.board.set_stamp_font(_font_stamp, _face_scale)
 
 	# The backdrop picture, if this theme has one. Through `_load_or_null` like
 	# every other piece of art in here: a build that somehow shipped without the
@@ -1684,8 +1693,8 @@ func _draw_portrait_hud(size: Vector2) -> void:
 				iw + g * 2.0, 78.0 * band + g * 2.0),
 				Color(bg_top, 0.24 * (1.0 - f)), true)
 
-	_text_fit(_font_bold, Vector2(cx, below + 66.0 * band), typed.to_upper(), 34,
-		_input_width(size), col)
+	_text_fit(_font_typed, Vector2(cx, below + 66.0 * band), typed.to_upper(),
+		_typed_size(), _input_width(size), col)
 
 	var note := ""
 	if hits > 0:
@@ -1800,8 +1809,8 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 		# typing. `min_size` was 8, low enough that a long prefix could shrink
 		# itself back into illegibility rather than admit it did not fit; the chip
 		# is taller now, so it does not have to.
-		_text_fit(_font_bold, Vector2(rect.position.x + rect.size.x * 0.38,
-			rect.get_center().y - 3.0), p.prefix.to_upper(), 22,
+		_text_fit(_font_stamp, Vector2(rect.position.x + rect.size.x * 0.38,
+			rect.get_center().y - 3.0), p.prefix.to_upper(), int(22.0 * _face_scale),
 			rect.size.x * 0.6, Color("#0b1020"), 14)
 		_draw_shape_pip(Vector2(rect.end.x - 20.0, rect.get_center().y - 2.0), p.tier)
 
@@ -2065,7 +2074,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	paused = false
 	_last_count_beep = -1
 	phase = Phase.COUNTDOWN
-	_log("%s — get ready" % diff, Color("#c8d3f5"))
+	_log("%s: get ready" % diff, Color("#c8d3f5"))
 
 
 ## Who you are actually facing. The one you picked always turns up; the rest of
@@ -2352,9 +2361,9 @@ func _credit_topout(culprit: int, victim: SideState) -> void:
 			score_kick = 1.0
 			Sfx.play("salvo", 1.1)
 			Haptics.fire("salvo")
-			_say("TOPPED OUT %s — +%s" % [_show(victim.label),
+			_say("TOPPED OUT %s  +%s" % [_show(victim.label),
 				_commas(paid)], Color("#ffd166"))
-		_log("%s overfilled %s — +%s" % [_show(who.label), _show(victim.label),
+		_log("%s topped out %s  +%s" % [_show(who.label), _show(victim.label),
 			_commas(paid)], Color("#ffd166"))
 	elif net_active():
 		MultiplayerManager.send_event("topout", {})
@@ -2368,7 +2377,7 @@ func _on_topout_credit(_culprit: int) -> void:
 	score_kick = 1.0
 	Sfx.play("salvo", 1.1)
 	Haptics.fire("salvo")
-	_say("TOPPED THEM OUT — +%s" % _commas(paid), Color("#ffd166"))
+	_say("TOPPED THEM OUT  +%s" % _commas(paid), Color("#ffd166"))
 
 
 ## A side as a network entity id: 0 for your own board, its peer id otherwise.
@@ -2723,7 +2732,7 @@ func _submit_player() -> void:
 		return
 
 	if w.length() < MIN_WORD_LEN:
-		_reject(w, "too short — %d letters minimum" % MIN_WORD_LEN, Color("#ffb703"), 1.25)
+		_reject(w, "too short · %d letters or more" % MIN_WORD_LEN, Color("#ffb703"), 1.25)
 		return
 	if player.used.has(w):
 		_reject(w, "\"%s\" already spent" % w, Color("#ffb703"), 1.1)
@@ -2748,8 +2757,8 @@ func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 	Haptics.fire("reject", 1.0 + 0.08 * float(mini(lost, 6)))
 	if lost >= 2:
 		Sfx.play("lapse", 0.9)
-		_say("%s — chain x%d broken" % [reason, lost], Color("#ff6b6b"))
-		_log("YOU: %s rejected — chain x%d broken" % [word.to_upper(), lost], Color("#ff6b6b"))
+		_say("%s · chain x%d lost" % [reason, lost], Color("#ff6b6b"))
+		_log("YOU: %s rejected, chain x%d lost" % [word.to_upper(), lost], Color("#ff6b6b"))
 	else:
 		_say(reason, color)
 
@@ -3071,7 +3080,7 @@ func _draw_rematch_popup(size: Vector2) -> void:
 	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + 84.0),
 		"%s WANT ANOTHER" % who, 30, r.size.x - 50.0, Color("#e6ecff"), 17)
 	_text_fit_overlay(_font, Vector2(cx, r.position.y + 120.0),
-		"same opponent, straight into it", 16, r.size.x - 50.0,
+		"same opponent, right away", 16, r.size.x - 50.0,
 		Color("#8d99bd"), 12)
 	for b: Dictionary in _rematch_popup_buttons():
 		_draw_menu_button(b)
@@ -3190,18 +3199,18 @@ func _promo_slides() -> Array:
 	return out
 
 
-## Three words a board, in the voice the concept art used. Kept here rather than
-## in `Cosmetics` because this is ad copy and that file is art direction — one
-## gets rewritten when the picture changes and the other when the marketing does.
+## One line per board saying what is actually in the picture. Kept here rather
+## than in `Cosmetics` because this is shop copy and that file is art direction.
+## If a board's picture changes, check its line here.
 const PROMO_TAGLINES := {
-	"forest": "calm · natural · alive",
-	"volcano": "hot · intense · unstoppable",
-	"ocean": "deep · serene · mysterious",
-	"space": "infinite · otherworldly · epic",
-	"cyber": "neon · fast · electric",
-	"clouds": "bright · dreamy · limitless",
-	"desert": "warm · bold · endless",
-	"aurora": "cool · focused · hypnotic",
+	"forest": "a waterfall in the deep woods",
+	"volcano": "a lava river under a live cone",
+	"ocean": "coral reefs and drifting jellyfish",
+	"space": "planets and asteroids in a violet nebula",
+	"cyber": "a wet street under the signs",
+	"clouds": "floating islands above the clouds",
+	"desert": "a red rock canyon at sunset",
+	"aurora": "northern lights over a snowy valley",
 }
 
 
@@ -3318,26 +3327,26 @@ func _confirm_lines() -> Dictionary:
 	if mode == Mode.DAILY:
 		return {
 			"title": "LEAVE THE DAILY?",
-			"note": "%s goes to the board as it stands — there is one run a day"
+			"note": "%s is posted as it stands. You only get one run a day."
 				% _commas(player.score),
 			"yes": "Post and leave",
 		}
 	if mode == Mode.SURVIVAL:
 		return {
 			"title": "END THE RUN?",
-			"note": "a run walked out of takes no record, however long it lasted",
+			"note": "a run you quit doesn't count toward your records",
 			"yes": "End it",
 		}
 	if net_active():
 		return {
 			"title": "FORFEIT THE MATCH?",
-			"note": "%s is told you left, and the match is over" % (
+			"note": "%s will see that you left, and the match ends" % (
 				_show(ai_side.label).to_upper() if ai_side != null else "THEY"),
 			"yes": "Forfeit",
 		}
 	return {
 		"title": "LEAVE THE MATCH?",
-		"note": "an unfinished match banks no score and no XP",
+		"note": "you won't get score or XP for an unfinished match",
 		"yes": "Leave",
 	}
 
@@ -3751,13 +3760,13 @@ func _draw_share_promo(size: Vector2) -> void:
 	_draw_tracked(_font_bold, Vector2(cx, r.position.y + 30.0),
 		"SHARE & UNLOCK", 13, 3.0, Color("#64dfdf"))
 	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + 66.0),
-		"Three things money cannot buy", 24, r.size.x - 50.0,
+		"Earn these by sharing", 24, r.size.x - 50.0,
 		Color("#e6ecff"), 15)
 	# The rule, said once and plainly. It is the thing somebody has to
 	# understand to play along, and burying it under the tiers would mean
 	# counting shares that never arrive.
 	_text_fit_overlay(_font, Vector2(cx, r.position.y + 96.0),
-		"Share the game on %d different days — one counts per day"
+		"Share the game on %d different days. One share counts per day."
 			% Profile.share_top(), 14, r.size.x - 50.0, Color("#aab4d4"), 11)
 
 	for i in 3:
@@ -3975,7 +3984,7 @@ func _draw_invite_banner(size: Vector2) -> void:
 	# one space leaves the same gap as a name that is nothing.
 	var who := _invite_who().strip_edges()
 	var line := "%s invited you to a match" % who if who != "" \
-		else "somebody invited you to a match"
+		else "you've been invited to a match"
 	var text_w: float = r.size.x - 270.0
 	_otext_left(_font, Vector2(r.position.x + 16.0, r.position.y + 28.0),
 		"GAME CENTER", 11, Color(PLAYER_ACCENT, 0.8))
@@ -4397,7 +4406,7 @@ func _fire_powers(attacker: SideState, defender: SideState, word: String,
 		var bonus := int(spec["bonus"])
 		attacker.score += bonus
 		paid += bonus
-		_log("%s: %s — %s" % [attacker.label, name,
+		_log("%s: %s, %s" % [attacker.label, name,
 			String(spec["solo"] if solo_run() else spec["note"])], tint)
 		if attacker == player:
 			_pop_power(name, bonus, tint)
@@ -4594,14 +4603,14 @@ func _fire_salvo(attacker: SideState, defender: SideState, word: String, combo: 
 	attacker.chain_fill = 0.0
 	attacker.chain_timer = 0.0
 
-	_log("%s: %s — SALVO (%d %s)" % [attacker.label, word.to_upper(), power,
+	_log("%s: %s, SALVO (%d %s)" % [attacker.label, word.to_upper(), power,
 		"blocks paid" if solo_run() else "blocks"], Color("#ffd166"))
 
 	var mine := attacker == player
 	Sfx.play("salvo", 1.0, 0.0 if mine else -8.0)
 	if mine:
 		Haptics.fire("salvo")
-		_say("SALVO — %s, chain spent" % [("+%s" % _commas(bounty)) if solo_run()
+		_say("SALVO %s · chain spent" % [("+%s" % _commas(bounty)) if solo_run()
 			else ("%d blocks away, +%s" % [power, _commas(bounty)])], Color("#ffd166"))
 		shake = maxf(shake, 0.5)
 		_bloom(Color("#ffd166"), 0.30)
@@ -5044,7 +5053,7 @@ func _tick_focus() -> void:
 	if on_me == player.focused_by:
 		return
 	if on_me >= 2 and player.focused_by < 2:
-		_say("%d ON YOU — their blocks are bigger" % on_me, Color("#ff6b6b"))
+		_say("%d ON YOU · their blocks hit harder" % on_me, Color("#ff6b6b"))
 		Sfx.play("danger", 1.15)
 		Haptics.fire("danger")
 	elif on_me < 2 and player.focused_by >= 2:
@@ -5169,7 +5178,7 @@ func _seed_pressure(source: String) -> void:
 		side.pending.append(p)
 		fed += 1
 	if fed > 0:
-		_log("pressure rising — every board seeded", Color("#8892b0"))
+		_log("pressure up: new blocks on every board", Color("#8892b0"))
 
 
 ## Every bot runs its own search against its own board and its own victim.
@@ -5192,7 +5201,7 @@ func _tick_bots(delta: float) -> void:
 		if s.bot.fumbled:
 			s.bot.fumbled = false
 			if s.chain >= 2:
-				_log("%s fumbled — chain x%d broken" % [s.label, s.chain], Color("#8892b0"))
+				_log("%s fumbled, chain x%d lost" % [s.label, s.chain], Color("#8892b0"))
 			s.chain = 0
 			s.chain_fill = 0.0
 			s.chain_timer = 0.0
@@ -5622,7 +5631,7 @@ func _lose_life(side: SideState) -> void:
 			else:
 				_finish_daily()
 		elif side == player:
-			_say("topped out — %d %s left" % [side.lives,
+			_say("topped out · %d %s left" % [side.lives,
 				"life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
 			# The one moment in a survival run where a break is not an
 			# interruption. The board has just come apart, the player is holding
@@ -5646,7 +5655,7 @@ func _lose_life(side: SideState) -> void:
 		side.in_danger = false
 		side.board.detonate()
 		shake = maxf(shake, 0.7)
-		_say("topped out — board cleared, carry on", Color("#ffd166"))
+		_say("topped out · board cleared, keep going", Color("#ffd166"))
 		return
 	side.lives -= 1
 	side.chain = 0
@@ -5673,7 +5682,7 @@ func _lose_life(side: SideState) -> void:
 			_end_match(side)
 		elif side == player:
 			# You are out, but the match is not: keep watching.
-			_say("you are out — %d still standing" % standing.size(), Color("#ff6b6b"))
+			_say("you're out · %d still standing" % standing.size(), Color("#ff6b6b"))
 			Music.play("death", false, "main")
 			_music_key = "main"
 			_music_hold = MUSIC_HOLD
@@ -5684,9 +5693,9 @@ func _lose_life(side: SideState) -> void:
 	if mine:
 		Haptics.fire("life")
 		_bloom(Color("#ff6b6b"), 0.35)
-		_say("BOARD LOST — %d %s left" % [side.lives, "life" if side.lives == 1 else "lives"],
+		_say("BOARD LOST · %d %s left" % [side.lives, "life" if side.lives == 1 else "lives"],
 			Color("#ff6b6b"))
-	_log("%s topped out — %d %s left" % [
+	_log("%s topped out, %d %s left" % [
 		side.label, side.lives, "life" if side.lives == 1 else "lives"], Color("#ff6b6b"))
 
 
@@ -5755,7 +5764,7 @@ func _end_match(loser: SideState) -> void:
 			win_spoils = spoils
 			_pop_score("+%s" % _commas(spoils), "VICTORY", spoils)
 			score_kick = 1.0
-		_log("%s wins — +%s (%d %s left, %d cells dealt)" % [
+		_log("%s wins  +%s (%d %s left, %d cells sent)" % [
 			champion.label if champion != player else "you", _commas(spoils),
 			lives_left, "life" if lives_left == 1 else "lives", champion.dealt],
 			Color("#ffd166"))
@@ -6126,21 +6135,16 @@ const EMOTES := ["cheer", "cry", "shock", "angry", "nice", "huh", "think",
 ## least surprising place for that to happen.
 const EMOTE_MENU := [0, 1, 2, 3, 4, 7, 8]
 
-## Wire index -> the sheet that animates it, for those that have one. Anything
-## not in here falls back to the single still in `res://emotes/<name>.png`,
-## which is what `huh` or `think` from an older build lands on.
-##
-## `frames` and `cols` describe the grid `tools/build_emotes.py` packed. They
-## are duplicated between the two on purpose — the script prints them, and the
-## alternative was a manifest file to parse at load for fourteen integers.
+## Wire indices an older build can still send, and the feeling each plays as.
+## `huh` and `think` both land on shocked, the nearest thing to a question.
+const RETIRED_EMOTES := {5: 2, 6: 2}
+
 ## Wire index -> the sheet that animates it, for the equipped character.
 ##
 ## Was a constant holding BloqBot's seven sets. It is state now because there
 ## is more than one performer: the table lives in `Cosmetics.CHARACTERS` and
 ## this is whichever one is worn, refreshed by `_apply_theme` on every profile
-## change. Anything not in here falls back to the single still in
-## `res://emotes/<name>.png`, which is what `huh` or `think` from an older
-## build lands on.
+## change. `RETIRED_EMOTES` covers the two indices that have no set.
 var EMOTE_ANIM: Dictionary = Cosmetics.character_anim("bloqbot")
 ## Where the head sits in a frame, and the colour behind the character. Both
 ## belong to whoever is wearing the costume; see `Cosmetics.CHARACTERS`.
@@ -6638,6 +6642,9 @@ func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool,
 			_overlay.draw_circle(mid, at.size.x * (0.62 + 0.13 * float(i)),
 				Color(EMOTE_GLOW, 0.16 * f * alpha))
 	var white := Color(1.0, 1.0, 1.0, alpha)
+	# `huh` and `think` are no longer offered, but an older build can still send
+	# them. They play as the nearest feeling the worn character has.
+	idx = int(RETIRED_EMOTES.get(idx, idx))
 	if EMOTE_ANIM.has(idx):
 		var anim: Dictionary = EMOTE_ANIM[idx]
 		var sheet := _emote_texture(String(anim["sheet"]))
@@ -6645,11 +6652,6 @@ func _draw_emote(at: Rect2, idx: int, alpha: float, glow: bool,
 			return
 		var t: float = age if age >= 0.0 else Time.get_ticks_msec() / 1000.0
 		_overlay.draw_texture_rect_region(sheet, at, _emote_frame(anim, t), white)
-		return
-	# `huh` or `think`: no longer offered here, still sendable by an older build.
-	var still := _emote_texture(EMOTES[idx])
-	if still != null:
-		_overlay.draw_texture_rect(still, at, false, white)
 
 
 ## The key's legend: frame zero of the first emote, cropped to the head.
@@ -6947,8 +6949,6 @@ func _keyboard() -> Array:
 const CAP_SIZE := 44
 const ACTION_SIZE := 32
 const FIRE_SIZE := 42
-## Stroke weight for `_font_key`. Negative thins; 0.6 is what `_font_bold` uses.
-const KEY_WEIGHT := -0.2
 
 
 func _draw_keyboard() -> void:
@@ -6989,7 +6989,10 @@ func _draw_keyboard() -> void:
 		var face: Font = _font_key
 		if id == "fire":
 			cap = FIRE_SIZE
-			face = _font_bold
+			# A board with its own face uses it here too, so the whole
+			# keyboard reads as one set.
+			if not _face_own:
+				face = _font_bold
 		elif id.length() > 1:
 			cap = ACTION_SIZE
 		# A room code never contains I or O — the alphabet leaves them out as
@@ -6998,7 +7001,12 @@ func _draw_keyboard() -> void:
 		if _kb_digits() and id.length() == 1 \
 				and not EOSConfig.CODE_ALPHABET.contains(id.to_upper()):
 			ink = Color(ink, 0.22)
-		_otext(face, r.get_center(), String(k["label"]), int(float(cap) * s), ink)
+		# Fitted, because a board's own face can run half again as wide as Barlow
+		# and a W would otherwise spill over the edge of its key.
+		var label := String(k["label"])
+		var ks := _fitted_size(face, label, int(float(cap) * s * _face_scale),
+			r.size.x - 10.0, 12)
+		_otext(face, r.get_center(), label, ks, ink)
 	_draw_key_pops()
 
 ## The emote key, and the fan when it is open.
@@ -7700,8 +7708,8 @@ func _draw_pending(side: SideState, on_right: bool) -> void:
 		_chip_sb.set_border_width_all(3 if locked else 1)
 		draw_style_box(_chip_sb, rect)
 
-		_text_fit(_font_bold, Vector2(rect.position.x + 28.0, rect.get_center().y - 2.0),
-			p.prefix.to_upper(), 15, 48.0, Color("#0b1020"), 8)
+		_text_fit(_font_stamp, Vector2(rect.position.x + 28.0, rect.get_center().y - 2.0),
+			p.prefix.to_upper(), int(15.0 * _face_scale), 48.0, Color("#0b1020"), 8)
 		_draw_shape_pip(Vector2(rect.end.x - 20.0, rect.get_center().y - 2.0), p.tier)
 
 		var fuse := 1.0 - clampf(p.timer / DROP_DELAY, 0.0, 1.0)
@@ -7799,7 +7807,8 @@ func _draw_player_input(size: Vector2) -> void:
 	# of an underscore. The text is measured without it and the caret is placed
 	# after — a caret glyph inside the string would shove the line about as it
 	# blinked.
-	_text_fit(_font_bold, Vector2(cx, base_y), typed.to_upper(), 34, bw + 46.0, col)
+	_text_fit(_font_typed, Vector2(cx, base_y), typed.to_upper(), _typed_size(), bw + 46.0,
+		col)
 	_draw_caret(Vector2(cx, base_y), typed, col, bw + 46.0)
 	_draw_typing_effect(Vector2(cx, base_y), col)
 
@@ -7809,7 +7818,7 @@ func _draw_player_input(size: Vector2) -> void:
 		if matches > hits:
 			# Teach the rule at the moment it bites.
 			_text_centered(_font, Vector2(cx, status_y),
-				"takes out %d of %d — a longer word reaches further" % [hits, matches],
+				"takes out %d of %d · longer words reach more" % [hits, matches],
 				13, Color("#f8961e"))
 		else:
 			_text_centered(_font, Vector2(cx, status_y),
@@ -7833,7 +7842,7 @@ func _draw_player_input(size: Vector2) -> void:
 			Color(message_color, clampf(message_life, 0.0, 1.0)))
 	else:
 		_text_centered(_font, Vector2(cx, status_y),
-			"keep firing without pausing — the chain makes blocks bigger", 12, Color("#4d5878"))
+			"keep firing without a pause and your blocks grow", 12, Color("#4d5878"))
 
 
 ## One keystroke's worth of flourish, parked where the line is being typed. The
@@ -7857,12 +7866,18 @@ func _fleck(ch: String) -> void:
 
 ## Where the next letter would go, in whatever shape has been earned. Blinks on
 ## the same clock in every style so the styles differ in look, not in rhythm.
+## The size the typed word starts from before it is fitted to the line. The
+## caret measures from the same number, or it would stand off the word's end.
+func _typed_size() -> int:
+	return int(34.0 * _face_scale)
+
+
 func _draw_caret(at: Vector2, text: String, col: Color, max_width: float) -> void:
-	var size := 34
-	var m := _font_bold.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	var size := _typed_size()
+	var m := _font_typed.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
 	while size > 11 and m.x > max_width:
 		size -= 1
-		m = _font_bold.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+		m = _font_typed.get_string_size(text.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, size)
 	var x := at.x + m.x * 0.5 + 5.0
 	var on: bool = fmod(Time.get_ticks_msec() / 1000.0, 1.0) < 0.55
 	var h := float(size) * 0.78
@@ -8288,27 +8303,13 @@ func _draw_title(size: Vector2) -> void:
 		Color(bg_top, 0.66 if _art != null else 0.90), true)
 	_draw_decor()
 
-	# Wordmark, with the tail of WARS picked out — the whole game in one gag.
-	# This is the one place the display face is used; a glitch font is a logo,
-	# not something anyone should have to read a menu in. It sets wider than the
-	# plain one, so the size is fitted rather than fixed, and the rule beneath is
-	# measured off whatever size that came out as instead of being nailed down.
-	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 700.0)
-	var title_size := 82
-	while title_size > 40 and _font_title.get_string_size(
-			"WORD WARS", HORIZONTAL_ALIGNMENT_LEFT, -1, title_size).x > size.x - 140.0:
-		title_size -= 2
 	# The whole header hangs off the safe area. A Dynamic Island is about 104
 	# units deep in this design space, and the wordmark sits at 96 — so without
 	# this the first thing on the screen is behind the notch.
 	var hy := safe_top
-	_otext(_font_title, Vector2(cx, hy + 96), "WORD WARS", title_size, Color("#e6ecff"))
-	var wm := _font_title.get_string_size("WORD WARS", HORIZONTAL_ALIGNMENT_LEFT,
-		-1, title_size)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, hy + 96.0 + wm.y * 0.5 - 8.0, wm.x, 3),
-		Color(PLAYER_ACCENT, 0.25 + 0.35 * pulse), true)
-	_otext(_font, Vector2(cx, hy + 162), "your endings become their beginnings",
-		17, Color("#8d99bd"))
+	_draw_wordmark(Vector2(cx, hy + 100.0), minf(1.0, (size.x - 120.0) / 560.0))
+	_otext(_font, Vector2(cx, hy + 162), "Your endings become their beginnings.",
+		18, Color("#8d99bd"))
 
 	# Who you are, above the door. This is the entire payoff for the mastery
 	# system, so it goes where the eye already is rather than behind a menu.
@@ -8328,8 +8329,8 @@ func _draw_title(size: Vector2) -> void:
 		# right there and needs no caption. Printing three keys that the phone
 		# does not have would only be telling somebody to press what they cannot.
 		if not portrait:
-			_otext(_font, Vector2(cx, 646), "H — back to the menu", 14, Color("#5d6a92"))
-			_otext(_font, Vector2(cx, 674), "F1 — %s      ESC — quit" % [
+			_otext(_font, Vector2(cx, 646), "H  back to the menu", 14, Color("#5d6a92"))
+			_otext(_font, Vector2(cx, 674), "F1  %s      ESC  quit" % [
 				"sound on" if Sfx.muted else "mute"], 13, Color("#4d5878"))
 		return
 
@@ -8356,6 +8357,182 @@ func _draw_title(size: Vector2) -> void:
 			% ["unmutes" if Sfx.muted else "mutes"], 11, Color("#3d4666"))
 
 
+
+
+## The logo: WORD and WARS as two sets of letter tiles, the same tiles the
+## boards are made of, set down by hand rather than on a ruler. Your side's
+## blue for WORD, the rival's red for WARS, like the two boards in a match.
+##
+## `scale` 1.0 is 560 units wide. The tilts and drops are fixed, not random,
+## so the logo is the same every launch.
+const WORDMARK_TILT := [-4.0, 2.5, -1.5, 3.5, -3.0, 1.5, -2.5, 4.0]
+const WORDMARK_DROP := [2.0, -3.0, 1.0, -1.0, -2.0, 3.0, 0.0, -3.0]
+
+func _draw_wordmark(center: Vector2, scale: float) -> void:
+	var tile := 58.0 * scale
+	var gap := 7.0 * scale
+	var space := 26.0 * scale
+	var total := tile * 8.0 + gap * 6.0 + space
+	var x := center.x - total * 0.5
+	var letters := "WORDWARS"
+	for i in 8:
+		if i == 4:
+			x += space - gap
+		var col: Color = Color("#48bfe3") if i < 4 else Color("#f94144")
+		var mid := Vector2(x + tile * 0.5, center.y + float(WORDMARK_DROP[i]) * scale)
+		_overlay.draw_set_transform(mid, deg_to_rad(float(WORDMARK_TILT[i])), Vector2.ONE)
+		var r := Rect2(Vector2(-tile, -tile) * 0.5, Vector2(tile, tile))
+		# A hard shadow rather than a soft one: printed, not glowing.
+		_ui_sb.bg_color = col.darkened(0.62)
+		_ui_sb.set_corner_radius_all(int(8.0 * scale))
+		_ui_sb.set_border_width_all(0)
+		_ui_sb.shadow_size = 0
+		_overlay.draw_style_box(_ui_sb, Rect2(r.position + Vector2(0, 5.0 * scale), r.size))
+		_ui_sb.bg_color = col
+		_ui_sb.set_border_width_all(int(maxf(1.0, 2.0 * scale)))
+		_ui_sb.border_color = col.lightened(0.3)
+		_overlay.draw_style_box(_ui_sb, r)
+		_otext(_font_title, Vector2(0, 2.0 * scale), letters[i], int(50.0 * scale),
+			Color("#0b1020"))
+		_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		x += tile + gap
+
+
+## The picture in a door's tile.
+##
+## Stamps used to be the first three or four letters of the door's name, which
+## is how the game's blocks work but read on the title screen as a menu whose
+## labels got cut off: DAI, SUR, BOA. These say what is behind the door, and
+## a few of them carry something true about it — today's date on DAILY, your
+## level on MASTERY, how many of the week's missions are done.
+##
+## Returns false for an id it does not know, so the caller can fall back.
+func _draw_plate_icon(box: Rect2, id: String, ink: Color) -> bool:
+	var c := box.get_center()
+	var s: float = minf(box.size.x, box.size.y) * 0.30
+	var w: float = maxf(2.5, s * 0.14)
+	var o := _overlay
+	match id:
+		"target":
+			o.draw_arc(c, s, 0.0, TAU, 40, ink, w, true)
+			o.draw_arc(c, s * 0.6, 0.0, TAU, 32, ink, w, true)
+			o.draw_circle(c, s * 0.22, ink)
+		"calendar":
+			var r := Rect2(c - Vector2(s, s * 0.9), Vector2(s * 2.0, s * 1.95))
+			_panel_style(Color(0, 0, 0, 0), ink, s * 0.18, w)
+			_ui_sb.shadow_size = 0
+			o.draw_style_box(_ui_sb, r)
+			o.draw_rect(Rect2(r.position, Vector2(r.size.x, s * 0.5)), ink, true)
+			for k in 2:
+				var px: float = r.position.x + r.size.x * (0.3 + 0.4 * float(k))
+				o.draw_line(Vector2(px, r.position.y - s * 0.22),
+					Vector2(px, r.position.y + s * 0.2), ink, w)
+			var day := str(Time.get_datetime_dict_from_system()["day"])
+			_otext(_font_title, Vector2(c.x, r.position.y + s * 1.25), day,
+				int(s * 1.15), ink)
+		"week":
+			var done := Profile.weekly_done_count(Missions.week_key())
+			# One square per mission, in a grid two wide, filled as they are done.
+			var n := Missions.PER_WEEK
+			var cols := 2
+			var rows := int(ceil(float(n) / float(cols)))
+			var cell: float = s * 0.86
+			var pitch: float = cell + s * 0.22
+			for k in n:
+				var px: float = c.x - pitch * float(cols) * 0.5 + s * 0.11 + float(k % cols) * pitch
+				var py: float = c.y - pitch * float(rows) * 0.5 + s * 0.11 + float(k / cols) * pitch
+				var r2 := Rect2(px, py, cell, cell)
+				if k < done:
+					o.draw_rect(r2, ink, true)
+				else:
+					o.draw_rect(r2, ink, false, w * 0.8)
+		"hourglass":
+			var t0 := c.y - s
+			var t1 := c.y + s
+			o.draw_line(Vector2(c.x - s * 0.8, t0), Vector2(c.x + s * 0.8, t0), ink, w)
+			o.draw_line(Vector2(c.x - s * 0.8, t1), Vector2(c.x + s * 0.8, t1), ink, w)
+			o.draw_polyline(PackedVector2Array([
+				Vector2(c.x - s * 0.6, t0), Vector2(c.x + s * 0.6, t0),
+				Vector2(c.x - s * 0.6, t1), Vector2(c.x + s * 0.6, t1),
+				Vector2(c.x - s * 0.6, t0)]), ink, w, true)
+			o.draw_colored_polygon(PackedVector2Array([
+				Vector2(c.x - s * 0.36, t1 - s * 0.05), Vector2(c.x + s * 0.36, t1 - s * 0.05),
+				Vector2(c.x, t1 - s * 0.5)]), ink)
+		"bot":
+			_draw_emote_head(Rect2(c - Vector2(s, s) * 1.35, Vector2(s, s) * 2.7), 1.0)
+		"vs":
+			_otext(_font_title, c + Vector2(0, s * 0.05), "VS", int(s * 1.5), ink)
+		"level":
+			_otext(_font_bold, c - Vector2(0, s * 0.72), "LEVEL", int(maxf(10.0, s * 0.42)),
+				Color(ink, 0.75))
+			_otext(_font_title, c + Vector2(0, s * 0.3), str(Profile.level()),
+				int(s * 1.35), ink)
+		"podium":
+			var bw: float = s * 0.62
+			var base := c.y + s
+			for k in 3:
+				var hgt: float = s * [1.3, 1.9, 0.9][k]
+				o.draw_rect(Rect2(c.x - bw * 1.5 - s * 0.08 + float(k) * (bw + s * 0.08),
+					base - hgt, bw, hgt), ink, true)
+		"swatch":
+			for k in 3:
+				var off := Vector2(-s * 0.55 + float(k) * s * 0.55, s * 0.45 - float(k) * s * 0.45)
+				var r3 := Rect2(c + off - Vector2(s, s) * 0.55, Vector2(s, s) * 1.1)
+				o.draw_rect(r3, Color(ink, 0.35 + 0.3 * float(k)), true)
+				o.draw_rect(r3, ink, false, w * 0.8)
+		"star":
+			var pts := PackedVector2Array()
+			for k in 10:
+				var a := -PI * 0.5 + TAU * float(k) / 10.0
+				var rr: float = s * (1.1 if k % 2 == 0 else 0.46)
+				pts.append(c + Vector2(cos(a), sin(a)) * rr)
+			o.draw_colored_polygon(pts, ink)
+		"sliders":
+			for k in 3:
+				var y: float = c.y - s * 0.8 + float(k) * s * 0.8
+				o.draw_line(Vector2(c.x - s, y), Vector2(c.x + s, y), ink, w)
+				o.draw_circle(Vector2(c.x + s * [0.4, -0.5, 0.1][k], y), s * 0.24, ink)
+		"back":
+			o.draw_polyline(PackedVector2Array([c + Vector2(s * 0.35, -s * 0.8), c + Vector2(-s * 0.45, 0),
+				c + Vector2(s * 0.35, s * 0.8)]), ink, w * 1.3, true)
+		"send", "enter":
+			o.draw_line(c - Vector2(s * 0.9, 0), c + Vector2(s * 0.5, 0), ink, w * 1.2)
+			o.draw_colored_polygon(PackedVector2Array([c + Vector2(s * 0.95, 0),
+				c + Vector2(s * 0.2, -s * 0.6), c + Vector2(s * 0.2, s * 0.6)]), ink)
+		"link":
+			for k in 2:
+				var off2 := Vector2(-s * 0.45 + float(k) * s * 0.9, 0)
+				_panel_style(Color(0, 0, 0, 0), ink, s * 0.4, w)
+				_ui_sb.shadow_size = 0
+				o.draw_style_box(_ui_sb, Rect2(c + off2 - Vector2(s * 0.75, s * 0.42),
+					Vector2(s * 1.5, s * 0.84)))
+		"paste":
+			var r4 := Rect2(c - Vector2(s * 0.75, s * 0.85), Vector2(s * 1.5, s * 1.9))
+			o.draw_rect(r4, ink, false, w)
+			o.draw_rect(Rect2(c.x - s * 0.4, r4.position.y - s * 0.18, s * 0.8, s * 0.4), ink, true)
+			for k in 3:
+				var ly: float = r4.position.y + s * (0.65 + 0.38 * float(k))
+				o.draw_line(Vector2(c.x - s * 0.45, ly), Vector2(c.x + s * 0.45, ly), ink, w * 0.7)
+		"stop":
+			o.draw_rect(Rect2(c - Vector2(s, s) * 0.7, Vector2(s, s) * 1.4), ink, true)
+		"bolt":
+			o.draw_colored_polygon(PackedVector2Array([c + Vector2(s * 0.2, -s * 1.1),
+				c + Vector2(-s * 0.6, s * 0.15), c + Vector2(-s * 0.05, s * 0.15),
+				c + Vector2(-s * 0.25, s * 1.1), c + Vector2(s * 0.6, -s * 0.2),
+				c + Vector2(s * 0.05, -s * 0.2)]), ink)
+		"check":
+			o.draw_polyline(PackedVector2Array([c + Vector2(-s * 0.8, 0), c + Vector2(-s * 0.2, s * 0.6),
+				c + Vector2(s * 0.85, -s * 0.6)]), ink, w * 1.4, true)
+		_:
+			return false
+	return true
+
+
+## Named stamps that other menus use, and the picture each one gets.
+const STAMP_ICONS := {
+	"BACK": "back", "SEND": "send", "INV": "link", "JOIN": "enter", "PASTE": "paste",
+	"STOP": "stop", "QUICK": "bolt", "CPU": "bot", "CHA": "vs", "GAME": "podium",
+}
 
 
 ## Three worked examples instead of a wall of instructions. Each one shows the
@@ -8534,7 +8711,7 @@ func _draw_settings(size: Vector2) -> void:
 	# both: losing a profile in silence is worth shouting about anywhere.
 	if Profile.read_failed:
 		_text_fit_overlay(_font_bold, Vector2(cx, sfoot + 20.0),
-			"YOUR PROFILE COULD NOT BE READ — NOTHING IS BEING SAVED THIS SESSION",
+			"YOUR PROFILE COULDN'T BE READ. NOTHING WILL BE SAVED THIS SESSION.",
 			13, size.x - GRID_MARGIN * 2.0, Color("#ff6b6b"), 10)
 	elif not portrait:
 		_text_fit_overlay(_font, Vector2(cx, sfoot + 20.0),
@@ -8543,22 +8720,22 @@ func _draw_settings(size: Vector2) -> void:
 
 func _settings_defs() -> Array:
 	var defs := [
-		["music", "slider", "Music", "the bed under everything",
+		["music", "slider", "Music", "background music",
 			float(Profile.pref("music"))],
-		["sfx", "slider", "Sound effects", "typing, impacts, power words",
+		["sfx", "slider", "Sound effects", "typing, hits, power words",
 			float(Profile.pref("sfx"))],
 		["texture", "toggle", "Screen texture", "film grain and vignette",
 			bool(Profile.pref("texture"))],
-		["hitstop", "toggle", "Impact freeze", "the pause on a heavy hit",
+		["hitstop", "toggle", "Impact freeze", "a short pause on big hits",
 			bool(Profile.pref("hitstop"))],
-		["censor", "toggle", "Profanity filter", "masks rude words on screen",
+		["censor", "toggle", "Profanity filter", "hides rude words",
 			bool(Profile.pref("censor"))],
 	]
 	# A phone is already fullscreen and has no window to make one of, so the
 	# switch would be a control that does nothing whichever way it was thrown.
 	# The reverse is true of haptics: no desktop has the hardware.
 	if portrait:
-		defs.append(["haptics", "toggle", "Haptics", "the buzz on hits and keys",
+		defs.append(["haptics", "toggle", "Haptics", "vibration on hits and keypresses",
 			bool(Profile.pref("haptics"))])
 	# Tablets only, for the same reason: a phone cannot usefully split a
 	# keyboard it can already reach across, so the row would be a switch between
@@ -8568,7 +8745,7 @@ func _settings_defs() -> Array:
 	# game has no way to measure.
 	if tablet:
 		defs.append(["split_keys", "toggle", "Split keyboard",
-			"two halves at the edges, for thumbs",
+			"split in two, one half per thumb",
 			bool(Profile.pref("split_keys"))])
 	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
@@ -8605,12 +8782,12 @@ func _settings_defs() -> Array:
 	if Store.available():
 		var owned: bool = Profile.owns(Profile.PACK_PREMIUM)
 		defs.append(["buy", "action",
-			"Premium pack" if not owned else "Premium pack — owned",
-			"no ad break, and three things you cannot earn" if not owned
+			"Premium pack" if not owned else "Premium pack · owned",
+			"no ad breaks, plus three exclusive items" if not owned
 				else "thank you", Store.can_buy(),
 			Store.price if Store.can_buy() else _store_note(owned)])
 		defs.append(["restore", "action", "Restore purchases",
-			"if you have bought it before, or on a new phone", true, "RESTORE"])
+			"if you bought it before, or you're on a new phone", true, "RESTORE"])
 
 	# The cloud save. A button and nothing else while it is working.
 	#
@@ -8880,7 +9057,7 @@ func _draw_practice(size: Vector2) -> void:
 			Color("#90be6d") * Color(1, 1, 1, pulse))
 	else:
 		_text_fit_overlay(_font, Vector2(cx, hy + 118.0),
-			"nothing here is scored, and nothing here can be lost", 13,
+			"no score, no lives, no pressure", 13,
 			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
 
 	_otext(_font_bold, Vector2(cx, _practice_pace_top() - 30.0), "TRAINING PACE", 13,
@@ -8891,13 +9068,13 @@ func _draw_practice(size: Vector2) -> void:
 
 	var foot := _grid_bottom(_practice_pace_rects(), 464.0) + 36.0
 	_text_fit_overlay(_font, Vector2(cx, foot),
-		"training has no opponent, no lives and no end%s" % [
-			"" if portrait else " — ESC when you are done"],
+		"Training has no opponent, no lives and no end%s" % [
+			"" if portrait else ". Press ESC when you're done."],
 		13, size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 11)
 	# Said plainly, because somebody will otherwise practise for an hour and
 	# wonder where their level went.
 	_text_fit_overlay(_font, Vector2(cx, foot + 22.0),
-		"neither mode earns XP, so neither can be farmed", 12,
+		"Practice doesn't earn XP.", 12,
 		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 10)
 
 
@@ -8998,7 +9175,7 @@ func _draw_first_word_prompt() -> void:
 	_text_fit_overlay(_font_bold, Vector2(mid.x, mid.y - 12.0),
 		"TYPE ANY WORD", big, wide, Color("#e6ecff", 0.62 * alpha))
 	_text_fit_overlay(_font, Vector2(mid.x, mid.y + 18.0),
-		"you do not have to wait for blocks", small, wide,
+		"you don't have to wait for blocks", small, wide,
 		Color("#7bdff2", 0.55 * alpha))
 
 
@@ -9038,7 +9215,7 @@ func _draw_coaching(size: Vector2) -> void:
 				Color("#ff6b6b") if (r[0] == "TIME LEFT" and left <= DAILY_ALARM)
 					else Color("#e6ecff"), 30.0)
 			y2 += 28.0
-		_otext(_font, Vector2(cx, y2 + 14.0), "one run — no second go", 11,
+		_otext(_font, Vector2(cx, y2 + 14.0), "one run, no retries", 11,
 			Color("#4d5878"))
 		return
 
@@ -9049,7 +9226,7 @@ func _draw_coaching(size: Vector2) -> void:
 		if portrait:
 			return
 		_otext(_font_bold, Vector2(cx, 300.0), "SURVIVAL", 16, SURVIVAL_ACCENT)
-		_otext(_font, Vector2(cx, 322.0), "no clock — last as long as you can", 11,
+		_otext(_font, Vector2(cx, 322.0), "no clock · last as long as you can", 11,
 			Color("#5d6a92"))
 		var rows3 := [
 			["SURVIVED", _survival_clock(match_time)],
@@ -9203,7 +9380,7 @@ func _draw_coaching(size: Vector2) -> void:
 	# one that pretends to respond.
 	_panel(bar, Color("#141b33"), Color("#7bdff2", 0.45), 10.0, 2.0)
 	_text_fit_overlay(_font_bold, bar.get_center() + Vector2(0.0, 6.0),
-		"RUN IT AGAIN" if portrait else "R — RUN IT AGAIN",
+		"RUN IT AGAIN" if portrait else "RUN IT AGAIN  (R)",
 		_read_size(15), bw - 24.0, Color("#7bdff2"))
 
 
@@ -9229,8 +9406,8 @@ func _draw_solo(size: Vector2) -> void:
 	var hy := safe_top + _menu_offset(_solo_laid())
 	_otext(_font_bold, Vector2(cx, hy + 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
 	_otext(_font, Vector2(cx, hy + 96.0),
-		"pick who you are up against" if portrait
-			else "add up to three, and pick who they are", 14,
+		"pick your opponent" if portrait
+			else "add up to three opponents", 14,
 		Color("#8d99bd"))
 
 	# The table, you included, so the size of the match is visible rather than
@@ -9385,7 +9562,7 @@ func _solo_roster() -> Array:
 		list.append({"id": "", "name": "Empty", "note": "leave the seat open",
 			"accent": Color("#5d6a92")})
 	list.append({"id": "?", "name": "Random",
-		"note": "rolled at the start of each match", "accent": Color("#ffd166")})
+		"note": "picked fresh each match", "accent": Color("#ffd166")})
 	for name: String in AiOpponent.ROSTER:
 		var d: Dictionary = AiOpponent.spec(name)
 		list.append({"id": name, "name": name, "note": String(d["style"]),
@@ -9574,6 +9751,8 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 
 	match slot:
 		"theme":
+			var face_p := Fonts.for_theme(id)
+			var fsc_p := float(Cosmetics.theme_opt(id, "font_scale"))
 			# A board in miniature: the theme's wash, its bloom, its panel at
 			# its own alpha, its ruling and its nodes.
 			var top := Cosmetics.theme_color(id, "top")
@@ -9649,10 +9828,27 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 				var bink := Cosmetics.draw_block_face(_overlay, br,
 					WWBoard.TIER_COLORS[i * 3], Profile.worn("blocks"), false,
 					float(i))
-				_text_fit_overlay(_font_bold, br.get_center(), ["AL", "ENT"][i], 11,
-					br.size.x - 4.0, bink)
+				_text_fit_overlay(face_p if face_p != null else _font_bold, br.get_center(),
+					["AL", "ENT"][i], 11, br.size.x - 4.0, bink)
 			_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame",
 				PLAYER_ACCENT), false, 1.5)
+			# A Premium board's own lettering, shown the way it is seen in a
+			# match: stamped on a block, beside the miniature.
+			if face_p != null:
+				var sx0: float = pan.end.x + 14.0
+				var sw: float = box.end.x - 14.0 - sx0
+				if sw > 70.0:
+					var tile: float = minf(sw * 0.42, pan.size.y * 0.24)
+					var sc := Vector2(sx0 + sw * 0.5, pan.get_center().y - 8.0)
+					var tr := Rect2(sc - Vector2(tile * 1.05, tile * 0.5),
+						Vector2(tile * 2.1, tile))
+					var tink := Cosmetics.draw_block_face(_overlay, tr,
+						WWBoard.TIER_COLORS[3], Profile.worn("blocks"), false, 7.0)
+					var ts := _fitted_size(face_p, "SHIP",
+						int(tile * 0.62 * fsc_p), tr.size.x - 10.0, 10)
+					_otext(face_p, tr.get_center(), "SHIP", ts, tink)
+					_otext(_font, Vector2(sc.x, tr.end.y + 16.0), "its own lettering",
+						11, Color("#8d99bd"))
 		"blocks":
 			# Three tiers, so a style is judged on more than one swatch — and so
 			# it is obvious that the tier colour survives whatever the style
@@ -9933,7 +10129,7 @@ func _draw_cosmetics(size: Vector2) -> void:
 			var need: Dictionary = e["need"]
 			if not need.is_empty() and not Profile.meets(need):
 				var st2 := Profile.standing(need)
-				hint = "%s — %s / %s" % [String(st2["what"]).capitalize(),
+				hint = "%s: %s / %s" % [String(st2["what"]).capitalize(),
 					_commas(int(st2["have"])), _commas(int(st2["want"]))]
 	if hint != "":
 		_otext(_font, Vector2(cx, foot + 12.0), hint, 14, Color("#ffd166"))
@@ -10027,7 +10223,16 @@ func _draw_cos_card(c: Dictionary, slot: String, worn: String) -> void:
 		sub = String(Profile.standing(c["need"])["what"])
 		sub_ink = Color("#8a7a5a")
 	var name_y: float = r.get_center().y - (9.0 if sub != "" else 0.0)
-	_text_fit_left(_font_bold, Vector2(tx, name_y + 7.0), name, 19, tw, ink)
+	# A board with its own lettering says its name in it, which is the
+	# quickest way to show the list has more than colours in it.
+	var name_face: Font = _font_bold
+	var name_size := 19
+	if slot == "theme":
+		var nf := Fonts.for_theme(id)
+		if nf != null:
+			name_face = nf
+			name_size = int(19.0 * float(Cosmetics.theme_opt(id, "font_scale")))
+	_text_fit_left(name_face, Vector2(tx, name_y + 7.0), name, name_size, tw, ink)
 	if sub != "":
 		_text_fit_left(_font_bold if on else _font, Vector2(tx, name_y + 30.0),
 			sub, 12, tw, sub_ink)
@@ -10308,10 +10513,10 @@ func _draw_spectating(size: Vector2) -> void:
 		size.x - GRID_MARGIN * 2.0, Color("#ff6b6b"), 24)
 	var left := _living().size()
 	_text_fit_overlay(_font, Vector2(cx, y + 34.0),
-		"%d still standing — watching until it is over" % left, 15,
+		"%d still standing · watching to the end" % left, 15,
 		size.x - GRID_MARGIN * 2.0, Color("#aab4d4"), 11)
 	_otext(_font, Vector2(cx, y + 58.0),
-		"tap the corner to leave" if portrait else "ESC — menu", 12, Color("#5d6a92"))
+		"tap the corner to leave" if portrait else "ESC  menu", 12, Color("#5d6a92"))
 
 
 func _draw_pause(size: Vector2) -> void:
@@ -10323,7 +10528,7 @@ func _draw_pause(size: Vector2) -> void:
 	# Be honest about what pausing does when other people are involved.
 	var note := "the match is frozen"
 	if net_active():
-		note = "the others are still playing — this only pauses your screen"
+		note = "Everyone else is still playing. This only pauses your screen."
 	elif not player.alive:
 		note = "you are out; the match is still running"
 	_otext(_font, Vector2(cx, 286.0), note, 15,
@@ -10333,7 +10538,7 @@ func _draw_pause(size: Vector2) -> void:
 		_draw_menu_button(b)
 	if not portrait:
 		_otext(_font, Vector2(cx, 492.0),
-			"F1 — sound      CTRL+BACKSPACE clears your line", 12, Color("#4d5878"))
+			"F1  sound      CTRL+BACKSPACE  clear your line", 12, Color("#4d5878"))
 
 
 # ------------------------------------------------------------- the versus lobby
@@ -10471,7 +10676,7 @@ func _lobby_offering() -> bool:
 func _lobby_cpu_sub() -> String:
 	var wpm := AiOpponent.paced_wpm(_lobby_bot, portrait)
 	if _lobby_offering():
-		return "Nobody about — %s is ready now" % _lobby_bot.to_upper()
+		return "No one's around. %s is ready now." % _lobby_bot.to_upper()
 	return "%s · %d wpm · starts immediately" % [_lobby_bot.to_upper(), wpm]
 
 
@@ -10533,7 +10738,7 @@ func _paste_code(text: String = "\uffff") -> void:
 		text = DisplayServer.clipboard_get()
 	var code := MultiplayerManager.code_from_link(text)
 	if code == "":
-		_code_note = "nothing to paste — copy the code from the invite first"
+		_code_note = "Nothing to paste. Copy the code from the invite first."
 		Sfx.play("reject", 1.2)
 		Haptics.fire("reject")
 		return
@@ -10559,12 +10764,12 @@ func _code_shown() -> String:
 ## again from its door, so a dismissed sheet is not a lost invite.
 func _share_invite(code: String) -> void:
 	var link := MultiplayerManager.invite_link(code)
-	var text := "Word Wars — come and play me. Tap to join, or enter code %s: %s" % [code, link]
+	var text := "Play me in Word Wars. Tap to join, or enter code %s: %s" % [code, link]
 	if not Sharing.share_text("Word Wars", "Play me at Word Wars", text):
 		# No share sheet here — a desktop. The code is on screen and the link is
 		# on the clipboard, which is the share sheet's job done by hand.
 		DisplayServer.clipboard_set(link)
-		net_status = "link copied — room %s" % code
+		net_status = "link copied · room %s" % code
 
 
 func _on_invite_ready(code: String) -> void:
@@ -10639,7 +10844,7 @@ func _lobby_doors() -> Array:
 	else:
 		out.append({
 			"rect": Rect2(), "key": "I", "stamp": "INV", "label": "Invite a friend",
-			"sub": ("Send a link — iPhone or Android" if _crossplay()
+			"sub": ("Send a link to an iPhone or Android" if _crossplay()
 				else "Text a link to anyone in your contacts") if can else why,
 			"note": "", "rating": 0,
 			"accent": PLAYER_ACCENT if can else grey,
@@ -10698,7 +10903,7 @@ func _lobby_note() -> String:
 			else "versus needs an iPhone signed in to Game Center"
 	if _versus_busy():
 		if _lobby_offering():
-			return "%ds and nobody yet — the CPU match starts straight away" \
+			return "No one yet after %ds. A CPU match starts right away." \
 				% int(_lobby_search)
 		return _lobby_search_line()
 	# `net_status` carries the reason a previous attempt failed, which is worth
@@ -10751,10 +10956,10 @@ func _draw_lobby(size: Vector2) -> void:
 	# to just do it again.
 	var foot := _grid_bottom(_lobby_door_rects(), 360.0 + safe_top) + 30.0
 	_text_fit_overlay(_font, Vector2(cx, foot),
-		"quick match needs somebody else looking at the same moment", 12,
+		"quick match needs someone else searching at the same time", 12,
 		size.x - GRID_MARGIN * 2.0, Color("#5d6a92"), 9)
 	_text_fit_overlay(_font, Vector2(cx, foot + 20.0),
-		"an invite reaches anyone you can text — ask again once they have it", 12,
+		"Invites work for anyone you can text. Ask again once they have the game.", 12,
 		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 9)
 
 
@@ -10796,20 +11001,20 @@ func _draw_rules_panel(size: Vector2) -> void:
 	var paras := [
 		"Type a word, fire with %s. Its LAST letters brand a block on your rival." % [
 			"the FIRE key" if portrait else "SPACE or ENTER"],
-		"Clear a block by typing a word that STARTS with its letters. That is the only "
-			+ "way — attacking never defends you. Answer one while it is still falling "
-			+ "and it never lands. A word clears one block per two letters, so four AL "
-			+ "blocks need ALIGNMENT.",
-		"The blocks you send grow only with your chain: 1, 2, 3, 5, 7 then 9 words for "
-			+ "each step up. A tenth cashes the run in as a SALVO and resets you. Pause, "
-			+ "or fire a non-word, and the run is gone.",
-		"Topping out costs one of THREE LIVES and wipes your board. It does not end the "
-			+ "match. Words score by their letters, times your chain, times what they "
-			+ "broke, and every cell you send pays on top. Overfilling a rival pays a "
-			+ "bonus, and so does winning.",
-		"With three or more boards in play, every attacker past the first aiming at "
-			+ "the same board hits a tier harder. Ganging up works, and being ganged "
-			+ "up on is worth re-aiming over.",
+		"Clear a block by typing a word that STARTS with its letters. That's the only "
+			+ "way to clear it. Attacking doesn't defend you. Answer a block while it's "
+			+ "still falling and it never lands. A word clears one block per two letters, "
+			+ "so four AL blocks need something like ALIGNMENT.",
+		"The blocks you send grow with your chain: 1, 2, 3, 5, 7, then 9 words for "
+			+ "each step up. The tenth word cashes the chain in as a SALVO and starts you "
+			+ "over. Pause, or fire something that isn't a word, and the chain is gone.",
+		"Topping out costs one of your THREE LIVES and wipes your board, but the match "
+			+ "goes on. Words score by their letters, times your chain, times what they "
+			+ "broke, plus a bonus for every cell you send. Topping out a rival pays "
+			+ "extra, and so does winning.",
+		"With three or more boards in play, every extra attacker aiming at the same "
+			+ "board hits a tier harder. Ganging up works. If you're the one being "
+			+ "ganged up on, switch targets.",
 	]
 
 	# Measured before the panel is drawn, so the panel is the height of what is
@@ -11090,7 +11295,7 @@ func _draw_gameover(size: Vector2) -> void:
 		line_y += 26.0 * _over_fill()
 	if player.best_word != "":
 		_text_fit_overlay(_font, Vector2(cx, line_y),
-			"best word — %s for %s" % [_show(player.best_word.to_upper()),
+			"best word: %s for %s" % [_show(player.best_word.to_upper()),
 				_commas(player.best_word_score)], _over_size(15),
 			size.x - GRID_MARGIN * 2.0, Color("#8d99bd"), 11)
 
@@ -11155,7 +11360,7 @@ func _draw_gameover(size: Vector2) -> void:
 			beat.append("highest score")
 		if not beat.is_empty():
 			_text_fit_overlay(_font_bold, Vector2(cx, _over_foot() + 26.0),
-				"a new best — %s" % " and ".join(beat), _over_size(14),
+				"new best: %s" % " and ".join(beat), _over_size(14),
 				size.x - GRID_MARGIN * 2.0, Color("#ffd166"), 11)
 
 	var strip_bottom := _draw_mastery_strip(cx)
@@ -11168,13 +11373,13 @@ func _draw_gameover(size: Vector2) -> void:
 		# The daily has no Rematch button — that is the whole shape of one run a
 		# day — so it must not be told to click one. Survival has one and it is
 		# called something else, because there is nobody to have a rematch with.
-		var keys := "click Rematch to go again      ESC — title"
+		var keys := "click Rematch to go again      ESC  title"
 		if mode == Mode.DAILY:
-			keys = "ESC — title"
+			keys = "ESC  title"
 			if _daily_tabs_up():
-				keys = "LEFT / RIGHT — today's board or your own      ESC — title"
+				keys = "LEFT / RIGHT  switch boards      ESC  title"
 		elif mode == Mode.SURVIVAL:
-			keys = "click Again for a fresh run      ESC — title"
+			keys = "click Again for a fresh run      ESC  title"
 		_otext(_font, Vector2(cx, strip_bottom + 26.0), keys, 13, Color("#4d5878"))
 
 
@@ -11387,7 +11592,7 @@ func _draw_scoreboard(size: Vector2, top: float, tint: Color) -> void:
 			best = s
 	if best != null and best.longest_word != "":
 		_text_fit_overlay(_font, Vector2(size.x * 0.5, y + 14.0),
-			"longest word — %s by %s" % [_show(best.longest_word.to_upper()),
+			"longest word: %s by %s" % [_show(best.longest_word.to_upper()),
 				_show(best.label).to_upper()], _over_size(14),
 			size.x - GRID_MARGIN * 2.0, Color(tint, 0.75), 11)
 
@@ -11580,7 +11785,7 @@ func _challenge_sub() -> String:
 	# a day already spent is not a run, it is a score being posted, and the row
 	# has to offer the thing it is actually going to do.
 	if daily and _daily_is_spent():
-		return "Send your %s against %s — today's board is spent" % [
+		return "Send your %s to %s. Today's board is done." % [
 			_commas(_banked_daily()), target]
 	var where := "today's daily board" if daily else "Survival"
 	var who := String(ch.get("from", ""))
@@ -11606,9 +11811,9 @@ func _running_challenge_sub() -> String:
 	if board == Boards.DAILY_ID:
 		if _daily_is_spent():
 			return ""
-		return "A challenge is running — your daily score counts toward it"
+		return "A challenge is running. Your daily score counts."
 	if board == Boards.SURVIVAL_ID:
-		return "A challenge is running — your Survival score counts toward it"
+		return "A challenge is running. Your Survival score counts."
 	return ""
 
 
@@ -11652,12 +11857,12 @@ func _send_banked_daily(ch: Dictionary) -> void:
 	if mine >= target:
 		# `>=` for the same reason `_challenge_verdict` uses it: Apple ranks a tie
 		# ahead of the score posted later, so a draw is a win for the defender.
-		challenge_sent = "Sent your %s — that beats %s" % [_commas(mine), whose]
+		challenge_sent = "Sent your %s. That beats %s" % [_commas(mine), whose]
 		challenge_sent_hot = true
 		Sfx.play("win", 1.2)
 		Haptics.fire("win")
 		return
-	challenge_sent = "Sent your %s — %s by %s" % [_commas(mine), whose,
+	challenge_sent = "Sent your %s. %s by %s" % [_commas(mine), whose,
 		_commas(target - mine)]
 	challenge_sent_hot = false
 	Sfx.play("count", 0.9)
@@ -11766,8 +11971,8 @@ func _challenge_line() -> String:
 	var who := String(v["from"])
 	var whose := _show_name(who) if who != "" else "the challenge"
 	if bool(v["beat"]):
-		return "CHALLENGE BEATEN — %s by %s" % [whose, _commas(int(v["by"]))]
-	return "CHALLENGE MISSED — %s by %s" % [whose, _commas(int(v["by"]))]
+		return "CHALLENGE BEATEN · %s by %s" % [whose, _commas(int(v["by"]))]
+	return "CHALLENGE MISSED · %s by %s" % [whose, _commas(int(v["by"]))]
 
 
 # ------------------------------------------------------------------- sharing
@@ -11903,7 +12108,7 @@ func _share_url() -> String:
 func _share_line() -> String:
 	var me := _commas(player.score)
 	if mode == Mode.SURVIVAL:
-		return "I lasted %s in Word Wars Survival — %s points. Think you can last longer?" % [
+		return "I lasted %s in Word Wars Survival and scored %s. Think you can last longer?" % [
 			_survival_clock(match_time), me]
 	if mode == Mode.DAILY:
 		var streak: int = Profile.daily_streak(daily_key())
@@ -11912,7 +12117,7 @@ func _share_line() -> String:
 			line += " %d days running." % streak
 		# The daily's own hook, and the only one that is an invitation rather
 		# than a boast: the board is the same one for everybody, today only.
-		return line + " You get the same board — go and beat it."
+		return line + " You get the same board. Go beat it."
 	var rival := _share_rival()
 	var them := _share_rival_name()
 	var theirs: String = _commas(rival.score) if rival != null else "0"
@@ -11990,7 +12195,7 @@ func _share_card_data() -> ShareCard.Card:
 		c.dare = "can you beat %s?" % _commas(player.score)
 		# The whole reason a daily is worth sharing: it is not a boast about a
 		# board nobody else can play, it is an invitation to the same one.
-		c.footer = "everybody gets the same board — today only"
+		c.footer = "same board for everyone, today only"
 		_challenge_badge(c)
 		return c
 
@@ -12003,7 +12208,7 @@ func _share_card_data() -> ShareCard.Card:
 	c.headline_note = "points"
 	var margin: int = absi(player.score - rival.score) if rival != null else 0
 	if win and player.lives >= LIVES:
-		c.badge = "flawless — never lost a life"
+		c.badge = "flawless: never lost a life"
 		c.badge_hot = true
 	elif rival != null:
 		c.badge = "%s by %s" % ["won" if win else "lost", _commas(margin)]
@@ -12088,9 +12293,9 @@ func _on_share_finished(ok: bool, _detail: String) -> void:
 	var next := _next_share_step(have)
 	Sfx.play("count", 1.3)
 	if next > 0:
-		_say("shared — %d more to go" % (next - have), Color("#64dfdf"))
+		_say("shared! %d more to go" % (next - have), Color("#64dfdf"))
 	else:
-		_say("shared — thank you", Color("#64dfdf"))
+		_say("shared. Thanks!", Color("#64dfdf"))
 
 
 ## The next threshold above `have`, or 0 once the ladder is finished.
@@ -12825,7 +13030,7 @@ func _boards_message() -> String:
 			return "Reading the leaderboard…"
 		Boards.ViewState.FAILED:
 			return Boards.view_status if Boards.view_status != "" \
-				else "Game Center would not answer."
+				else "Game Center didn't respond."
 		Boards.ViewState.EMPTY:
 			if board_scope == Boards.FRIENDS:
 				return "None of your Game Center friends have posted a score here."
@@ -13093,7 +13298,7 @@ func _draw_mastery_strip(cx: float) -> float:
 		var line := " · ".join(fresh.slice(0, mini(2, fresh.size())))
 		if fresh.size() > 2:
 			line += "  (+%d more)" % (fresh.size() - 2)
-		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED — " + line, 14,
+		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED: " + line, 14,
 			minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
 		return strip_y + 34.0
 	return strip_y + 10.0
@@ -13190,7 +13395,7 @@ func _apply_handicap() -> void:
 	for s: SideState in sides:
 		s.grace = TOUCH_GRACE if (mixed and s.device == Link.Device.TOUCH) else 1.0
 	if mixed and player.grace > 1.0:
-		_say("phone handicap — longer chains", Color("#7bdff2"))
+		_say("playing a phone: your chain window is longer", Color("#7bdff2"))
 
 
 func _on_net_peer_left(why: String) -> void:
@@ -13588,7 +13793,7 @@ func _menu_buttons() -> Array:
 		var doors2 := _practice_door_rects()
 		out.append({
 			"rect": doors2[0], "key": "1",
-			"label": "Tutorial", "sub": "seven steps, no opponent", "note": "",
+			"label": "Tutorial", "sub": "five steps, no opponent", "note": "",
 			"rating": 0, "accent": Color("#90be6d"), "action": "tutorial"})
 		out.append({
 			"rect": doors2[1], "key": "2",
@@ -13807,7 +14012,7 @@ func _versus_sub() -> String:
 		# CPU match on it works on anything — so a line reading as "there is
 		# nothing for you here" would be turning people away from a mode that
 		# is, on this device, entirely playable.
-		return "CPU matches now — online needs an iPhone"
+		return "CPU matches here. Online play needs an iPhone."
 	if _versus_busy():
 		return net_status
 	# "signed in" is the resting state, not news. Saying it forever would turn
@@ -13844,7 +14049,7 @@ func _weekly_sub() -> String:
 	var key := Missions.week_key()
 	var done := Profile.weekly_done_count(key)
 	if done >= Missions.PER_WEEK:
-		return "All %d done — new set on Sunday" % Missions.PER_WEEK
+		return "All %d done. New set on Sunday." % Missions.PER_WEEK
 	return "%d of %d missions done  ·  %s left" % [done, Missions.PER_WEEK,
 		_weekly_left_text(key)]
 
@@ -13872,7 +14077,7 @@ func _boards_door_sub() -> String:
 			"" if Boards.pending == 1 else "s"]
 	if Boards.rank > 0:
 		return "You are #%s on today's daily" % _commas(Boards.rank)
-	return "Where today's run puts you"
+	return "See where you rank today"
 
 
 func _title_modes() -> Array:
@@ -13881,7 +14086,7 @@ func _title_modes() -> Array:
 	var spent: bool = Profile.daily_done(dkey)
 	var dsub := "%d seconds, one run, the same board for everyone" % int(DAILY_SECONDS)
 	if spent:
-		dsub = "Played — %s. New board at midnight." % _commas(
+		dsub = "Scored %s. New board at midnight." % _commas(
 			int(Profile.daily_result(dkey).get("score", 0)))
 	# The streak belongs on the door rather than only on the summary, because the
 	# summary is the one screen you have already earned it on. Here it is a
@@ -13904,14 +14109,14 @@ func _title_modes() -> Array:
 	# else is waiting on — and because it is the answer to a Start button that
 	# was pressed on Apple's screen and did nothing. See `_start_challenge`.
 	if Boards.challenge_armed():
-		rows.append(["VS", "CHALLENGE", _challenge_sub(), "challenge",
+		rows.append(["@vs", "CHALLENGE", _challenge_sub(), "challenge",
 			Color("#c77dff"), 0])
 	elif _running_challenge_sub() != "":
 		# The modern challenge, which is the one that actually turns up. Plainer
 		# copy because `GKChallengeDefinition` has no target score and no issuer
 		# to put in it — see the note in `leaderboards.gd`. Same door, same band,
 		# and the same action: it opens the mode the challenge is scored on.
-		rows.append(["VS", "CHALLENGE", _running_challenge_sub(), "challenge",
+		rows.append(["@vs", "CHALLENGE", _running_challenge_sub(), "challenge",
 			Color("#c77dff"), 0])
 	elif challenge_sent != "":
 		# The same row, holding the answer for a few seconds. Clearing the
@@ -13920,23 +14125,23 @@ func _title_modes() -> Array:
 		# whole door exists to fix. The action goes to BOARDS rather than staying
 		# inert: "where did that put me" is the only question left, and this
 		# screen answers it.
-		rows.append(["VS", "SENT", challenge_sent, "boards",
+		rows.append(["@check", "SENT", challenge_sent, "boards",
 			Color("#90be6d") if challenge_sent_hot else Color("#ffd166"), 0])
 	rows += [
-		["PRAC", "PRACTICE", "Learn it, or drill it", "practice",
+		["@target", "PRACTICE", "Tutorial and training", "practice",
 			Color("#90be6d"), 1],
-		["DAI", "DAILY", dsub, "daily",
+		["@calendar", "DAILY", dsub, "daily",
 			Color("#5d6a92") if spent else Color("#ffd166"), 2],
 		# Next to the daily because it is the same rhythm at a longer wavelength
 		# — one is a board a day, this is a set of jobs a week — and somebody
 		# who came here for one should see the other. Not a mode: it opens a
 		# list rather than a run, which is why it is a door and not a Play.
-		["WEEK", "WEEKLY", _weekly_sub(), "weekly",
+		["@week", "WEEKLY", _weekly_sub(), "weekly",
 			Color("#90be6d") if _weekly_all_done() else Color("#64dfdf"), 2],
-		["SUR", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 2],
-		["SOLO", "SOLO", "You against the machines", "solo", Color("#7bdff2"), 2],
-		["VER", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 2],
-		["MAS", "MASTERY", "Level %d · your record" % Profile.level(), "mastery",
+		["@hourglass", "SURVIVAL", _survival_sub(), "survival", SURVIVAL_ACCENT, 2],
+		["@bot", "SOLO", "You vs. the CPU", "solo", Color("#7bdff2"), 2],
+		["@vs", "VERSUS", _versus_sub(), "versus", Color("#c77dff"), 2],
+		["@level", "MASTERY", "Your stats and records", "mastery",
 			Color("#f8961e"), 3],
 		# Next to MASTERY, and one band down from the modes, because it is the
 		# same kind of door: a record rather than a thing to play. Mastery is
@@ -13946,8 +14151,8 @@ func _title_modes() -> Array:
 		# The screen behind it says why it is empty — see `_boards_message` — and
 		# a door that explains itself is worth more than a door that silently
 		# is not there on the machine the game is developed on.
-		["BOA", "BOARDS", _boards_door_sub(), "boards", Color("#5390d9"), 3],
-		["COS", "COSMETICS", "Titles, themes, effects", "cosmetics",
+		["@podium", "BOARDS", _boards_door_sub(), "boards", Color("#5390d9"), 3],
+		["@swatch", "COSMETICS", "Titles, themes, effects", "cosmetics",
 			Color("#64dfdf"), 3],
 	]
 	# The one thing on this screen with a price on it, and only while there is
@@ -13960,10 +14165,10 @@ func _title_modes() -> Array:
 	# having; DAILY borrows the same gold but sits two bands up and spends itself
 	# grey most days.
 	if Store.can_buy():
-		rows.append(["PRE", "PREMIUM",
-			"%s · no ad break, and three things you cannot earn" % Store.price,
+		rows.append(["@star", "PREMIUM",
+			"%s · no ad breaks, plus three exclusive items" % Store.price,
 			"buy", Color("#ffd166"), 3])
-	rows.append(["SET", "SETTINGS", "Sound, effects, haptics", "settings",
+	rows.append(["@sliders", "SETTINGS", "Sound, effects, haptics", "settings",
 		Color("#8d99bd"), 3])
 	return rows
 
@@ -14130,10 +14335,14 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 	var avail: float = r.end.x - tx - 12.0
 	var size := _fitted_size(_font_bold, word,
 		int(clampf(18.0 + (r.size.y - 40.0) * 0.12, 18.0, 30.0)), avail, 13)
-	_draw_tracked(_font_bold, gutter.get_center(), stamp, maxi(15, size - 2), 3.0,
-		ink)
-	var head := word.substr(0, stamp.length()) if word.to_upper().begins_with(stamp) else ""
-	var tail := word.substr(head.length())
+	# A picture when there is one for this door, else the word's initial set
+	# like a letter tile. See `_draw_plate_icon`.
+	var icon := stamp.substr(1) if stamp.begins_with("@") else String(STAMP_ICONS.get(stamp, ""))
+	if icon == "" or not _draw_plate_icon(gutter, icon, ink):
+		_otext(_font_title, gutter.get_center() + Vector2(0, 2), stamp.left(1),
+			int(clampf(gutter.size.y * 0.5, 22.0, 46.0)), ink)
+	var head := ""
+	var tail := word
 	var hw: float = _font_bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT,
 		-1, size).x
 	var ty: float = r.position.y + r.size.y * (0.37 if sub != "" else 0.5)
@@ -14142,7 +14351,7 @@ func _draw_plate(r: Rect2, stamp: String, word: String, sub: String, tint: Color
 	var dim: Color = Color("#3d4666") if locked else (
 		Color("#8d99bd") if hot else Color("#6b769b"))
 	_otext_left(_font_bold, Vector2(tx, ty), head, size, bright)
-	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size, dim)
+	_otext_left(_font_bold, Vector2(tx + hw, ty), tail, size, bright)
 	if sub != "":
 		var ss := _fitted_size(_font, sub,
 			int(clampf(13.0 + (r.size.y - 40.0) * 0.055, 13.0, 19.0)), avail, 11)
@@ -14369,9 +14578,16 @@ class Decor extends RefCounted:
 	var pos := Vector2.ZERO
 	var size := Vector2.ONE
 	var tier := 0
+	var stamp := ""
 	var speed := 30.0
 	var rot := 0.0
 	var spin := 0.0
+
+
+## Endings the backdrop blocks carry, so the title's drifting shapes are the
+## game's own blocks rather than blank squares.
+const DECOR_STAMPS := ["ING", "ER", "TION", "MENT", "SHIP", "ED", "LY", "NESS",
+	"AL", "OUS", "ABLE", "IST", "ITY", "EST"]
 
 
 func _seed_decor() -> void:
@@ -14382,6 +14598,7 @@ func _seed_decor() -> void:
 		d.size = Vector2(randi_range(1, 3), randi_range(1, 3)) * 26.0
 		d.pos = Vector2(randf_range(0.0, size.x), randf_range(-140.0, size.y))
 		d.tier = randi_range(0, 5)
+		d.stamp = DECOR_STAMPS[randi() % DECOR_STAMPS.size()]
 		d.speed = randf_range(12.0, 44.0)
 		d.rot = randf_range(-0.35, 0.35)
 		d.spin = randf_range(-0.22, 0.22)
@@ -14397,6 +14614,7 @@ func _step_decor(delta: float) -> void:
 			d.pos.y = -90.0
 			d.pos.x = randf_range(0.0, size.x)
 			d.tier = randi_range(0, 5)
+			d.stamp = DECOR_STAMPS[randi() % DECOR_STAMPS.size()]
 
 
 func _draw_decor() -> void:
@@ -14405,6 +14623,9 @@ func _draw_decor() -> void:
 		_overlay.draw_set_transform(d.pos, d.rot, Vector2.ONE)
 		_overlay.draw_rect(Rect2(-d.size * 0.5, d.size), Color(col, 0.07), true)
 		_overlay.draw_rect(Rect2(-d.size * 0.5, d.size), Color(col, 0.15), false, 1.5)
+		var fs := int(minf(d.size.y * 0.42, d.size.x / maxf(1.0, float(d.stamp.length())) * 0.95))
+		if fs >= 9:
+			_otext(_font_title, Vector2.ZERO, d.stamp, fs, Color(col, 0.16))
 		_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -14912,7 +15133,7 @@ func _activate(action: String) -> void:
 	elif action == "daily":
 		if Profile.daily_done(daily_key()):
 			# Said rather than silently ignored, or the door looks broken.
-			_say("today's board is spent — a new one at midnight",
+			_say("today's board is done · new one at midnight",
 				Color("#8d99bd"))
 			Sfx.play("reject", 1.2)
 			return

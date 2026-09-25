@@ -123,15 +123,9 @@ func _init() -> void:
 	# The fonts the game builds for itself, built the same way. Cheaper and far
 	# less fragile than standing up `main.tscn` to read them off it — this tool
 	# draws four shapes and needs nothing else the game knows.
-	var font: Font = ThemeDB.fallback_font
-	var fv := FontVariation.new()
-	fv.base_font = font
-	fv.variation_embolden = 0.6
-	var bold: Font = fv
-	var title: Font = load("res://fonts/RubikGlitch-Regular.ttf") as Font
-	if title == null:
-		push_warning("[og] title font missing — falling back to the plain face")
-		title = bold
+	var font: Font = load("res://scripts/fonts.gd").body()
+	var bold: Font = load("res://scripts/fonts.gd").bold()
+	var title: Font = load("res://scripts/fonts.gd").display()
 
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path("%s/og" % OUT))

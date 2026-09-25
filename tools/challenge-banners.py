@@ -3,9 +3,9 @@ import os, math, random
 
 S = os.environ['SCRATCH']
 W, H = 3840, 2160
-GLITCH = "fonts/RubikGlitch-Regular.ttf"
-SANS_B = "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
-SANS   = "/usr/share/fonts/TTF/DejaVuSans.ttf"
+GLITCH = "fonts/BarlowCondensed-Black.ttf"
+SANS_B = "fonts/BarlowSemiCondensed-Bold.ttf"
+SANS   = "fonts/BarlowSemiCondensed-Medium.ttf"
 
 # Straight out of the game: THEMES/midnight, the boot splash, and TIER_COLORS.
 BG_TOP, BG_BOT = (1, 6, 26), (20, 26, 54)

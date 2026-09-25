@@ -40,3 +40,15 @@ Payload/
 
 # Python bytecode from the marketing tools in tools/.
 __pycache__/
+
+# Marketing plans and analytics. Kept on this machine: the repo is public.
+docs/tiktok.md
+docs/social-ads.md
+docs/google-ads.md
+docs/iphone-duo.md
+docs/presskit/submissions.md
+
+# The Swift toolchain installer, downloaded here for the iOS build tooling.
+.github/swiftly
+.github/swiftly-*.tar.gz
+.github/LICENSE.txt

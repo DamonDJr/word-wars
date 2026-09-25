@@ -174,7 +174,7 @@ func _the_offer_is_made_once() -> void:
 	_expect("but with no plugin behind it nothing is offered",
 		not notify.offer_after_daily())
 	_expect("and the status line says why: '%s'" % notify.status(),
-		notify.status().begins_with("off — "))
+		notify.status().begins_with("off: "))
 
 
 ## The settings row may only be offered where it could do something.

@@ -358,8 +358,10 @@ data/common.txt          ~36k frequency-ordered words — CPU vocabulary
 tools/build_wordlists.py regenerates both data files from source corpora
 tools/selftest.gd        headless check of stamp fairness and length spread
 tools/audiocheck.gd      dumps the sound bank to .wav and verifies playback
-splashScreen.png         key art; engine boot splash and the in-game splash
-fonts/                   Rubik Glitch, used for the wordmark and nothing else
+splashScreen.png         engine boot splash and in-game splash (tools/splash_art.py)
+boards/                  Premium board backdrops
+fonts/                   Barlow Semi Condensed (UI) and Barlow Condensed Black (display)
+fonts/boards/            each Premium board's own lettering; see `font` in Cosmetics.THEMES
 ```
 
 Boards are drawn with `_draw()` and `StyleBoxFlat` rather than a scene tree of
@@ -574,7 +576,7 @@ call doing nothing.
 
 ### Starting up
 
-Launching the game shows the key art twice, and you are not meant to notice the
+Launching the game shows the splash twice, and you are not meant to notice the
 seam. The engine paints `splashScreen.png` as `boot_splash` before a single
 script runs, which covers the second or so `WordBank` spends reading 350k words;
 the scene then draws the *same* image with the same fit against the same
@@ -583,11 +585,11 @@ has been assembling underneath. Any key or click cuts the hold short — it drop
 straight to the start of the dissolve rather than snapping, and it does nothing
 else, so an impatient press cannot also land on a menu button behind the art.
 
-The art is 3:2 against a 16:9 screen, so it is framed rather than cropped: it is
-a composed picture, and trimming its edges costs more than two side bars. Those
-bars are `SPLASH_MATTE`, sampled from the artwork's own border rather than taken
-from the UI palette, which is why they do not read as letterboxing.
-`boot_splash/bg_color` is set to the same value.
+The splash is the title screen's tile logo on `SPLASH_MATTE`, rendered from SVG
+by `tools/splash_art.py` in a landscape cut and a portrait one. It is 3:2 against
+a 16:9 screen, so it is framed rather than cropped, and the side bars are the
+same matte colour as the art's background, which is why they do not read as
+letterboxing. `boot_splash/bg_color` is set to the same value.
 
 ### The title screen
 
@@ -597,12 +599,13 @@ a branded `SHIP` block, that block coming apart under `SHIPMENTS`, and a live
 chain meter with escalating block sizes. The full rules are still one keypress
 away on `H`. Blocks drift down behind it all.
 
-The wordmark is the one thing set in Rubik Glitch; everything else stays on the
-plain face. A display font is a logo, not something anyone should have to read a
-menu in. Because it sets much wider than the default face, the wordmark's size is
-fitted to the window rather than fixed, and the rule beneath it is measured off
-whatever size that came out as — so swapping the font again cannot push the title
-off-screen or leave the underline stranded.
+The wordmark is WORD and WARS as two rows of the game's own letter tiles, blue
+for your side and red for the rival's, each set down at a small fixed tilt
+(`_draw_wordmark`). The splash draws the same logo, so the two have to change
+together. Type comes from `scripts/fonts.gd`: Barlow Semi Condensed in real
+weights for anything you read, and Barlow Condensed Black for the logo,
+scores and block stamps, where a narrow face lets a four-letter stamp stay big
+on a one-cell block.
 
 Menus are mouse-driven: hover lifts a card and brightens its border, clicking
 starts the match. `_menu_buttons()` is the single source for both drawing and
@@ -1140,10 +1143,16 @@ earns nothing — the level has to mean matches played through.
 
 ## Credits
 
-- **Rubik Glitch** by the Rubik Filtered Project Authors, used for the wordmark.
-  Licensed under the SIL Open Font License 1.1 — the full text travels with the
-  font in [`fonts/OFL.txt`](fonts/OFL.txt).
+- **Barlow** (Semi Condensed and Condensed) by The Barlow Project Authors, the
+  house face for the menus, logo and scores. SIL Open Font License 1.1; the full
+  text is in [`fonts/OFL.txt`](fonts/OFL.txt).
+- **Board lettering** (Premium boards): Bungee, Orbitron, Chakra Petch,
+  Fredoka, Comfortaa, Alfa Slab One, Josefin Sans and Cinzel by their
+  respective Project Authors, and Bree Serif by TypeTogether. All SIL Open Font
+  License 1.1; each licence, with its copyright line, sits beside its font in
+  `fonts/boards/`.
 - Networking rides on [netfox.noray](https://github.com/foxssake/netfox) (MIT)
   for NAT punchthrough and relay.
-- Everything else — art, music, the synthesised sound bank, the word lists — is
-  the project's own.
+- The splash screens and logo are drawn in code (`tools/splash_art.py`,
+  `_draw_wordmark`). BloqBot and Waddles are hand-drawn. The sound bank is
+  synthesised at startup.

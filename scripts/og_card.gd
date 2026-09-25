@@ -165,9 +165,7 @@ func _backdrop() -> void:
 func _header() -> void:
 	var cx := float(SIZE.x) * 0.5
 
-	# The display face is a glitch font — doubled, offset strokes — and it is a
-	# logo at logo size and a printing fault at anything less. Shrunk to fit
-	# rather than tracked, for the same reason as the story card.
+	# Shrunk to fit rather than tracked, for the same reason as the story card.
 	var size := 82
 	while size > 48 and _width(_font_title, "WORD WARS", size) > float(SIZE.x) - 420.0:
 		size -= 2

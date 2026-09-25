@@ -173,7 +173,7 @@ func _the_fallback_offers_a_bot() -> void:
 	_expect("the CPU door names who is waiting (%s)" % String(cpu["sub"]),
 		String(cpu["sub"]).contains(String(game._lobby_bot).to_upper()))
 	_expect("and the card says so too",
-		game._lobby_note().contains("nobody yet"))
+		game._lobby_note().contains("No one yet"))
 
 	# A search that is over stops apologising for itself, whatever the clock
 	# was left at — `_lobby_offering` reads the state, not just the timer.

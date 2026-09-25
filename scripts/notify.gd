@@ -181,14 +181,14 @@ func why_unavailable() -> String:
 ## this the only way to tell them apart is a cable and a console.
 func status() -> String:
 	if not available():
-		return "off — %s" % _why_not
+		return "off: %s" % _why_not
 	if never_answered():
-		return "not asked yet — finish a daily board"
+		return "not asked yet. Finish a daily board first."
 	if not permitted():
-		return "refused in iOS Settings — Notifications, Word Wars"
+		return "turned off in iOS Settings > Notifications > Word Wars"
 	if not bool(Profile.pref("notify")):
 		return "allowed by iOS, switched off here"
-	return "on — %d:00, %d:00, and a streak at %d:00" % [
+	return "on: %d:00, %d:00, and a streak reminder at %d:00" % [
 		DAILY_HOUR, MIDDAY_HOUR, STREAK_HOUR]
 
 
@@ -296,10 +296,10 @@ func refresh() -> void:
 		# Tomorrow's board, and only tomorrow's. Today's is spent and there is
 		# nothing true to say about it until midnight.
 		_send(ID_DAILY, "Today's board is up",
-			"A new Word Wars daily is waiting. One run at it.",
+			"A new daily board is up. You get one run.",
 			_seconds_until(DAILY_HOUR, 1))
 		_send(ID_MIDDAY, "Today's board is still up",
-			"One run at the Word Wars daily, whenever you get a minute.",
+			"Your daily run is waiting whenever you have a minute.",
 			_seconds_until(MIDDAY_HOUR, 1))
 	else:
 		# Unplayed. Whichever of the two hours is still ahead gets today's copy;
@@ -309,18 +309,18 @@ func refresh() -> void:
 		var morning := _seconds_until(DAILY_HOUR, 0)
 		if morning > 0:
 			_send(ID_DAILY, "Today's board is up",
-				"A new Word Wars daily is waiting. One run at it.", morning)
+				"A new daily board is up. You get one run.", morning)
 		else:
 			_send(ID_DAILY, "Today's board is up",
-				"A new Word Wars daily is waiting. One run at it.",
+				"A new daily board is up. You get one run.",
 				_seconds_until(DAILY_HOUR, 1))
 		var noon := _seconds_until(MIDDAY_HOUR, 0)
 		if noon > 0:
 			_send(ID_MIDDAY, "Today's board is still up",
-				"You have not had your run at it yet. It takes a minute.", noon)
+				"You haven't played it yet. It takes about a minute.", noon)
 		else:
 			_send(ID_MIDDAY, "Today's board is still up",
-				"One run at the Word Wars daily, whenever you get a minute.",
+				"Your daily run is waiting whenever you have a minute.",
 				_seconds_until(MIDDAY_HOUR, 1))
 
 	if not played and streak >= 2:
@@ -340,7 +340,7 @@ func refresh() -> void:
 			wait = LATE_NUDGE if to_midnight > LATE_NUDGE + LATE_FLOOR else 0
 		if wait > 0:
 			_send(ID_STREAK, "Your %d-day streak ends tonight" % streak,
-				"Today's board is still unplayed. One run keeps it.", wait)
+				"Play today's board to keep it alive.", wait)
 
 
 func _send(id: int, title: String, body: String, delay_seconds: int) -> void:

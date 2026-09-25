@@ -221,12 +221,8 @@ func _backdrop(c: Card) -> void:
 ## Wordmark and mode. Fixed at the top, because a masthead that moves is not a
 ## masthead.
 ##
-## The wordmark is set large and untracked on purpose. The display face is a
-## glitch font — doubled, offset strokes — which is a logo at logo size and an
-## unreadable smudge at anything less. The title screen sets it at 82 across a
-## 720-unit phone; the same presence on a 1080-wide card is half again as big,
-## and the first cut at 72 with letter-spacing on top came out looking like a
-## printing fault rather than a name.
+## The wordmark is set large and untracked, in the same compressed face as the
+## title screen, and half again as big as the 720-unit phone sets it.
 func _header(c: Card) -> void:
 	var w := float(SIZE.x)
 	var cx := w * 0.5

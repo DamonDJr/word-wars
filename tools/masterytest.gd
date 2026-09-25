@@ -130,7 +130,7 @@ func _equipping(p) -> void:
 	p.salvos = 20
 	_expect("can wear it once earned", p.equip("title", "salvo_king"))
 	_expect("and is wearing it", p.worn("title") == "salvo_king")
-	_expect("the title reads out", p.title_text() == "SALVO KING")
+	_expect("the title reads out", p.title_text() == "Salvo King")
 
 	# The failure mode that matters: a profile carrying a cosmetic it no longer
 	# qualifies for must fall back rather than show a locked item.

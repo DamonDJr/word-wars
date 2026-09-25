@@ -547,20 +547,20 @@ const COSMETICS := {
 		{"id": "counterpuncher", "name": "Counterpuncher", "need": {"power:COUNTER": 30}},
 		{"id": "clutch", "name": "Ice Water", "need": {"power:CLUTCH": 10}},
 		{"id": "perfectionist", "name": "Perfectionist", "need": {"power:PERFECT": 25}},
-		{"id": "salvo_king", "name": "SALVO KING", "need": {"salvos": 12}},
+		{"id": "salvo_king", "name": "Salvo King", "need": {"salvos": 12}},
 		{"id": "undefeated", "name": "Undefeated", "need": {"wins": 15}},
 		{"id": "centurion", "name": "Centurion", "need": {"matches": 100}},
-		{"id": "founder", "name": "FOUNDER", "need": {"buy": PACK_PREMIUM}},
+		{"id": "founder", "name": "Founder", "need": {"buy": PACK_PREMIUM}},
 		# The first rung of the share ladder, and deliberately the cheapest
 		# thing on it. Three days is close enough that somebody finds out the
 		# ladder exists by finishing it rather than by reading about it.
-		{"id": "herald", "name": "HERALD", "need": {"shares": 3}},
+		{"id": "herald", "name": "Herald", "need": {"shares": 3}},
 	],
 	"theme": [
 		{"id": "midnight", "name": "Midnight", "need": {}},
 		{"id": "ember", "name": "Ember", "need": {"level": 3}},
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
-		{"id": "vapor", "name": "Vapour", "need": {"level": 10}},
+		{"id": "vapor", "name": "Vapor", "need": {"level": 10}},
 		{"id": "bone", "name": "Bone", "need": {"level": 16}},
 		{"id": "prism", "name": "Prism", "need": {"buy": PACK_PREMIUM}},
 		# The painted eight. All in the pack that was already being sold rather

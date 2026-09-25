@@ -52,7 +52,6 @@ const OLD_WIRE := ["cheer", "cry", "shock", "angry", "nice", "huh", "think"]
 
 ## What the fan offers, and what it no longer does.
 const MENU := [0, 1, 2, 3, 4, 7, 8]
-const RETIRED := ["huh", "think"]
 
 
 func _init() -> void:
@@ -68,7 +67,7 @@ func _init() -> void:
 	_sheets(game)
 	_wiring(game)
 	await _bubbles(game)
-	_retired()
+	_retired(game)
 	_slot_is_gone()
 	# Awaited, or it returns at its first `await` having asserted nothing — and
 	# a section that prints its heading and no results looks like a section that
@@ -322,13 +321,14 @@ func _summary_row(game, size: Vector2) -> void:
 	game.demo_emotes = false
 
 
-## The two the fan dropped are still drawable, because somebody else's phone
+## The two the fan dropped still play something, because somebody else's phone
 ## can still send one.
-func _retired() -> void:
+func _retired(game) -> void:
 	print("--- the retired two still have something to land on ---")
-	for name: String in RETIRED:
-		var tex := load("res://emotes/%s.png" % name) as Texture2D
-		_expect("%-6s still loads" % name, tex != null)
+	for i: int in [5, 6]:
+		var to := int(game.RETIRED_EMOTES.get(i, -1))
+		_expect("%-6s plays as a live feeling" % game.EMOTES[i],
+			game.EMOTE_ANIM.has(to))
 
 
 ## The cosmetic slot that existed to tint white art, and does not any more.
