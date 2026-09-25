@@ -16,7 +16,7 @@ general/ios/app_id="ca-app-pub-1141785985592666~9550314236"
 
 config/name="Word Wars"
 config/description="Type words to blast garbage blocks onto your opponent's board."
-config/version="0.51.1"
+config/version="0.52.0"
 run/main_scene="res://scenes/main.tscn"
 config/quit_on_go_back=false
 config/features=PackedStringArray("4.7", "GL Compatibility")
