@@ -60,6 +60,7 @@ const THINK := 0.30
 const AdWords = preload("res://tools/ad_words.gd")
 
 var game: Node
+var board := ""
 ## The game renders into this rather than into the window. A real window is
 ## clamped to the height of the actual screen — 1440 does not fit on a 1080
 ## desktop, so the root capture came back a soft 540x1080. A SubViewport is not
@@ -94,6 +95,14 @@ func _init() -> void:
 	_wb = get_root().get_node("WordBank")
 	_boards = get_root().get_node("Boards")
 	_profile = get_root().get_node("Profile")
+	# Saved somewhere of its own, whatever a shot does. Posing writes an invented
+	# player into the live profile, and anything that ends a match saves it.
+	_profile.save_path = "user://profile-shots.cfg"
+	# `--board volcano` films the shot on that board, with the block face drawn
+	# for it. The Premium pack is marked owned for the render so the game does
+	# not quietly fall back to Midnight; nothing here is saved.
+	var bi := args.find("--board")
+	board = String(args[bi + 1]) if bi >= 0 and bi + 1 < args.size() else ""
 
 	stage = SubViewport.new()
 	stage.render_target_update_mode = SubViewport.UPDATE_ALWAYS
@@ -106,6 +115,12 @@ func _init() -> void:
 	game._skip_splash()
 	await process_frame
 	_force_portrait()
+	if board != "":
+		_profile.owned[_profile.PACK_PREMIUM] = true
+		_profile.equipped["theme"] = board
+		var face := Cosmetics.face_for_board(board)
+		_profile.equipped["blocks"] = face if face != "" else "solid"
+		game._apply_theme()
 
 	match shot:
 		"title": await _shot_title()
@@ -115,6 +130,8 @@ func _init() -> void:
 		"solo": await _shot_solo()
 		"mastery": await _shot_mastery()
 		"settings": await _shot_settings()
+		"versus": await _shot_versus()
+		"cosmetics": await _shot_cosmetics()
 		_:
 			push_error("unknown shot: %s" % shot)
 			quit(1)
@@ -229,6 +246,8 @@ func _save(shot: String) -> void:
 	var tag := ""
 	if ipad:
 		tag = "-ipad-full" if full_keys else "-ipad"
+	if board != "":
+		tag = "-" + board + tag
 	var path := "%s/%s%s.png" % [dir, shot, tag]
 	# Apple refuses a screenshot that carries an alpha channel, and refuses it
 	# for *having* one rather than for using it. A viewport grab is RGBA8 with
@@ -287,6 +306,32 @@ func _shot_solo() -> void:
 	# `0:04` reads as a bug. Ninety seconds is what the rest of the frame implies.
 	game.match_time = 95.0
 	await _stage()
+
+
+## A duel against a person: the rival named, and an emote each way on screen —
+## the one frame that says this is played against somebody. Emotes are drawn
+## through `demo_emotes`, the same switch the trailer uses; see game.gd.
+func _shot_versus() -> void:
+	game.start_match("Duelist", 1)
+	game.phase = game.Phase.PLAY
+	game.match_time = 71.0
+	if game.ai_side:
+		game.ai_side.label = "PRIYA"
+	await _stage()
+	game.demo_emotes = true
+	game._emote_in = {"i": game.EMOTES.find("angry"), "left": game.EMOTE_SHOW}
+	game._emote_out = {"i": game.EMOTES.find("hype"), "left": game.EMOTE_SHOW}
+	await _hold(0.4)
+
+
+## The wardrobe on its Board category, with the board on show filling the big
+## preview — the painting and its weather — over the grid of the rest.
+func _shot_cosmetics() -> void:
+	_pose_profile()
+	_profile.owned[_profile.PACK_PREMIUM] = true
+	game.mastery_slot = _profile.SLOTS.find("theme")
+	game.phase = game.Phase.COSMETICS
+	await _hold(1.0)
 
 
 ## The progression screen, posed with an invented player rather than whatever is

@@ -267,6 +267,11 @@ const PREF_DEFAULTS := {
 	## screen. A date rather than a bool: tomorrow's board is a new question.
 	## See `_maybe_send_banked_to_challenge`.
 	"challenge_sent_for": "",
+	## Today's daily score until Game Center confirms it has it:
+	## `{day, score}`, or empty. Kept on disk so a run that finished while Apple
+	## was unreachable, or that Apple refused once, is re-sent on the next launch
+	## rather than lost with the app. See `Boards.submit_daily`.
+	"daily_unsent": {},
 	## The rating prompt's budget. iOS allows three displays a year and reports
 	## nothing about whether any of them happened, so these are counted at the
 	## moment of asking rather than on a confirmation that never comes.

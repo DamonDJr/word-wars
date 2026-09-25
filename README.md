@@ -10,10 +10,12 @@ and the bigger the block, the more letters you have to match.
 one **MENT**. Answer *that* with `MENTIONING` and back comes **ING**. The duel is
 a word chain where every link is also an attack.
 
-How *big* the block is has nothing to do with the word. It comes from rhythm:
-keep firing without breaking your chain and the hits climb, up to a 4x3 that
-wants nine clean words in a row. Miss once — a pause, or a word that does not
-qualify — and you start again from nothing.
+How *big* the block is comes from rhythm and from length, and rhythm is the
+larger of the two: keep firing without breaking your chain and the hits climb,
+up to a 4x3 that wants nine clean words in a row. Miss once — a pause, or a word
+that does not qualify — and you start again from nothing. A long word is never
+wasted either: it fills the chain faster, reaches further, and has a tier floor
+of its own that a short run cannot drag you below.
 
 Godot 4.7, GDScript. Vendors two small MIT addons for networking.
 
@@ -259,9 +261,30 @@ break its chain exactly the way a rejected word breaks yours.
 Each word buys the time for the next one: `CHAIN_BASE` (1.8s) plus
 `CHAIN_PER_CHAR` (0.2s) per letter. A three-letter word grants 2.4 seconds, a
 ten-letter word 3.8. That is deliberate — long words take longer to type, so they
-earn proportionally more time, but they buy no extra block size. **Word length
-does not size the block.** Nothing about how big a hit lands depends on
-vocabulary, only on rhythm.
+earn proportionally more time.
+
+**Word length sizes the block too**, in three separate places, and this section
+used to claim the opposite. It said length bought no block size at all and that
+nothing about a hit depended on vocabulary — which was true of an earlier build
+and is not true of this one. Written down here because a wrong sentence in a
+README outlives the version it was right about, and this one had already been
+copied into marketing copy before anybody noticed:
+
+- **It fills the chain faster.** `_chain_gain` is `1.0 + CHAIN_GAIN_PER_CHAR`
+  (0.25) per letter past `MIN_WORD_LEN`, so a three-letter word advances the run
+  by 1.0 and an eleven-letter word by 3.0. Three times the ladder for one word.
+- **It has a tier floor of its own.** `LENGTH_TIER_AT` is `[7, 10]`: seven
+  letters floors the hit at tier 1, ten letters at tier 2. `base_tier` is
+  `maxi(_chain_tier(chain), _length_tier(word))` — the better of the two ladders,
+  not the sum, so a long word inside a long run does not stack into an instant
+  4x3.
+- **It reaches further, and reach becomes tiers.** One block per two letters, and
+  `out_tier` adds `combo`, which is every block cleared or intercepted. A word
+  that wipes three blocks is three tiers up on whatever it started from.
+
+Rhythm is still the bigger lever, and the length ladder is deliberately shorter
+than the chain one — it is a floor under a good word, not a replacement for
+playing well.
 
 The meter under each board shows it: one segment per tier, lit up to what your
 run has earned, the next segment filling gradually as you close on it, and a thin

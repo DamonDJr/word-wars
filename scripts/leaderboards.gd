@@ -78,9 +78,10 @@ var friend_total := 0
 
 ## The board object, once Apple has handed it over. Loaded at most once.
 var _board = null
-## A score that arrived before we could send it. The daily is one run a day, so
-## there is only ever one of these — a second would be a bug elsewhere.
-var _pending := -1
+## Whether a daily submission is out with Apple right now. The score itself is
+## not held here — it lives in the profile's `daily_unsent` until Apple says it
+## has it. See `submit_daily`.
+var _sending := false
 var _loading_board := false
 
 
@@ -104,7 +105,7 @@ func _ready() -> void:
 ## Two things can, and neither of them tells us. A challenge can arrive as a push
 ## notification and be accepted from the notification itself, which opens Apple's
 ## screen and not ours; and a score submitted while signed out or offline is
-## still sitting in `_pending` waiting for a network that may have come back.
+## still held in the profile waiting for a network that may have come back.
 ##
 ## Both are cheap to re-ask and expensive to be wrong about — the first is the
 ## difference between the challenge row existing and not — so coming back to the
@@ -139,15 +140,46 @@ func _signed_in() -> bool:
 	return MultiplayerManager.local_player != null
 
 
+## Today's daily, by the same local clock as `game.daily_key()` — the board rolls
+## at the player's midnight. Kept here rather than called out of `game.gd` for
+## the reason `Notify._today_key` is: this file runs with no match in progress.
+func _today_key() -> String:
+	var d := Time.get_datetime_dict_from_system(false)
+	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
+
+
+## Whether an entry Apple handed back is a score at all.
+##
+## GameKit does not answer "no score in this window" with a null local entry, as
+## the plugin's docs say and this file used to believe. It answers with an entry
+## at rank 0 scoring 0 — and drawn, that is a player who played today's board
+## being told they scored nothing on it.
+func _is_score(entry) -> bool:
+	return entry != null and int(entry.rank) > 0
+
+
 ## Today's score, on its way to Apple.
 ##
 ## Called once, from `_finish_daily`, immediately after the run is banked. Safe
 ## to call when signed out, on a desktop build, or before authentication has
 ## finished: the score is held and sent when there is somewhere to send it.
+##
+## Held in the profile rather than in a variable, and cleared only when Apple
+## says it has it. A variable died with the app: a run finished while Game
+## Center was still waking, or one Apple refused once, was simply never sent —
+## the player had a score on their summary and none on anybody's board, and
+## nothing anywhere said why. Now it survives a relaunch and is re-sent on
+## launch, on resume and on sign-in until it lands. See `_flush`.
 func submit_daily(score: int) -> void:
 	if not available():
 		return
-	_pending = score
+	var key := _today_key()
+	var held: Dictionary = Profile.pref("daily_unsent")
+	if String(held.get("day", "")) == key:
+		# A resend for a challenge after the run itself: the board keeps the
+		# best, so the best is what stays held.
+		score = maxi(score, int(held.get("score", 0)))
+	Profile.set_pref("daily_unsent", {"day": key, "score": score})
 	if not _signed_in():
 		_set_state(State.WAITING, "waiting for Game Center")
 		return
@@ -428,7 +460,7 @@ func _on_view_entries(local, entries: Array, range_total, error, seq: int) -> vo
 	# they are sitting at #3 and already drawn — appending it then would print
 	# them twice.
 	view_me = {}
-	if local != null:
+	if _is_score(local):
 		var row := _view_row(local, mine)
 		var on_page := false
 		for r: Dictionary in view_rows:
@@ -437,11 +469,58 @@ func _on_view_entries(local, entries: Array, range_total, error, seq: int) -> vo
 				break
 		if not on_page:
 			view_me = row
+	elif view_board == DAILY_ID and view_time == TODAY:
+		_place_banked_daily()
 
 	if view_rows.is_empty() and view_me.is_empty():
 		_set_view(ViewState.EMPTY, "")
 		return
 	_set_view(ViewState.READY, "")
+
+
+## Today's run, put on today's page by hand when Apple has not caught up with it.
+##
+## The summary asks for the page in the same breath as it submits, and even the
+## re-ask after the submission lands can come back without the run on it —
+## GameKit takes its time. A run that was held for a retry is not on the board
+## at all yet. Either way the player has just played today's board and is looking
+## at a page with themselves missing from it, which reads as the score having
+## been lost. The run is banked in the profile, so it is drawn where it will
+## land: after every score it does not beat, ties included, because Apple ranks
+## the earlier of two equal scores first.
+##
+## Only onto the page. A run below a full page has a rank nobody here knows, and
+## a made-up number next to it would be worse than the wait.
+func _place_banked_daily() -> void:
+	for r: Dictionary in view_rows:
+		if bool(r["me"]):
+			return
+	var score := int(Profile.daily_result(_today_key()).get("score", 0))
+	if score <= 0:
+		return
+	var at := view_rows.size()
+	for i in view_rows.size():
+		if int((view_rows[i] as Dictionary)["score"]) < score:
+			at = i
+			break
+	if at == view_rows.size() and view_rows.size() >= VIEW_ROWS:
+		return
+	var rank := 1
+	if at < view_rows.size():
+		rank = int((view_rows[at] as Dictionary)["rank"])
+	elif not view_rows.is_empty():
+		rank = int((view_rows[at - 1] as Dictionary)["rank"]) + 1
+	var name := "Player"
+	if MultiplayerManager.local_player != null:
+		name = String(MultiplayerManager.local_player.display_name)
+	for i in range(at, view_rows.size()):
+		var r: Dictionary = view_rows[i]
+		r["rank"] = int(r["rank"]) + 1
+	view_rows.insert(at, {"rank": rank, "name": name, "score": score,
+		"me": true})
+	if view_rows.size() > VIEW_ROWS:
+		view_rows.pop_back()
+	view_total += 1
 
 
 ## One entry, flattened to what a row draws.
@@ -980,23 +1059,47 @@ func _on_boards_loaded(boards: Array, error) -> void:
 func _flush() -> void:
 	if _board == null:
 		return
-	if _pending >= 0:
-		var score := _pending
-		_pending = -1
+	if _sending:
+		return
+	var held: Dictionary = Profile.pref("daily_unsent")
+	if not held.is_empty() and String(held.get("day", "")) != _today_key():
+		# Yesterday's, still unsent. Apple's TODAY is the last twenty-four hours
+		# rather than a date, so posting it now would put last night's run on
+		# this morning's board. It missed its day; let it go.
+		print("[Boards] dropping unsent daily from %s" % held.get("day", ""))
+		Profile.set_pref("daily_unsent", {})
+		held = {}
+	if not held.is_empty():
+		var score := int(held.get("score", 0))
+		_sending = true
 		_set_state(State.LOADING, "posting your score")
 		_board.submit_score(score, 0, MultiplayerManager.local_player,
-			_on_submitted)
+			_on_submitted.bind(held))
 		return
 	_load_ranks()
 
 
-func _on_submitted(error) -> void:
+func _on_submitted(error, sent: Dictionary) -> void:
+	_sending = false
 	if error != null:
 		# The run is banked locally either way — `record_daily` has already been
-		# and gone — so this costs the player their place on the global board and
-		# nothing else. Not worth a message over their summary.
+		# and gone — and the score stays held in the profile, so the next launch,
+		# resume or sign-in tries again. Not worth a message over their summary,
+		# but worth a line in the device log: this used to fail without a trace.
+		print("[Boards] daily submit refused, will retry: %s" % str(error))
 		_set_state(State.FAILED, "Game Center: %s" % str(error))
 		return
+	print("[Boards] daily %d posted" % int(sent.get("score", 0)))
+	# Cleared only if nothing newer was held while this one was out — a score
+	# that arrived meanwhile goes next. Compared field by field: the profile
+	# is a ConfigFile on disk and a cloud copy besides, and a dictionary
+	# compared whole is only as equal as its least careful round trip.
+	var now: Dictionary = Profile.pref("daily_unsent")
+	if String(now.get("day", "")) != String(sent.get("day", "")) \
+			or int(now.get("score", 0)) != int(sent.get("score", 0)):
+		_flush()
+		return
+	Profile.set_pref("daily_unsent", {})
 	_load_ranks()
 	_reread_daily_page()
 

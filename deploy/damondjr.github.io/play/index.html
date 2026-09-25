@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Play Word Wars: Typing Battle</title>
+<meta name="description" content="A real-time word battler where the end of your word becomes your opponent's problem. Free on iPhone and iPad.">
+<link rel="canonical" href="https://damondjr.github.io/play/">
+
+<!-- The bio link. https://damondjr.github.io/play/ sends anyone who can
+     install the game straight to its store page.
+
+     Tag each place you post the link with ?c=, e.g.
+         https://damondjr.github.io/play/?c=tiktok
+         https://damondjr.github.io/play/?c=instagram
+     and the tag reaches App Store Connect as the campaign, under
+     Analytics → Acquisition → Campaigns. No ?c= counts as "site".
+
+     Three things can happen, and the script puts one class on <html> to say
+     which:
+       (none)   a real browser: redirect to the store, this page flashes by.
+       inapp    TikTok, Instagram or Facebook's built-in browser. TikTok
+                blocks the jump to the App Store from inside its browser, so
+                nothing is attempted automatically. The page becomes a small
+                pitch with the ways out, most likely to work first.
+                (Tested in TikTok on iPhone: ••• → Open in browser works.
+                An x-safari-https "Open in Safari" button did nothing, and
+                neither did a plain tapped App Store link, so both are gone.)
+       android  no store to send them to yet (PLAY_URL is empty). -->
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Damon Drummond">
+<meta property="og:title" content="Word Wars: Typing Battle">
+<meta property="og:description" content="The end of your word becomes your opponent's problem. Free on iPhone and iPad.">
+<meta property="og:url" content="https://damondjr.github.io/play/">
+<meta property="og:image" content="https://damondjr.github.io/assets/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="apple-itunes-app" content="app-id=6802900966">
+
+<script>
+(function () {
+  // Your App Store Connect provider token: App Store Connect → Analytics →
+  // Acquisition → Campaigns → Generate Link, then copy the number after pt=.
+  var PROVIDER_TOKEN = "129330802";
+  // The Play listing, once the game is live there. Until then Android stays on
+  // this page rather than being sent to an App Store it can't use.
+  var PLAY_URL = "";
+
+  var APP_ID = "6802900966";
+  var ua = navigator.userAgent || "";
+  var android = /Android/i.test(ua);
+  var ios = /iPhone|iPad|iPod/i.test(ua);
+  // TikTok's webview names itself musical_ly / BytedanceWebview / TikTok;
+  // Instagram and Facebook say Instagram / FBAN / FBAV. Belt and braces for
+  // anything else on iOS: every real iOS browser (Safari, Chrome, Firefox)
+  // says "Safari/" in its user agent, and a bare app webview does not.
+  var inapp = /musical_ly|Bytedance|TikTok|trill_|Instagram|FBAN|FBAV/i.test(ua)
+    || (ios && !/Safari\//.test(ua));
+
+  var tag = "site";
+  try {
+    var c = new URLSearchParams(location.search).get("c");
+    // Apple caps a campaign name at 40 characters.
+    if (c) tag = c.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || tag;
+  } catch (e) {}
+
+  var apple = "https://apps.apple.com/app/apple-store/id" + APP_ID;
+  if (PROVIDER_TOKEN) {
+    apple += "?pt=" + PROVIDER_TOKEN + "&ct=" + encodeURIComponent(tag) + "&mt=8";
+  }
+
+  var dest = android ? PLAY_URL : apple;
+  window.WW = { store: dest || apple, ios: ios, android: android };
+
+  if (!dest) {
+    document.documentElement.className = "android";
+  } else if (inapp) {
+    document.documentElement.className = "inapp";
+  } else {
+    // replace() so Back from the store returns to where they came from.
+    location.replace(dest);
+  }
+})();
+</script>
+<noscript>
+  <meta http-equiv="refresh" content="0; url=https://apps.apple.com/app/apple-store/id6802900966">
+</noscript>
+
+<link rel="icon" href="/assets/favicon-64.png" sizes="64x64">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .go { padding-block: 2.75rem 3rem; }
+  .go h1 { margin-bottom: .9rem; }
+  .go .lede { margin-bottom: 1.6rem; }
+
+  /* One view per situation; the script picks by the class on <html>. */
+  .when-inapp, .when-android { display: none; }
+  .inapp .when-inapp, .android .when-android { display: block; }
+  .inapp .when-redirect, .android .when-redirect { display: none; }
+  /* The in-app view carries its own pitch, so the idea isn't said twice. */
+  .inapp .idea { display: none; }
+
+  .ways { list-style: none; margin: 0 0 2rem; padding: 0; display: grid; gap: .8rem; }
+  .ways li { padding: 1rem 1.1rem; border-radius: 12px; border: 1px solid var(--edge);
+             background: linear-gradient(180deg, var(--panel), #0d1329); }
+  .ways .n { font: 700 .7rem/1 "JetBrains Mono", ui-monospace, monospace;
+             letter-spacing: .14em; color: var(--dim); display: block; margin-bottom: .6rem; }
+  .ways p { margin: 0; }
+  /* The one way out that TikTok allows, so it gets the accent. */
+  .ways .main { border-color: var(--you); }
+  .ways .main .n { color: var(--you); }
+  .ways .main > p:first-of-type { font-size: 1.15rem; font-weight: 500; }
+  .ways .hint { margin-top: .6rem; color: var(--dim); font-size: .9rem; }
+  .dots { display: inline-block; padding: 0 .35rem; border-radius: 6px;
+          border: 1px solid var(--edge); font-weight: 700; letter-spacing: .1em; }
+  .copy { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+  .copy code { font: 700 .95rem/1.2 "JetBrains Mono", ui-monospace, monospace;
+               color: var(--hit); }
+  .copy button { font: 700 .8rem/1 "Space Grotesk", sans-serif; cursor: pointer;
+                 padding: .45rem .7rem; border-radius: 8px; border: 1px solid var(--edge);
+                 background: var(--deep); color: var(--ink); }
+
+  .pitch { display: grid; grid-template-columns: 7.5rem 1fr; gap: 1.1rem; align-items: start;
+           padding-top: 1.6rem; border-top: 1px solid var(--edge); }
+  .pitch .shot { border-radius: 12px; }
+  .pitch p { font-size: .95rem; color: #c3cdf0; }
+  .pitch .facts { margin: 0; }
+</style>
+</head>
+<body>
+
+<header class="wrap id">
+  <img class="avatar" src="/assets/avatar.jpg" width="76" height="76"
+       alt="Damon Drummond">
+  <div>
+    <p class="id-name">Damon Drummond</p>
+    <p class="id-role">Solo game developer &middot; iOS</p>
+  </div>
+  <nav class="nav"><a href="/">Home</a></nav>
+</header>
+
+<main>
+  <section class="wrap band go">
+    <p class="eyebrow">Word Wars: Typing Battle</p>
+
+    <!-- A real browser: on its way to the store already. -->
+    <div class="when-redirect">
+      <h1>Opening the App&nbsp;Store&hellip;</h1>
+      <p class="lede">If nothing happens, tap the button. It's free.</p>
+      <div class="actions">
+        <a class="btn btn-go js-store"
+           href="https://apps.apple.com/app/apple-store/id6802900966">Get it on the App&nbsp;Store</a>
+        <a class="btn" href="/">About the game</a>
+      </div>
+    </div>
+
+    <!-- TikTok / Instagram / Facebook's browser. -->
+    <div class="when-inapp">
+      <h1>One more tap.</h1>
+      <p class="lede">This app's browser won't open the App Store, so the game
+      is one step away. It's free.</p>
+
+      <ol class="ways">
+        <li class="main">
+          <span class="n">EASIEST &nearr;</span>
+          <p>Tap <span class="dots">&middot;&middot;&middot;</span> in the top-right
+          corner, then <b>Open in browser</b>.</p>
+          <p class="hint">It'll go straight to the App Store from there.</p>
+        </li>
+        <li>
+          <span class="n">OR SEARCH THE APP STORE FOR</span>
+          <div class="copy">
+            <code>Word Wars: Typing Battle</code>
+            <button type="button" class="js-copy">Copy</button>
+          </div>
+        </li>
+      </ol>
+
+      <div class="pitch">
+        <img class="shot" src="/assets/word-wars-solo.jpg" width="540" height="1080"
+             alt="A Word Wars match in progress: stamped blocks stacked on the board, a word being typed below.">
+        <div>
+          <p>Type a word and its last letters land on your opponent's board.
+          They can only clear them with a word that starts with those letters.
+          FRIEND<b>SHIP</b> sends them <b>SHIP</b>.</p>
+          <ul class="facts">
+            <li><b>Free</b> &middot; iPhone &amp; iPad</li>
+            <li>Play friends with a link &middot; no account</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Android, until the game is on Google Play. -->
+    <div class="when-android">
+      <h1>Coming to Android soon.</h1>
+      <p class="lede">Word Wars is on iPhone and iPad right now, and the Android
+      version is on its way. When it lands, iPhone and Android players will be
+      able to play each other.</p>
+      <div class="actions">
+        <a class="btn btn-go" href="/">About the game</a>
+      </div>
+    </div>
+
+    <div class="idea">
+      <p class="eyebrow">The idea</p>
+      <p>Type a word and its last letters land on your opponent's board. They can
+      only clear them with a word that starts with those letters.
+      FRIEND<b>SHIP</b> sends them <b>SHIP</b>.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var W = window.WW || {};
+  var root = document.documentElement;
+
+  var links = document.querySelectorAll(".js-store");
+  for (var i = 0; i < links.length; i++) if (W.store) links[i].href = W.store;
+
+  var copy = document.querySelector(".js-copy");
+  if (copy) copy.addEventListener("click", function () {
+    // With the colon: without it the App Store search doesn't find it.
+    var text = "Word Wars: Typing Battle";
+    var done = function () { copy.textContent = "Copied"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+    } else {
+      var t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      try { document.execCommand("copy"); done(); } catch (e) {}
+      document.body.removeChild(t);
+    }
+  });
+})();
+</script>
+</body>
+</html>

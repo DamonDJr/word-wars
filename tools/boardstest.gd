@@ -63,6 +63,7 @@ func _init() -> void:
 	_every_button_goes_somewhere()
 	_an_empty_board_says_why()
 	_a_row_always_has_a_name()
+	_nothing_on_the_board_is_not_a_zero()
 
 	print("--- %s ---" % ("the board screen holds up" if fails == 0
 		else "%d FAILURES" % fails))
@@ -305,6 +306,83 @@ func _a_row_always_has_a_name() -> void:
 	for made in _made:
 		made.free()
 	_made.clear()
+
+
+func _nothing_on_the_board_is_not_a_zero() -> void:
+	print("--- a run Apple has not caught up with is still on the page ---")
+	# Posed in memory only, but on a throwaway save path all the same: anything
+	# that saves the profile mid-test would otherwise write this pose over the
+	# dev profile.
+	var P: Node = get_root().get_node("Profile")
+	var was_path: String = P.save_path
+	var was_daily: Dictionary = P.daily.duplicate(true)
+	P.save_path = "user://profile-boards-test.cfg"
+	var today: String = boards._today_key()
+
+	var page: Array = [_entry(1, 47613, "DamonDJR", "", "A"),
+		_entry(2, 33242, "Dontcare", "", "B"), _entry(3, 15109, "WillIML", "", "C")]
+	# What GameKit hands back for a player with nothing in the window: not null,
+	# but an entry at rank 0 scoring 0. This is the "YOU 0" row.
+	var ghost := _entry(0, 0, "", "", "")
+	ghost.player = null
+
+	P.daily.erase(today)
+	_view(page, ghost)
+	_expect("no score today: no row of mine at all", boards.view_me.is_empty()
+		and boards.view_rows.size() == 3)
+
+	P.daily[today] = {"score": 20000}
+	_view(page, ghost)
+	var rows: Array = boards.view_rows
+	_expect("played but not on Apple's page yet: slotted in at #3",
+		boards.view_me.is_empty() and rows.size() == 4
+		and bool(rows[2]["me"]) and int(rows[2]["rank"]) == 3
+		and int(rows[2]["score"]) == 20000)
+	_expect("and the row it passed moves down to #4",
+		int(rows[3]["rank"]) == 4 and int(rows[3]["score"]) == 15109)
+	_expect("and the field counts it", boards.view_total == 4)
+
+	P.daily[today] = {"score": 33242}
+	_view(page, ghost)
+	_expect("a tie goes after the score that got there first",
+		bool(boards.view_rows[2]["me"]) and int(boards.view_rows[2]["rank"]) == 3)
+
+	P.daily[today] = {"score": 50000}
+	_view(page, ghost)
+	_expect("a new best goes to the top",
+		bool(boards.view_rows[0]["me"]) and int(boards.view_rows[0]["rank"]) == 1)
+
+	P.daily[today] = {"score": 100}
+	var full: Array = []
+	for i in boards.VIEW_ROWS:
+		full.append(_entry(i + 1, 90000 - i * 100, "P%d" % i, "", "X%d" % i))
+	_view(full, ghost)
+	_expect("below a full page it is left out rather than given a made-up rank",
+		boards.view_me.is_empty() and boards.view_rows.size() == boards.VIEW_ROWS)
+
+	# Once Apple has it, Apple's row is the one drawn and nothing is added.
+	P.daily[today] = {"score": 20000}
+	var landed: Array = [page[0], page[1], _entry(3, 20000, "Me", "", "")]
+	_view(landed, _entry(3, 20000, "Me", "", ""))
+	_expect("Apple's own row is not doubled",
+		boards.view_rows.size() == 3 and boards.view_me.is_empty())
+
+	boards.view_time = boards.ALL_TIME
+	_view(page, ghost)
+	_expect("and only today's board is patched", boards.view_rows.size() == 3)
+
+	P.daily = was_daily
+	P.save_path = was_path
+	for made in _made:
+		made.free()
+	_made.clear()
+
+
+func _view(entries: Array, local) -> void:
+	boards.view_board = boards.DAILY_ID
+	if boards.view_time != boards.ALL_TIME:
+		boards.view_time = boards.TODAY
+	boards._on_view_entries(local, entries, entries.size(), null, boards._view_seq)
 
 
 ## Stand-ins for `GKLeaderboardEntry` and `GKPlayer`, built once. `_view_row` is

@@ -197,8 +197,9 @@ const CALLBACK_ARITY := {
 const BOARD_CALLBACK_ARITY := {
 	# `(Array[GKLeaderboard] boards, Variant error)`.
 	"_on_boards_loaded": 2,
-	# `(Variant error)` — null on success.
-	"_on_submitted": 1,
+	# `(Variant error)` — null on success — + `(sent)`, the held score it is
+	# the answer for, so a newer one held meanwhile is not cleared with it.
+	"_on_submitted": 2,
 	# `(GKLeaderboardEntry local, Array entries, Variant range, Variant error)`.
 	# Four, not three: `load_local_player_entries` sends a total alongside the
 	# entries where `load_entries` does not, and taking the shorter form is the

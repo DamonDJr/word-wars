@@ -37,3 +37,6 @@ scripts/Documents/
 # directory it is run from, and `git add -A` will happily commit 55 MB of it.
 *.ipa
 Payload/
+
+# Python bytecode from the marketing tools in tools/.
+__pycache__/

@@ -29,3 +29,12 @@ uses the `wordwars://` scheme, which needs no verification.
 Check it with:
 
     adb shell pm get-app-links com.damonj.wordwars
+
+## `play/` — the bio link
+
+`https://damondjr.github.io/play/` redirects straight to the store: the App
+Store for iPhone, iPad and desktop, and Google Play for Android once `PLAY_URL`
+is set. Until then, Android stays on a page in the site's style. Add `?c=tiktok`
+(or `instagram`, `youtube`…) and, once `PROVIDER_TOKEN` is filled in, that tag
+reaches App Store Connect as the campaign name. Both constants are at the top
+of the page's script.
