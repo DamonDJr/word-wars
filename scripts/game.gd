@@ -2203,7 +2203,15 @@ func _bank_week(r: Dictionary, what: String) -> int:
 	return gained
 
 
+## A date to use instead of today, as "YYYY-MM-DD". Only `tools/dailyreel.gd`
+## sets it, to film the board for the day a video will be posted; the game never
+## does, so a player always gets today.
+var daily_key_override := ""
+
+
 func daily_key() -> String:
+	if daily_key_override != "":
+		return daily_key_override
 	var d := Time.get_datetime_dict_from_system(false)
 	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
 
