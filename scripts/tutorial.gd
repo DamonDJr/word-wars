@@ -49,37 +49,64 @@ class_name Tutorial
 ## What is left is the shortest path to "I can play this": one word, what it
 ## does to the other person, what comes back, what happens if you let it pile
 ## up, and the one habit that makes all of it work.
+##
+## ## The fields past title, body and hint
+##
+## `after` replaces the body once the step is done. Only the first step has one:
+## the opponent's board is not drawn in a lesson, so the card is the only place
+## the player can find out what their word actually did.
+##
+## `stuck` replaces the hint when the player looks stuck: a miss, a rejected
+## word, FIRE on an empty line, or `LESSON_STUCK_AFTER` seconds with no word
+## fired. It still never advances anything. It says what to do next, and where
+## there is a block to answer it names a word that answers it. Players who got
+## a block they could not answer sat there and never fired a thing, and a word
+## on the card is the one thing that gets somebody frozen typing again.
+##
+## `card: "low"` sits the card on the bottom of the board rather than across
+## the middle, for the one step whose blocks are at the top.
+##
+## Anything in braces is filled in by `game.gd` when the card is drawn: {word}
+## and {sent} are the player's word and what it landed, {their} and {stamp} are
+## the opponent's word and the block it left, {example} is a word that answers
+## it and {left} is how many words the step still wants.
 const STEPS := [
 	{
 		"id": "fire",
 		"title": "TYPE A WORD",
 		"body": "Any word at all. Its LAST letters land on your opponent "
 			+ "as a block.",
-		"body_touch": "Any word at all. Its LAST letters land on your "
-			+ "opponent as a block.",
+		"after": "{word} sent {sent} their way. Now they need a word that "
+			+ "starts with {sent} to clear it.",
 		"hint": "three letters or more, then SPACE to fire",
 		"hint_touch": "three letters or more, then tap FIRE",
+		"stuck": "type on your keyboard, then press SPACE",
+		"stuck_touch": "tap the letters below, then tap FIRE",
 	},
 	{
 		"id": "answer",
 		"title": "AND THEIRS COME BACK",
-		"body": "Type a word that STARTS with the letters on the block. "
-			+ "It's the only way to clear it.",
-		"hint": "attacking won't save you",
+		"body": "They fired {their} back at you. Type a word that STARTS "
+			+ "with {stamp} to clear the block.",
+		"hint": "any other word just flies at them",
+		"stuck": "stuck? try {example}",
 	},
 	{
 		"id": "danger",
 		"title": "YOU GET THREE CHANCES",
-		"body": "Let the stack reach the top and you lose a life and the whole "
+		"body": "If the stack reaches the top you lose a life and the whole "
 			+ "board, but not the match. You have three.",
-		"hint": "get the stack down",
+		"hint": "clear the block in the red",
+		"stuck": "stuck? try {example}",
+		"card": "low",
 	},
 	{
 		"id": "always",
 		"title": "NEVER STOP TYPING",
-		"body": "You don't have to wait for blocks. Every word you fire is "
-			+ "points, damage, and one less thing to answer.",
-		"hint": "keep firing, any word counts",
+		"body": "You don't have to wait for blocks. Every word you fire "
+			+ "scores and hits them with a block.",
+		"hint": "any word counts · {left} more",
+		"stuck": "any word at all, like {example}",
 	},
 	{
 		"id": "done",
@@ -92,6 +119,20 @@ const STEPS := [
 ]
 
 
+## What the lesson's opponent fires back in step two. The block it leaves is the
+## word's last two letters, so the card can name the word and the player can see
+## where the letters came from: the rule from step one, pointed the other way.
+##
+## Chosen for their endings. Step two used to brand the block with the tail of
+## the player's own word, straight off the end with no fairness check at all, so
+## HAPPY dealt PPY and HELLO dealt LLO: blocks no word in English answers, on the
+## step that cannot be passed without answering one. Every ending here opens
+## hundreds of everyday words, and `game.gd` still checks each one before
+## using it.
+const RETURN_FIRE := ["FAST", "FIRE", "FISH", "GAME", "RAIN", "ECHO", "RIDE",
+	"PHOTO"]
+
+
 ## `touch` swaps in the phone wording for any step that has it. The returned
 ## dictionary always has plain `body` and `hint` keys, so nothing downstream has
 ## to know which device it is drawing for.
@@ -102,7 +143,7 @@ static func step(i: int, touch: bool = false) -> Dictionary:
 	if not touch:
 		return s
 	var out := s.duplicate()
-	for key in ["body", "hint", "title"]:
+	for key in ["body", "hint", "title", "stuck"]:
 		if out.has(key + "_touch"):
 			out[key] = out[key + "_touch"]
 	return out

@@ -761,9 +761,25 @@ var mode := Mode.NORMAL
 var lesson := 0
 var lesson_age := 0.0
 var lesson_done := false
-## The last word the player fired, so the lesson can brand a block with their
-## own tail rather than with an example.
+## The last word the player fired, and the stamp it landed on the lesson's
+## board. The first step's card reads both back, since the board they landed on
+## is not drawn.
 var _lesson_word := ""
+var _lesson_sent := ""
+## The word the lesson's opponent fired back, and the stamp the step is about.
+## Step two's block carries it, and step three's top block does too.
+var _lesson_their := ""
+var _lesson_stamp := ""
+## A word that answers `_lesson_stamp`, or any word at all where there is no
+## stamp, for the card to offer somebody who is stuck.
+var _lesson_example := ""
+## Whether the card is showing its `stuck` line. See `_lesson_tick`.
+var _lesson_stuck := false
+## Seconds since the step arrived or since the player last fired, whichever is
+## later, and the word count that was last seen, so a word going out can be told
+## apart from a frame where nothing happened.
+var _lesson_quiet := 0.0
+var _lesson_seen := 0
 ## What is left of the first-word prompt's exit, once a word has been typed.
 ##
 ## A countdown rather than a flag, so the prompt leaves on a fade instead of
@@ -1602,8 +1618,11 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# exists for — it is the only thing up here that changes what you do next —
 	# and it was set at 16, under nine points on the device. Dimmed rather than
 	# small now, so it is legible without competing with the clock above it.
-	_text_centered(_font, Vector2(cx, top + 72.0),
-		"pressure in %ds" % int(ceil(pressure_timer)), 26, Color("#7787b5"))
+	# Not in the lesson, which deals its own blocks and never runs the clock:
+	# there it read "pressure in 22s" for as long as the lesson lasted.
+	if mode != Mode.TUTORIAL:
+		_text_centered(_font, Vector2(cx, top + 72.0),
+			"pressure in %ds" % int(ceil(pressure_timer)), 26, Color("#7787b5"))
 
 	# Your lives, as the same pips the landscape header uses. Everything from here
 	# to the board top is packing four rows into 208 units, so the gaps are as
@@ -2759,6 +2778,10 @@ func _reject(word: String, reason: String, color: Color, pitch: float) -> void:
 	player.chain_fill = 0.0
 	player.chain_timer = 0.0
 	Sfx.play("reject", pitch)
+	# A word the game turned down is a player who does not yet know what it
+	# wants, which is exactly who the lesson's `stuck` line is for.
+	if mode == Mode.TUTORIAL:
+		_lesson_stuck = true
 	# Harder the more it cost. A rejection that broke a nine-word run and one
 	# that broke nothing are the same event to the rules and nothing like the
 	# same event to the player.
@@ -2937,7 +2960,11 @@ func _send_block(
 	var p := Pending.new()
 	p.from = _entity_of(from)
 	p.tier = tier
-	p.prefix = _mint_stamp(word, STAMP_WANT, defender)
+	if mode == Mode.TUTORIAL and from == player:
+		p.prefix = _lesson_tail(word, defender)
+		_lesson_sent = p.prefix
+	else:
+		p.prefix = _mint_stamp(word, STAMP_WANT, defender)
 	p.cells = _cells(tier)
 	p.timer = delay
 	defender.pending.append(p)
@@ -5070,8 +5097,14 @@ func _tick_focus() -> void:
 
 
 ## Sound the alarm once on the way into the red, not every frame you sit there.
+## The lowest row a stack can reach and still be in danger. The same line the
+## board draws its red band down to, and the one the lesson's third step asks the
+## player to get back under.
+const DANGER_TOP := 3
+
+
 func _tick_danger(side: SideState) -> void:
-	var danger := side.board.stack_top() <= 3
+	var danger := side.board.stack_top() <= DANGER_TOP
 	if danger and not side.in_danger:
 		Sfx.play("danger")
 		if side == player:
@@ -5243,36 +5276,75 @@ const LESSON_KEEP_WORDS := 3
 ## typed a dozen words in their life is not the place to enforce it either, and
 ## a window they can actually hit is what makes the rule visible at all.
 const LESSON_CHAIN_GRACE := 2.0
+## How long a step waits with no word fired before the card offers help.
+##
+## Help, not a skip. The `stuck` line says what to do next and, where there is a
+## block, names a word that answers it, but the step still ends on the player's
+## own word. Eight seconds is long enough to read the card twice and short
+## enough that nobody sits in front of a block wondering whether the game has
+## hung, which is what players with an unanswerable block did: they stopped
+## firing anything at all.
+const LESSON_STUCK_AFTER := 8.0
+## How many common words a stamp the lesson deals itself has to open. A match
+## asks for `STAMP_MIN_COMMON`, six. Somebody on their second word ever gets a
+## stamp with a hundred and fifty everyday answers.
+const LESSON_MIN_COMMON := 150
+## Step three's pile, as [x, y, w, h, tier, stamp].
+##
+## A tower up the middle into the red, capped by a 3x3 that sits across rows 1
+## to 3, so answering that one block drops the stack straight out of danger.
+## Answering anything else in the tower lowers it too, just not far enough on
+## its own. The blocks either side are there so it reads as a pile rather than
+## a column. Every stamp opens hundreds of common words.
+const LESSON_PILE := [
+	[0, 10, 3, 2, 3, "re"], [3, 10, 3, 2, 3, "co"],
+	[0, 8, 2, 2, 2, "ma"], [2, 8, 2, 2, 2, "in"], [4, 8, 2, 2, 2, "de"],
+	[2, 6, 3, 2, 3, "pl"],
+	[2, 4, 2, 2, 2, "sh"],
+	[1, 1, 3, 3, 4, "st"],
+]
 
 ## Set up whatever situation the current step needs. Called once when the step
-## arrives; `lesson_age` is how long it has been up, which is only used to let a
-## board settle before checking anything.
+## arrives; `lesson_age` is how long it has been up.
 func _lesson_begin() -> void:
 	lesson_age = 0.0
 	lesson_done = false
+	_lesson_stuck = false
+	_lesson_quiet = 0.0
+	_lesson_stamp = ""
 	var step: Dictionary = Tutorial.step(lesson)
 	if step.is_empty():
 		return
 	player.pending.clear()
 
 	_lesson_mark = player.words_played
+	_lesson_seen = player.words_played
 
 	match String(step["id"]):
+		"fire":
+			_lesson_sent = ""
 		"answer":
 			player.board.reset()
-			# Branded with the tail of the word they just played, rather than
-			# with an example. This is the one rule the game turns on and it is
-			# the one that reads as nonsense written down, so it is never
-			# written down — it is dealt onto the board with their own letters
-			# on it, one step after they typed them.
+			# The opponent's turn, dealt the way a match deals it: into the
+			# INCOMING rail, then down onto the board. The card names the word
+			# it came off, so the letters on the block are the rule from step
+			# one pointed back at you.
 			#
-			# It used to have a step of its own, YOUR ENDING IS THEIR BEGINNING,
-			# which said the rule and then waited a beat with nothing to do.
-			# Folded into this one, the block that demonstrates the rule is the
-			# same block they have to answer, so reading it and using it are the
-			# same action.
-			var tail := _lesson_word.substr(maxi(0, _lesson_word.length() - 3))
-			player.board.add_garbage(tail if tail != "" else "ship", 2, 2, 2)
+			# This used to brand the block with the last three letters of the
+			# player's own step-one word, with no fairness check. HAPPY dealt
+			# PPY and HELLO dealt LLO, and a step that cannot be passed without
+			# answering the block could not be passed. It also said THEIRS come
+			# back and then showed you your own letters.
+			_lesson_their = _lesson_return_fire()
+			_lesson_stamp = _lesson_their.right(2).to_lower()
+			var p := Pending.new()
+			p.from = _entity_of(sides[1])
+			p.tier = 2
+			p.prefix = _lesson_stamp
+			p.cells = _cells(p.tier)
+			p.timer = DROP_DELAY
+			player.pending.append(p)
+			player.flash = 1.0
 		"always":
 			# A clean board. This step is about the habit rather than about
 			# anything on the screen, and leaving rubble on it would make it
@@ -5283,13 +5355,18 @@ func _lesson_begin() -> void:
 			player.chain_timer = 0.0
 		"danger":
 			player.board.reset()
-			# Two rows short of the ceiling: alarming, survivable, and every
-			# block answerable by a word somebody will already know.
-			for w in ["st", "co", "re", "in", "de", "pr", "ma", "tr", "un", "ca",
-					"pl", "sh", "gr", "br"]:
-				player.board.add_garbage(w, 0, 1, 1)
+			# Into the red, so the alarm goes and the band pulses, with the
+			# block to answer sitting in it. This was fourteen 1x1s, which fill
+			# three rows: nowhere near the red, and already past the step's own
+			# finish line, so the step was over before the player had read it.
+			for b: Array in LESSON_PILE:
+				player.board.place(String(b[5]), int(b[4]), int(b[0]), int(b[1]),
+					int(b[2]), int(b[3]))
+			player.board.settle()
+			_lesson_stamp = String(LESSON_PILE[LESSON_PILE.size() - 1][5])
 		_:
 			pass
+	_lesson_example = _lesson_example_for(_lesson_stamp)
 
 
 ## Has the current step been satisfied? Read every frame; the answer is allowed
@@ -5302,9 +5379,12 @@ func _lesson_check() -> bool:
 		"fire":
 			return player.words_played >= 1
 		"answer":
-			return player.board.blocks.is_empty()
+			# Pending as well as landed. The block spends a moment in the
+			# INCOMING rail first, when an empty board is not an answered one,
+			# and a word that shoots it down before it lands answered it too.
+			return player.pending.is_empty() and player.board.blocks.is_empty()
 		"danger":
-			return player.board.stack_top() >= WWBoard.ROWS - 3
+			return player.board.stack_top() > DANGER_TOP
 		"always":
 			# Words, not a chain and not a clock. The habit being taught is
 			# "keep typing", and the moment it is checked against a window the
@@ -5317,25 +5397,103 @@ func _lesson_check() -> bool:
 	return false
 
 
-## The line under the lesson body.
-##
-## Fixed copy for every step now. It used to compute the chain step's target,
-## which moved as that step was waited out — but the step it was written for is
-## gone, and a counter is the one thing the remaining steps do not need: every
-## one of them ends on something the player can see happen on the board.
+## The line under the lesson body: the step's hint, or its `stuck` line once the
+## player looks stuck.
 func _lesson_hint(step: Dictionary) -> String:
-	return String(step.get("hint", ""))
+	var key := "stuck" if _lesson_stuck and step.has("stuck") else "hint"
+	return _lesson_fill(String(step.get(key, "")))
+
+
+## Fill in the braces in a line of lesson copy. See the note on `Tutorial.STEPS`
+## for what each one is.
+func _lesson_fill(text: String) -> String:
+	return text.format({
+		"word": _lesson_word.to_upper(),
+		"sent": _lesson_sent.to_upper(),
+		"their": _lesson_their.to_upper(),
+		"stamp": _lesson_stamp.to_upper(),
+		"example": _lesson_example.to_upper(),
+		"left": str(maxi(1, LESSON_KEEP_WORDS - (player.words_played - _lesson_mark))),
+	})
+
+
+## The stamp a lesson word lands, cut from its literal last letters.
+##
+## A match's stamps also come from a letter or two in from the end, which keeps
+## real boards varied and would make the first card wrong: it says the LAST
+## letters land, then reports APP arriving off HAPPY. So the lesson takes the
+## longest true ending that passes the match's own fairness test, and only a
+## word with no fair ending at all (JAZZ) goes to the ordinary minter. Never the
+## whole word, which would read as the word being sent rather than its end.
+func _lesson_tail(word: String, defender: SideState) -> String:
+	var w := word.to_lower()
+	for n in range(mini(STAMP_WANT, w.length() - 1), 1, -1):
+		var s := w.substr(w.length() - n)
+		if WordBank.is_answerable(s, STAMP_MIN_VALID, STAMP_MIN_COMMON):
+			return s
+	return _mint_stamp(word, STAMP_WANT, defender)
+
+
+## Which of `Tutorial.RETURN_FIRE` the opponent fires back. Never one that
+## leaves the stamp the player just sent, which would read as their own block
+## bouncing back, and never one whose ending fails the lesson's bar.
+func _lesson_return_fire() -> String:
+	var pool: Array = []
+	for w: String in Tutorial.RETURN_FIRE:
+		var s := w.right(2).to_lower()
+		if s == _lesson_sent:
+			continue
+		if not WordBank.is_answerable(s, STAMP_MIN_VALID, LESSON_MIN_COMMON):
+			continue
+		pool.append(w)
+	if pool.is_empty():
+		return String(Tutorial.RETURN_FIRE[0])
+	return String(pool[WordBank.rng.randi_range(0, pool.size() - 1)])
+
+
+## A word for the card to suggest: one that answers `prefix`, or any word at all
+## when there is nothing to answer. Common, short, not spent, and never rude,
+## because the lesson is about to print it in the middle of the screen.
+func _lesson_example_for(prefix: String) -> String:
+	if prefix == "":
+		for i in 20:
+			var w := WordBank.pick_any(4, 5, player.used)
+			if w != "" and not Censor.is_profane(w):
+				return w
+		return ""
+	for w: String in WordBank.candidates(prefix, 4, 6, player.used, 12):
+		if WordBank.is_valid(w) and not Censor.is_profane(w):
+			return w
+	for w: String in WordBank.candidates(prefix, 3, 9, player.used, 40):
+		if WordBank.is_valid(w) and not Censor.is_profane(w):
+			return w
+	return ""
 
 
 func _lesson_tick(delta: float) -> void:
 	lesson_age += delta
 	if lesson_done:
 		return
-	if not _lesson_check():
+	if _lesson_check():
+		lesson_done = true
+		Sfx.play("power", 1.2)
+		_bloom(Color("#7bdff2"), 0.16)
 		return
-	lesson_done = true
-	Sfx.play("power", 1.2)
-	_bloom(Color("#7bdff2"), 0.16)
+	# Not done yet, so work out whether the player looks stuck. A word that
+	# went out and did not finish the step is a miss where the step wants a
+	# particular word. Otherwise it is the quiet: nothing fired for a while.
+	if player.words_played != _lesson_seen:
+		_lesson_seen = player.words_played
+		_lesson_quiet = 0.0
+		var id := String(Tutorial.step(lesson).get("id", ""))
+		if id == "answer" or id == "danger":
+			_lesson_stuck = true
+		# The last suggestion may just have been spent.
+		_lesson_example = _lesson_example_for(_lesson_stamp)
+		return
+	_lesson_quiet += delta
+	if _lesson_quiet >= LESSON_STUCK_AFTER:
+		_lesson_stuck = true
 
 
 ## Move on. Called from the same key that fires a word, so the lesson never
@@ -5353,11 +5511,19 @@ func _lesson_tick(delta: float) -> void:
 func _fire_pressed() -> void:
 	if paused:
 		return
-	if mode == Mode.TUTORIAL and typed.is_empty() and (lesson_done
-			or String(Tutorial.step(lesson).get("id", "")) == "done"):
-		# The same control that fires a word. A lesson that needed its own button
-		# would be teaching the button as well as the game.
-		_lesson_next()
+	if mode == Mode.TUTORIAL and typed.is_empty():
+		if lesson_done or String(Tutorial.step(lesson).get("id", "")) == "done":
+			# The same control that fires a word. A lesson that needed its own
+			# button would be teaching the button as well as the game.
+			_lesson_next()
+			return
+		# FIRE on an empty line, while the step is waiting for a word. In a
+		# match that is a slip and says nothing. Here it is usually somebody
+		# treating the card as a dialog and FIRE as its OK button, and saying
+		# nothing is how they end up tapping it forever.
+		_lesson_stuck = true
+		_say("type a word first, then %s" % ("tap FIRE" if portrait
+			else "press SPACE"), Color("#ffb703"))
 		return
 	_submit_player()
 
@@ -9307,6 +9473,12 @@ func _draw_coaching(size: Vector2) -> void:
 	# in `tutorial.gd` is written as sentences rather than as lines broken by hand
 	# at whatever width the landscape card used to be.
 	var body := String(step["body"])
+	# Once the word has gone, the first card says what it did. The board it
+	# landed on is not drawn in a lesson, so without this the rule the step
+	# names happens somewhere the player cannot see.
+	if lesson_done and step.has("after") and _lesson_sent != "":
+		body = String(step["after"])
+	body = _lesson_fill(body)
 	var body_w: float = wide - (72.0 if portrait else 36.0)
 	var body_h: float = _font.get_multiline_string_size(
 		body, HORIZONTAL_ALIGNMENT_CENTER, body_w, b_size).y
@@ -9335,6 +9507,12 @@ func _draw_coaching(size: Vector2) -> void:
 	# not. Held inside the screen with a margin either side.
 	wide = clampf(wide, br.size.x, size.x - GRID_MARGIN * 2.0)
 	var top: float = mid.y - h * 0.5
+	# Except where the blocks to answer are at the top of the board, which is
+	# the middle of the card's usual spot. Sat on the bottom edge instead, it
+	# covers the base of the pile and leaves the red band and the block in it
+	# in plain sight.
+	if String(step.get("card", "")) == "low":
+		top = br.end.y - h
 	var r := Rect2(cx - wide * 0.5, top, wide, h)
 	_panel(r, Color("#111730"), Color("#90be6d", 0.4), 12.0, 2.0)
 	_otext(_font, Vector2(cx, top + step_off),
@@ -9352,8 +9530,14 @@ func _draw_coaching(size: Vector2) -> void:
 			"TAP FIRE TO CONTINUE" if portrait else "SPACE TO CONTINUE", c_size,
 			Color("#90be6d") * Color(1, 1, 1, pulse))
 	else:
+		# The stuck line in the warm colour and breathing, because it only
+		# appears once the hint has already gone unread or unused.
+		var hint_col := Color("#7c88ad")
+		if _lesson_stuck and step.has("stuck"):
+			hint_col = Color("#ffd166") * Color(1, 1, 1,
+				0.75 + 0.25 * sin(Time.get_ticks_msec() / 260.0))
 		_text_fit_overlay(_font, Vector2(cx, r.end.y - foot), _lesson_hint(step),
-			h_size, wide - 36.0, Color("#7c88ad"))
+			h_size, wide - 36.0, hint_col)
 
 	# A row of pips, so five steps reads as a short thing with an end to it.
 	var pip: float = 16.0 if portrait else 10.0

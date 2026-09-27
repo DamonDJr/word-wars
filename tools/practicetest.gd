@@ -19,6 +19,7 @@ func _init() -> void:
 	_cannot_be_lost()
 	_banks_nothing()
 	_lesson_runs_through()
+	_every_step_can_be_finished()
 	_the_lesson_can_be_run_again()
 	_lesson_advances_on_touch()
 	_normal_still_works()
@@ -68,7 +69,7 @@ func _lesson_advances_on_touch() -> void:
 	for i in Tutorial.count():
 		var touch: Dictionary = Tutorial.step(i, true)
 		var desk: Dictionary = Tutorial.step(i, false)
-		for key in ["title", "body", "hint"]:
+		for key in ["title", "body", "hint", "stuck", "after"]:
 			_expect("step %d's %s says nothing about SPACE on a phone" % [i + 1, key],
 				not String(touch.get(key, "")).contains("SPACE"))
 			if String(desk.get(key, "")).contains("SPACE"):
@@ -160,6 +161,121 @@ func _lesson_runs_through() -> void:
 		var id := String(Tutorial.step(i).get("id", ""))
 		_expect("step %d's id is one the game handles: '%s'" % [i + 1, id],
 			known.has(id))
+
+
+## Every step has to be finishable by playing it.
+##
+## `_lesson_runs_through` walks the steps with `_lesson_next`, which would pass
+## a lesson nobody can finish. This one plays it: real words through
+## `_press_key`, the path a thumb takes, from a spread of opening words. Both
+## ways the lesson has broken show up here. Step two dealt the last three
+## letters of the first word with no fairness check (HAPPY left PPY, HELLO left
+## LLO, and nothing answers either), and step three dealt a pile that was
+## already past its own finish line, so it ended before it was read.
+func _every_step_can_be_finished() -> void:
+	print("--- every step can be finished by playing it ---")
+	var wb = Engine.get_main_loop().root.get_node("WordBank")
+	for first in ["happy", "hello", "jazz", "funny", "help", "cool", "cat",
+			"friendship"]:
+		game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+		game.phase = game.Phase.PLAY
+		var me = game.player
+
+		# One: FIRE on an empty line is the card read as a dialog. It must say
+		# something rather than nothing, and it must not skip the step.
+		game._fire_pressed()
+		_expect("%s: empty FIRE holds step one" % first, game.lesson == 0)
+		_expect("%s: and asks for a word" % first, game._lesson_stuck)
+		_type(first)
+		game._lesson_tick(0.1)
+		_expect("%s: step one is done" % first, game.lesson_done)
+		var sent: String = game._lesson_sent
+		_expect("%s: it landed a fair stamp (%s)" % [first, sent],
+			wb.is_answerable(sent, game.STAMP_MIN_VALID, game.STAMP_MIN_COMMON))
+		# The card says the LAST letters land, so where the word has a fair
+		# ending that is what lands. JAZZ and HELP have none.
+		if first in ["happy", "hello", "cool", "cat", "friendship"]:
+			_expect("%s: from its last letters (%s)" % [first, sent],
+				first.ends_with(sent) and sent != first)
+
+		# Two: the block arrives, it can be answered, and the card offers an
+		# answer once the player has missed.
+		game._fire_pressed()
+		var stamp: String = game._lesson_stamp
+		_expect("%s: step two deals one block" % first, me.pending.size() == 1)
+		_expect("%s: with an easy stamp (%s)" % [first, stamp],
+			wb.is_answerable(stamp, game.STAMP_MIN_VALID, game.LESSON_MIN_COMMON))
+		_expect("%s: that came off the end of their word (%s)" % [first,
+			game._lesson_their], game._lesson_their.to_lower().ends_with(stamp))
+		game._lesson_tick(0.1)
+		_expect("%s: an inbound block is not an answered one" % first,
+			not game.lesson_done)
+		game._tick_pending(me, game.DROP_DELAY + 0.1)
+		_expect("%s: the block lands" % first, me.board.prefixes() == [stamp])
+		_type(_unused(["dog", "tree", "blue", "lamp"], stamp))
+		game._lesson_tick(0.1)
+		_expect("%s: a miss does not finish it" % first, not game.lesson_done)
+		_expect("%s: and brings up the suggestion" % first, game._lesson_stuck)
+		var example: String = game._lesson_example
+		_expect("%s: which answers the block (%s)" % [first, example],
+			example.begins_with(stamp) and wb.is_valid(example)
+			and not Censor.is_profane(example))
+		_type(example)
+		game._lesson_tick(0.1)
+		_expect("%s: and answering it finishes step two" % first,
+			game.lesson_done)
+
+		# Three: in the red when it starts, out of it after one word.
+		game._fire_pressed()
+		game._lesson_tick(0.1)
+		_expect("%s: step three starts in danger (top %d)" % [first,
+			me.board.stack_top()], me.board.stack_top() <= game.DANGER_TOP)
+		_expect("%s: and is not already done" % first, not game.lesson_done)
+		_type(game._lesson_example)
+		game._lesson_tick(0.1)
+		_expect("%s: one answer gets it out (top %d)" % [first,
+			me.board.stack_top()], game.lesson_done)
+
+		# Four: three words, any words.
+		game._fire_pressed()
+		for i in game.LESSON_KEEP_WORDS:
+			game._lesson_tick(0.1)
+			_expect("%s: step four waits for word %d" % [first, i + 1],
+				not game.lesson_done)
+			_type(_unused(["moon", "tree", "blue", "lamp", "rock", "song"], "~"))
+		game._lesson_tick(0.1)
+		_expect("%s: and ends after three" % first, game.lesson_done)
+
+		# Five, and out.
+		game._fire_pressed()
+		game._fire_pressed()
+		_expect("%s: the lesson finishes to the title" % first,
+			game.phase == game.Phase.TITLE)
+
+	# Quiet is the other way to look stuck: no word fired for a while.
+	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+	game.phase = game.Phase.PLAY
+	game._lesson_tick(game.LESSON_STUCK_AFTER - 1.0)
+	_expect("a few quiet seconds are just reading", not game._lesson_stuck)
+	game._lesson_tick(2.0)
+	_expect("but a long silence brings up the help", game._lesson_stuck)
+	_expect("and the help is not a skip", game.lesson == 0
+		and not game.lesson_done)
+
+
+## Type a word the way a thumb does, then fire it.
+func _type(word: String) -> void:
+	for c in word:
+		game._press_key(c)
+	game._press_key("fire")
+
+
+## The first of `words` the player has not spent and that does not open `avoid`.
+func _unused(words: Array, avoid: String) -> String:
+	for w: String in words:
+		if not game.player.used.has(w) and not w.begins_with(avoid):
+			return w
+	return ""
 
 
 ## The last step offers a way back to the first, and the key it offers must not

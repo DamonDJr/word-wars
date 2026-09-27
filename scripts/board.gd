@@ -315,6 +315,24 @@ func add_garbage(prefix: String, tier: int, w: int, h: int) -> bool:
 	return true
 
 
+## Put a block at an exact spot, for a board that is drawn rather than played
+## into. `add_garbage` picks the column itself, which is right for a match and no
+## use to the lesson, which needs a particular shape. Nothing here checks that
+## the spot is free or supported: the caller is drawing a picture and should
+## draw a possible one, and `settle` afterwards drops anything it got wrong.
+func place(prefix: String, tier: int, x: int, y: int, w: int, h: int) -> void:
+	var b := Blk.new()
+	b.art = _next_art()
+	b.w = clampi(w, 1, COLS)
+	b.h = maxi(h, 1)
+	b.tier = clampi(tier, 0, TIER_COLORS.size() - 1)
+	b.prefix = prefix
+	b.gx = clampi(x, 0, COLS - b.w)
+	b.gy = y
+	b.vis = Vector2(b.gx * CELL, (b.gy - 3) * CELL)
+	blocks.append(b)
+
+
 ## How many blocks a word can take out, wherever they are. Every two letters
 ## buys one, so four blocks stamped AL need ALIGNMENT, not ALL. Lives here so
 ## the board, the HUD and the CPU all measure it the same way.
