@@ -257,6 +257,19 @@ var _motion := ""
 ## belong to Volcano rather than to whichever board slot the player happens to
 ## be sitting in.
 var _motion_tint := Color("#7bdff2")
+## Three of the painted boards are live 3D scenes built in Blender (see
+## `tools/blender/`), drawn through a SubViewport into the same `_art` slot, so
+## the wash, the dim and the crop treat them exactly like the pictures they
+## replace. The pictures stay in the theme table: the shop previews still use
+## them, and `godot -- --board2d` puts them back behind the game, for
+## comparing the two.
+const BOARD_3D := {
+	"clouds": "res://boards/3d/sky_islands.glb",
+	"volcano": "res://boards/3d/volcano.glb",
+	"cyber": "res://boards/3d/city.glb",
+}
+const Board3D := preload("res://scripts/board3d.gd")
+var _art3d: SubViewport = null
 ## theme id -> its backdrop texture, or null for the ones that are a wash. Only
 ## the shop preview uses it; see `_theme_art`.
 var _art_cache := {}
@@ -1251,6 +1264,7 @@ func _apply_theme() -> void:
 	_art_dim = float(Cosmetics.theme_opt(id, "art_dim"))
 	_motion = String(Cosmetics.theme_opt(id, "motion")) if _art != null else ""
 	_motion_tint = Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)
+	_set_board_3d(id)
 
 	# And who is sending the emotes. Pushed here rather than read at each draw
 	# so that equipping a character takes effect the moment it is equipped,
@@ -1260,6 +1274,61 @@ func _apply_theme() -> void:
 	EMOTE_KEY_HEAD = Cosmetics.character_head(who)
 	EMOTE_GLOW = Cosmetics.character_glow(who)
 	queue_redraw()
+
+
+## Puts this theme's 3D scene in `_art`, or takes the last one down.
+##
+## The viewport is kept across `_apply_theme` calls for the same scene, which
+## happen on every profile change, so the loop does not restart each time a
+## setting is touched.
+func _set_board_3d(id: String) -> void:
+	var path := ""
+	if not OS.get_cmdline_user_args().has("--board2d"):
+		path = String(BOARD_3D.get(id, ""))
+	if _art3d != null and String(_art3d.get_meta("scene")) != path:
+		_art3d.queue_free()
+		_art3d = null
+	if path == "" or not ResourceLoader.exists(path):
+		return
+	if _art3d == null:
+		_art3d = SubViewport.new()
+		_art3d.set_meta("scene", path)
+		_art3d.own_world_3d = true
+		_art3d.msaa_3d = Viewport.MSAA_4X
+		_art3d.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		_art3d.size = _board_3d_size()
+		add_child(_art3d)
+		_art3d.add_child(Board3D.new(path, _board_3d_overscan()))
+	_art = _art3d.get_texture()
+	# Most scenes bring their own weather, and the painted board's drifting
+	# clouds would be a second sky laid over them. The volcano keeps its
+	# embers, which read as sparks off the lava in front of any backdrop.
+	if not Board3D.keeps_motion(path):
+		_motion = ""
+
+
+## The 3D backdrop's size in pixels: the whole area `_draw_board_art` fills,
+## shake margin included, at up to 1.25x the layout's resolution. Same shape as
+## that area, so the crop there takes all of it.
+##
+## Not the screen's own resolution: that is 1.6x the layout on a current
+## iPhone, and the scene would be rendered at nearly 1400x2900 (twice over, for
+## the city, which films its own reflection) to sit dimmed behind the board.
+## Upscaled from 1.25x it is indistinguishable there, at under two thirds of
+## the pixels.
+func _board_3d_size() -> Vector2i:
+	var vp := get_viewport()
+	var rect := vp.get_visible_rect().size
+	var k := 1.0
+	if rect.x > 0.0:
+		k = clampf(float(vp.size.x) / rect.x, 0.5, 1.25)
+	var m := SHAKE_MARGIN
+	return Vector2i(((rect + Vector2(m, m) * 2.0) * k).round())
+
+
+func _board_3d_overscan() -> float:
+	var w := get_viewport_rect().size.x
+	return (w + SHAKE_MARGIN * 2.0) / w if w > 0.0 else 1.0
 
 
 ## Two small textures, built once and tiled or stretched from then on. A
@@ -6128,6 +6197,11 @@ func _log(text: String, color: Color) -> void:
 func _draw_board_art(size: Vector2, m: float) -> void:
 	if _art == null:
 		return
+	if _art3d != null:
+		var px := _board_3d_size()
+		if _art3d.size != px:
+			_art3d.set_deferred("size", px)
+			_art3d.get_child(0).set_overscan(_board_3d_overscan())
 	var full := Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0)
 	var art := Vector2(_art.get_width(), _art.get_height())
 	var want: float = full.size.x / full.size.y
