@@ -562,6 +562,9 @@ const COSMETICS := {
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
 		{"id": "vapor", "name": "Vapor", "need": {"level": 10}},
 		{"id": "bone", "name": "Bone", "need": {"level": 16}},
+		# Free for now. Meant for a pack of its own or an unlock later: when it
+		# goes, this is the one line that changes.
+		{"id": "subway", "name": "Subway", "need": {}},
 		{"id": "prism", "name": "Prism", "need": {"buy": PACK_PREMIUM}},
 		# The painted eight. All in the pack that was already being sold rather
 		# than in a second one: there is one product in this game, and a player

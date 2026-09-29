@@ -22,6 +22,10 @@ uniform vec3 paint : source_color = vec3(0.72, 0.76, 0.85);
 uniform float sidewalk = 0.0;
 // Off for water: a lake is this with no paint on it.
 uniform float markings = 1.0;
+// Raised domes in rows, as on a platform's tactile edge strip.
+uniform float dots = 0.0;
+// Slab size, for `sidewalk`.
+uniform float slab = 1.6;
 // The cross streets, as (start, end) pairs along the street.
 uniform vec4 crossings = vec4(100.0, 114.0, 262.0, 274.0);
 uniform float ripples = 1.0;
@@ -83,8 +87,14 @@ void fragment() {
 	vec3 base = mix(base_a, base_b, fbm(g * 1.7) * 0.6 + n * 0.4);
 	float mk = 0.0;
 	if (sidewalk > 0.5) {
-		vec2 slab = abs(fract(g / 1.6) - 0.5);
-		base *= mix(0.62, 1.0, 1.0 - smoothstep(0.46, 0.49, max(slab.x, slab.y)));
+		vec2 sl = abs(fract(g / slab) - 0.5);
+		base *= mix(0.62, 1.0, 1.0 - smoothstep(0.46, 0.49, max(sl.x, sl.y)));
+		if (dots > 0.5) {
+			vec2 d = fract(g / 0.1) - 0.5;
+			float dome = 1.0 - smoothstep(0.22, 0.3, length(d));
+			// Lit on the side toward the camera's light, shaded on the other.
+			base *= 1.0 + dome * (0.35 * (0.5 - d.y) - 0.05);
+		}
 	} else if (markings > 0.5 && abs(g.x) < 6.0) {
 		mk = paint_lines(g);
 	}

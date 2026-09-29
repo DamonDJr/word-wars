@@ -18,7 +18,7 @@ const OUT := "res://boards/3d/previews"
 ## The moment in each loop worth a still, in seconds.
 const MOMENT := {
 	"sky_islands": 6.0, "volcano": 3.0, "city": 12.5, "forest": 5.0, "aurora": 5.0,
-	"desert": 7.5, "nexus": 5.0, "ocean": 5.0, "space": 8.0,
+	"desert": 7.5, "nexus": 5.0, "ocean": 5.0, "space": 8.0, "subway": 2.0,
 }
 
 

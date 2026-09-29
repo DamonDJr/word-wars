@@ -264,10 +264,11 @@ def crossing(t, start, span):
 # ------------------------------------------------------------------- camera
 
 def camera(vfov=56.0, pitch=0.0, loc=(0.0, 0.0, 0.0), sway=(0.28, 0.14),
-           turn=(0.35, 0.8), clip_end=400.0):
+           turn=(0.35, 0.8), clip_end=400.0, yaw=0.0):
     """The camera, its slow drift, and the frame `place()` works in.
 
-    `pitch` is degrees above level. The drift is small on purpose: near
+    `pitch` is degrees above level, `yaw` degrees to the right of straight
+    down +Y. The drift is small on purpose: near
     things should slide over far ones, and the backdrop should feel alive
     without the phone seeming to sway.
     """
@@ -280,7 +281,7 @@ def camera(vfov=56.0, pitch=0.0, loc=(0.0, 0.0, 0.0), sway=(0.28, 0.14),
     cam = bpy.data.objects.new("Camera", data)
     SCENE.collection.objects.link(cam)
     SCENE.camera = cam
-    base_rot = Euler((math.radians(90.0 + pitch), 0.0, 0.0))
+    base_rot = Euler((math.radians(90.0 + pitch), 0.0, -math.radians(yaw)))
     cam.rotation_euler = base_rot
     base = Vector(loc)
     cam.location = base
@@ -290,7 +291,7 @@ def camera(vfov=56.0, pitch=0.0, loc=(0.0, 0.0, 0.0), sway=(0.28, 0.14),
                            sway[1] * math.sin(TAU * 2 * t + 1.0)))
         rot = Euler((base_rot.x + math.radians(turn[0]) * math.sin(TAU * t + 2.1),
                      0.0,
-                     math.radians(turn[1]) * math.sin(TAU * t + 0.6)))
+                     base_rot.z + math.radians(turn[1]) * math.sin(TAU * t + 0.6)))
         return p, rot, None
     keyframes(cam, f, step=2)
     CAMERA = cam

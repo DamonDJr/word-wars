@@ -26,16 +26,18 @@ const RAIN := preload("res://boards/3d/rain.gdshader")
 const LAYER_EYE_ONLY := 1 << 19
 const RAY := preload("res://boards/3d/ray.gdshader")
 const AURORA := preload("res://boards/3d/aurora.gdshader")
+const TILES := preload("res://boards/3d/tiles.gdshader")
 
 ## Which shader a look asks for, by the flag it sets. A look with none of
 ## these is something solid, and gets the toon shader.
 const KINDS := {
 	"water": WATER, "building": BUILDING, "road": ROAD, "emissive": EMISSIVE,
 	"glow": GLOW, "cone": CONE, "lava": LAVA, "ray": RAY, "aurora": AURORA,
+	"tiles": TILES,
 }
 ## Keys in a look that describe the look rather than naming a uniform.
 const META := ["flat", "shade", "line", "width", "soft", "bias", "rim", "rim_color",
-	"light", "fog_max"]
+	"light", "fog_max", "eye_only"]
 
 ## The frame the scenes are composed in, in Blender (1080x1920). The camera
 ## keeps this frame's width on every screen, so what is at the sides stays in
@@ -305,6 +307,60 @@ const SCENES := {
 			"Glow": {"glow": true, "intensity": 0.5},
 		},
 	},
+	"subway": {
+		# From the tubes overhead.
+		"light": Vector3(0.1, 0.9, 0.3),
+		"fog": "#03050c", "fog_near": 14.0, "fog_far": 210.0, "fog_max": 0.96,
+		# The wet floor reflects the train and the tubes.
+		"reflection": 0.5,
+		"sky": {
+			"top_color": Color("#020306"), "mid_color": Color("#04060c"),
+			"horizon_color": Color("#070a12"), "glow_amount": 0.0,
+		},
+		"look": {
+			"Floor": {"road": true, "markings": 0.0, "sidewalk": 1.0, "slab": 1.2,
+				"ripples": 0.0, "streak": 0.9, "reflect_amount": 0.85,
+				"base_a": "#060914", "base_b": "#0e1426"},
+			"Tactile": {"road": true, "markings": 0.0, "sidewalk": 1.0, "slab": 0.6, "dots": 1.0,
+				"ripples": 0.0, "streak": 0.9, "reflect_amount": 0.5,
+				"base_a": "#a87c0e", "base_b": "#e4b42a"},
+			# Below the reflecting floor, so kept out of the reflection.
+			"Edge": {"shade": "#101218", "width": 0.0, "rim": 0.0, "eye_only": true},
+			"Ballast": {"shade": "#0c0c10", "width": 0.0, "rim": 0.0, "highlight": 0.0,
+				"eye_only": true},
+			"Rail": {"shade": "#3a3e4a", "width": 0.0, "rim": 0.6, "rim_color": "#ffd0d0",
+				"highlight": 0.4, "eye_only": true},
+			"Tiles": {"tiles": true, "tile": "#aeb8ca", "band": "#b8121a", "grout": "#121624"},
+			"TilesDark": {"tiles": true, "tile": "#2c3446", "band": "#2c3446", "grout": "#080a12"},
+			# Lit from below by the tubes, so the underside of the vault is
+			# the lit side.
+			"Vault": {"light": Vector3(0.0, -1.0, 0.2), "shade": "#060912", "width": 0.0,
+				"rim": 0.0, "highlight": 0.0, "bias": 0.3, "soft": 0.3},
+			"Fixture": {"shade": "#141820", "width": 0.0},
+			"Tube": {"emissive": true, "use_vc": 0.0, "intensity": 1.15, "fog_max": 0.6},
+			"TubeFlicker": {"emissive": true, "use_vc": 0.0, "intensity": 1.15, "flicker": 1.0,
+				"fog_max": 0.6},
+			"Glow": {"glow": true, "intensity": 0.28},
+			"Pillar": {"shade": "#141a26", "line": "#06080c", "width": 1.2, "rim": 0.45,
+				"rim_color": "#aeb8d0", "highlight": 0.2},
+			"Steel": {"shade": "#1c2336", "line": "#05070c", "width": 1.4, "rim": 0.45,
+				"rim_color": "#e0e8ff", "highlight": 0.3},
+			"TrainGlass": {"emissive": true, "use_vc": 0.0, "intensity": 0.5, "fog_max": 0.85},
+			"TailLight": {"emissive": true, "use_vc": 0.0, "intensity": 1.4, "fog_max": 0.9},
+			"Sign": {"emissive": true, "use_vc": 0.0, "intensity": 1.3, "fog_max": 0.9},
+			"SignPanel": {"shade": "#0a0c12", "width": 0.8},
+			"SignText": {"flat": true},
+			"SignRed": {"flat": true},
+			"Bench": {"shade": "#0e1118", "line": "#05070c", "width": 1.0, "rim": 0.35,
+				"rim_color": "#aeb8d0"},
+			"Bin": {"shade": "#2a2e3a", "line": "#05070c", "width": 1.0, "rim": 0.45,
+				"rim_color": "#dfe6f5", "highlight": 0.3},
+			"Signal": {"emissive": true, "intensity": 1.3, "fog_max": 0.5},
+			"Stairs": {"shade": "#141820", "width": 0.8},
+			"Person": {"shade": "#3a4270", "line": "#05070e", "width": 1.4, "highlight": 0.05,
+				"rim": 0.4, "rim_color": "#c8d8ff"},
+		},
+	},
 	"city": {
 		# From above and a little behind: roofs, shoulders and car tops take
 		# the light, and what faces the camera stays dark with a cold rim,
@@ -395,7 +451,11 @@ func _init(path := "", overscan := 1.0) -> void:
 
 ## This scene's entry in `SCENES`, or an empty one.
 static func config(path: String) -> Dictionary:
-	return SCENES.get(path.get_file().get_basename(), {})
+	# A variant of a scene ("city__overhead") shares the scene's settings.
+	var key := path.get_file().get_basename()
+	if not SCENES.has(key) and key.contains("__"):
+		key = key.get_slice("__", 0)
+	return SCENES.get(key, {})
 
 
 ## Whether the painted board's 2D motion should still run over this scene.
@@ -577,6 +637,12 @@ func _dress(mi: MeshInstance3D) -> void:
 				lit = (src as BaseMaterial3D).albedo_color
 			_cache[name] = _material(name, lit)
 		mi.set_surface_override_material(i, _cache[name])
+		# Some things should not turn up in a reflection: whatever sits below
+		# the reflecting floor (a subway's track bed) would be seen from
+		# underneath by the mirrored camera.
+		var look: Dictionary = (_cfg.get("look", {}) as Dictionary).get(name, {})
+		if look.get("eye_only", false):
+			mi.layers = LAYER_EYE_ONLY
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
@@ -600,7 +666,7 @@ func _material(name: String, lit: Color) -> Material:
 		match kind:
 			"water":
 				m.render_priority = 1
-			"building":
+			"building", "tiles":
 				m.set_shader_parameter("light_dir", _cfg.get("light", Vector3(0.35, 0.75, 0.2)))
 			"road":
 				_road_mats.append(m)

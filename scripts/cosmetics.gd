@@ -180,6 +180,29 @@ const THEMES := {
 		"font_scale": 1.0, "font_dy": 0.101,
 	},
 
+	# Subway: a 3D board from the start rather than a painting that became
+	# one. Free for now; meant for a pack of its own or an unlock later, which
+	# is a change to its catalogue row in `Profile`, not to anything here.
+	#
+	# Its art is a still of its own scene, which is what the previews show and
+	# what `--board2d` falls back to. Red from the line's livery for the frame,
+	# the platform edge's yellow for the accent, and Barlow, the house face, for
+	# its lettering: a transit sign's grotesk was the right face and the game
+	# already had one.
+	"subway": {
+		"top": "#070a14", "bottom": "#121826", "panel": "#0c1220", "panel_a": 0.44,
+		"grid": "#c8d4ff", "grid_a": 0.10, "nodes": true,
+		"frame": "#e8323c", "frame_a": 0.92, "frame_pulse": 0.12,
+		"accent": "#ffc83a",
+		"key_bg": "#141a28", "key_edge": "#e8323c", "key_ink": "#f2f4fa",
+		"fire_bg": "#5a1418", "fire_edge": "#ffc83a",
+		"glow": "#e8323c", "glow_a": 0.18,
+		"art": "res://boards/3d/previews/subway.jpg", "art_a": 0.9, "art_dim": 0.3,
+		"motion": "",
+		"font": "res://fonts/BarlowSemiCondensed-Bold.ttf", "font_axes": {},
+		"font_scale": 1.0, "font_dy": 0.0,
+	},
+
 	# The ninth, and the only board in the game that is not for sale.
 	#
 	# Nexus is the share reward — see the `shares` requirement on its

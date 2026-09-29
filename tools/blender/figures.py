@@ -322,7 +322,8 @@ def walker(rig, route, start, cycles=18, hold_right=False, step=2):
     because that is where the figure appears and vanishes.
     """
     k = rig["height_k"]
-    pts = [Vector((x, y, 0.0)) for x, y in route]
+    # A point may carry a height too, (x, y, z), for a walk up or down stairs.
+    pts = [Vector((p[0], p[1], p[2] if len(p) > 2 else 0.0)) for p in route]
     lens = [(b - a).length for a, b in zip(pts, pts[1:])]
     total = sum(lens)
     # Quicken the pace, if need be, until the route fits in the loop with a
@@ -344,7 +345,9 @@ def walker(rig, route, start, cycles=18, hold_right=False, step=2):
         return pts[-1], (pts[-1] - pts[-2]).normalized()
 
     def yaw_of(d):
-        return math.atan2(-d.x, d.y)
+        # Heading from the flat part of the direction, so stairs do not tip
+        # the figure forward.
+        return math.atan2(-d.x, d.y) if (d.x or d.y) else 0.0
 
     last_yaw = None
     for f in range(0, tk.FRAMES + 1, step):

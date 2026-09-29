@@ -6,8 +6,9 @@
 Writes boards/3d/city.glb (what the game loads for Cyber) and
 build/boards3d/city.blend (to open and adjust by hand).
 
-The camera stands above the middle of a four-lane street, looking down it
-at a skyline under a full moon. Towers line both sides, their windows lit
+The camera stands on the left pavement at eye height, looking down a
+four-lane street at a skyline under a full moon, as in the painting the
+board was drawn from. Towers line both sides, their windows lit
 warm and cold (and a few switching on and off, in the shader); shopfronts
 and neon signs along the ground floors; street lamps throwing cones of light
 into the rain; trees on the pavements; a bus stop.
@@ -63,8 +64,18 @@ PALETTE = {
 }
 
 tk.setup(PALETTE)
-CAM = tk.camera(vfov=68.0, pitch=-10.0, loc=(0.0, 0.0, 4.2), sway=(0.16, 0.05),
-                turn=(0.12, 0.3), clip_end=1500.0)
+# Two framings. The game's stands on the left pavement at eye height,
+# looking down the street and turned a little toward it. With
+# `-- --overhead` the camera is over the middle of the street instead (the
+# first framing, kept to compare); that writes city__overhead.glb, which the
+# game would read with city's settings.
+SIDEWALK = "--overhead" not in sys.argv
+if SIDEWALK:
+    CAM = tk.camera(vfov=68.0, pitch=4.0, yaw=8.0, loc=(-7.4, 0.0, 2.2), sway=(0.1, 0.04),
+                    turn=(0.1, 0.25), clip_end=1500.0)
+else:
+    CAM = tk.camera(vfov=68.0, pitch=-10.0, loc=(0.0, 0.0, 4.2), sway=(0.16, 0.05),
+                    turn=(0.12, 0.3), clip_end=1500.0)
 
 ROAD = 6.0          # half the carriageway
 WALK = 9.5          # the facades
@@ -333,6 +344,11 @@ def streetlamps():
             if in_cross(y, 3.0):
                 continue
             x = side * (ROAD + 0.55)
+            if SIDEWALK and side < 0:
+                # On the building side of the pavement the camera stands on,
+                # so a post rises at the left edge of the frame.
+                y += 1.0
+                x = -(WALK - 0.5)
             hx = x - side * 1.9
             rgb = LAMP_WARM if i % 3 == 2 else LAMP_COOL
             lathe(posts, pc, [(0.12, CURB), (0.1, 1.0), (0.075, 7.6), (0.0, 7.7)], 8,
@@ -380,6 +396,9 @@ def trees(rnd):
         for i in range(16):
             y = 21.0 + i * 26.0 + (13.0 if side > 0 else 0.0)
             if in_cross(y, 4.0) or 40.0 < y < 56.0 and side < 0:
+                continue
+            # Standing on that pavement, the near trees would be in the way.
+            if SIDEWALK and side < 0 and y < 60.0:
                 continue
             x = side * 8.1
             s = rnd.uniform(0.85, 1.15)
@@ -527,6 +546,13 @@ WALKERS = [
     ("walk_r4", [(R_IN, 97.0), (7.8, 97.0), (7.8, 82.0), (R_IN, 82.0)], 0.3, 18, False, True),
     ("walk_r5", [(R_IN, 31.0), (7.6, 31.0), (7.6, 11.0)], 0.82, 19, True, False),
 ]
+if SIDEWALK:
+    # The near ends of the left pavement's walks are behind the camera now:
+    # they come past it, close, the way the hooded figure does in the painting.
+    WALKERS[0] = ("walk_l1", [(-8.2, -4.0), (-8.2, 16.0), (L_IN, 16.0)], 0.0, 18, False, False)
+    WALKERS[1] = ("walk_l2", [(L_IN, 18.0), (-9.0, 18.0), (-9.0, -4.0)], 0.35, 17, False, False)
+    WALKERS[4] = ("walk_l5", [(-6.6, -4.0), (-6.6, 15.0), (L_IN, 15.0)], 0.62, 19, True, False)
+
 # (name, position, facing yaw, umbrella)
 STANDERS = [
     ("wait_1", (-8.0, 45.2), -math.pi / 2, False),
@@ -589,4 +615,4 @@ def build():
 
 
 build()
-tk.export("city")
+tk.export("city" if SIDEWALK else "city__overhead")
