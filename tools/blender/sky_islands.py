@@ -62,8 +62,6 @@ PALETTE = {
     "Stream": "#7fd6f5",
 }
 
-tk.setup(PALETTE)
-tk.camera(vfov=VFOV, pitch=PITCH)
 
 
 # ------------------------------------------------------------------ islands
@@ -517,5 +515,10 @@ def build():
     flock("flock", 0.58, 16, 4, 601, start=0.1, span=0.6)
 
 
-build()
-tk.export("sky_islands")
+# Run by Blender, this builds the scene; imported by another scene, it is a
+# box of parts (islands, trees, waterfalls) for that scene to use.
+if __name__ == "__main__":
+    tk.setup(PALETTE)
+    tk.camera(vfov=VFOV, pitch=PITCH)
+    build()
+    tk.export("sky_islands")

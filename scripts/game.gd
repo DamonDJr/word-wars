@@ -267,6 +267,12 @@ const BOARD_3D := {
 	"clouds": "res://boards/3d/sky_islands.glb",
 	"volcano": "res://boards/3d/volcano.glb",
 	"cyber": "res://boards/3d/city.glb",
+	"forest": "res://boards/3d/forest.glb",
+	"aurora": "res://boards/3d/aurora.glb",
+	"desert": "res://boards/3d/desert.glb",
+	"nexus": "res://boards/3d/nexus.glb",
+	"ocean": "res://boards/3d/ocean.glb",
+	"space": "res://boards/3d/space.glb",
 }
 const Board3D := preload("res://scripts/board3d.gd")
 var _art3d: SubViewport = null
@@ -1282,9 +1288,7 @@ func _apply_theme() -> void:
 ## happen on every profile change, so the loop does not restart each time a
 ## setting is touched.
 func _set_board_3d(id: String) -> void:
-	var path := ""
-	if not OS.get_cmdline_user_args().has("--board2d"):
-		path = String(BOARD_3D.get(id, ""))
+	var path := _board_3d_path(id)
 	if _art3d != null and String(_art3d.get_meta("scene")) != path:
 		_art3d.queue_free()
 		_art3d = null
@@ -1305,6 +1309,25 @@ func _set_board_3d(id: String) -> void:
 	# embers, which read as sparks off the lava in front of any backdrop.
 	if not Board3D.keeps_motion(path):
 		_motion = ""
+
+
+## The scene this theme is drawn with, or "" for a picture (or a wash).
+func _board_3d_path(id: String) -> String:
+	if OS.get_cmdline_user_args().has("--board2d"):
+		return ""
+	return String(BOARD_3D.get(id, ""))
+
+
+## The painted board's 2D weather, if it still runs: a 3D board has its own,
+## and keeps the painted one only where its scene asks to (the volcano's
+## embers, the forest's leaves). The previews ask this too, so a still of the
+## islands does not get the old drifting clouds laid over it.
+func _theme_motion(id: String) -> String:
+	var mk := String(Cosmetics.theme_opt(id, "motion"))
+	var scene := _board_3d_path(id)
+	if scene != "" and not Board3D.keeps_motion(scene):
+		return ""
+	return mk
 
 
 ## The 3D backdrop's size in pixels: the whole area `_draw_board_art` fills,
@@ -1376,7 +1399,13 @@ func _theme_art(id: String) -> Texture2D:
 		return _art_cache[id]
 	var path := String(Cosmetics.theme_opt(id, "art"))
 	var tex: Texture2D = null
-	if path != "":
+	# A 3D board is previewed as a still of its scene, taken by
+	# `tools/board3d_previews.gd`, so the shop shows the board you get.
+	var scene := _board_3d_path(id)
+	if scene != "":
+		tex = _load_or_null("res://boards/3d/previews/%s.jpg"
+			% scene.get_file().get_basename()) as Texture2D
+	if tex == null and path != "":
 		tex = _load_or_null(path) as Texture2D
 	_art_cache[id] = tex
 	return tex
@@ -3685,7 +3714,7 @@ func _draw_promo_board(stage: Rect2, id: String, t: float) -> void:
 	else:
 		_overlay.draw_rect(stage, top, true)
 
-	var mk := String(Cosmetics.theme_opt(id, "motion"))
+	var mk := _theme_motion(id)
 	if mk != "":
 		# `bound`, because there is no scissor here and the card's edge is six
 		# pixels from the gutter of the title screen behind it.
@@ -10048,7 +10077,7 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					Color(1, 1, 1, float(Cosmetics.theme_opt(id, "art_a"))))
 				_overlay.draw_rect(inner,
 					Color(top, float(Cosmetics.theme_opt(id, "art_dim")) * 0.5), true)
-				var mk := String(Cosmetics.theme_opt(id, "motion"))
+				var mk := _theme_motion(id)
 				if mk != "":
 					# Drawn in the box's own space, so an effect written against
 					# a whole screen lands inside a preview panel unchanged.

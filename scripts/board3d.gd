@@ -24,6 +24,18 @@ const RAIN := preload("res://boards/3d/rain.gdshader")
 ## The render layer for things only the main camera should see (the rain,
 ## which hangs in front of it). The reflection camera leaves it out.
 const LAYER_EYE_ONLY := 1 << 19
+const RAY := preload("res://boards/3d/ray.gdshader")
+const AURORA := preload("res://boards/3d/aurora.gdshader")
+
+## Which shader a look asks for, by the flag it sets. A look with none of
+## these is something solid, and gets the toon shader.
+const KINDS := {
+	"water": WATER, "building": BUILDING, "road": ROAD, "emissive": EMISSIVE,
+	"glow": GLOW, "cone": CONE, "lava": LAVA, "ray": RAY, "aurora": AURORA,
+}
+## Keys in a look that describe the look rather than naming a uniform.
+const META := ["flat", "shade", "line", "width", "soft", "bias", "rim", "rim_color",
+	"light", "fog_max"]
 
 ## The frame the scenes are composed in, in Blender (1080x1920). The camera
 ## keeps this frame's width on every screen, so what is at the sides stays in
@@ -97,6 +109,202 @@ const SCENES := {
 			"Bomb": {"flat": true, "line": "#5a140a", "width": 1.6, "fog_max": 0.1},
 		},
 	},
+	"forest": {
+		"light": Vector3(-0.5, 0.75, 0.45),
+		"fog": "#c4dcee", "fog_near": 40.0, "fog_far": 320.0, "fog_max": 0.72,
+		# The painted board's falling leaves still drift over it.
+		"motion": true,
+		"sky": {
+			"top_color": Color("#3f86dc"), "mid_color": Color("#86c0f0"),
+			"horizon_color": Color("#dcefff"), "glow_dir": Vector3(-0.5, 0.5, -0.7),
+			"glow_color": Color("#fff4d8"), "glow_amount": 0.3,
+			"mid_at": Vector2(-0.2, 0.15), "top_at": Vector2(0.15, 0.6),
+		},
+		"look": {
+			# Terrain gets its colour from its vertices (grass, sand, bare
+			# rock by slope); no ink, or every hill wears a line round it.
+			"Ground": {"shade": "#5c6f9a", "width": 0.0, "rim": 0.0, "highlight": 0.04,
+				"bias": 0.0},
+			"Stone": {"shade": "#5d5a78", "line": "#2e2c3c"},
+			"Mountain": {"shade": "#5a74a8", "width": 0.0, "rim": 0.0, "highlight": 0.0},
+			"River": {"lava": true, "crust": "#1b6a86", "cool": "#2d9fb6", "warm": "#63d0d6",
+				"hot": "#e6fbff", "crust_amount": 0.1, "speed": 0.5, "scale": 0.3,
+				"flow": Vector2(0.0, 1.0), "pulse": 0.02},
+			"Mist": {"shade": "#c8d8f0", "soft": 0.12, "bias": 0.0, "rim": 0.0,
+				"width": 0.0, "highlight": 0.0},
+			"Shaft": {"ray": true, "intensity": 0.16},
+			"Leaves": {"shade": "#2f8a5e", "line": "#1b4a36", "sway": 0.02, "sway_alpha": 1.0},
+			"Pine": {"shade": "#1f6a5c", "line": "#113c34", "sway": 0.012, "sway_alpha": 1.0},
+			"Trunk": {"shade": "#5e3b4a", "line": "#382230", "sway": 0.012, "sway_alpha": 1.0},
+			"Flower": {"shade": "#e0b4cf", "width": 0.0, "highlight": 0.0},
+			"Cloud": {"shade": "#b4c3f2", "line": "#93a8e0", "soft": 0.09,
+				"bias": 0.0, "rim": 0.0, "width": 1.4, "highlight": 0.0},
+			"Bird": {"flat": true, "fog_max": 0.35},
+			"Water": {"water": true, "speed": 1.6},
+		},
+	},
+	"aurora": {
+		# Moonlight from high on the right; the snow facing the camera takes it.
+		"light": Vector3(0.35, 0.7, 0.4),
+		"fog": "#15294e", "fog_near": 80.0, "fog_far": 700.0, "fog_max": 0.5,
+		# The lake mirrors the sky, the peaks and the lights.
+		"reflection": 0.5,
+		"rain": "snow",
+		"sky": {
+			"top_color": Color("#040a22"), "mid_color": Color("#0b1c46"),
+			"horizon_color": Color("#1d3d6c"), "glow_dir": Vector3(0.0, 0.25, -1.0),
+			"glow_color": Color("#2aa88f"), "glow_amount": 0.22,
+			"mid_at": Vector2(-0.05, 0.12), "top_at": Vector2(0.12, 0.55), "stars": 1.0,
+		},
+		"look": {
+			"Snow": {"shade": "#7486c4", "width": 0.0, "rim": 0.0, "highlight": 0.04,
+				"bias": -0.1},
+			"Lake": {"road": true, "markings": 0.0, "ripples": 0.0, "streak": 0.45,
+				"reflect_amount": 0.95, "base_a": "#061428", "base_b": "#0c2242"},
+			"SnowPine": {"shade": "#4a5a96", "line": "#0c1a24", "width": 1.3, "rim": 0.2,
+				"rim_color": "#9fe8d8"},
+			"Trunk": {"shade": "#2a1e26", "width": 0.0},
+			"Peak": {"shade": "#5a6aa8", "width": 0.0, "rim": 0.25, "rim_color": "#8ff0d0",
+				"highlight": 0.05},
+			"Aurora": {"aurora": true},
+			"Cabin": {"shade": "#2e2030", "line": "#120a10", "width": 1.3},
+			"Roof": {"shade": "#7486c4", "line": "#1c2440", "width": 1.3},
+			"Window": {"emissive": true, "use_vc": 0.0, "intensity": 1.2},
+			"Smoke": {"shade": "#5e6a90", "soft": 0.12, "bias": 0.0, "rim": 0.0,
+				"width": 0.0, "highlight": 0.0},
+			"Meteor": {"emissive": true, "use_vc": 0.0, "intensity": 1.4, "fog_max": 0.0},
+			"Glow": {"glow": true, "intensity": 0.45},
+		},
+	},
+	"desert": {
+		# A low sun from the right: faces toward it glow, the rest stand
+		# dark and warm against the sky.
+		"light": Vector3(0.75, 0.4, -0.3),
+		"fog": "#e8905a", "fog_near": 60.0, "fog_far": 560.0, "fog_max": 0.62,
+		# The painted board's heat haze still shimmers over it.
+		"motion": true,
+		"sky": {
+			"top_color": Color("#3b2a6e"), "mid_color": Color("#e8783c"),
+			"horizon_color": Color("#ffd27a"), "glow_dir": Vector3(0.1, 0.1, -1.0),
+			"glow_color": Color("#ffcf70"), "glow_amount": 0.45,
+			"mid_at": Vector2(-0.05, 0.12), "top_at": Vector2(0.15, 0.6),
+		},
+		"look": {
+			"Sand": {"shade": "#b0605a", "width": 0.0, "rim": 0.0, "highlight": 0.05,
+				"bias": 0.0},
+			"Mesa": {"shade": "#6a2e44", "line": "#2a0e18", "width": 1.4, "rim": 0.3,
+				"rim_color": "#ffc070"},
+			"Cactus": {"shade": "#2e5a48", "line": "#10241c", "width": 1.3, "rim": 0.25,
+				"rim_color": "#ffd08a"},
+			"Brush": {"shade": "#4a4a34", "width": 0.0},
+			"Pebble": {"shade": "#6a3440", "line": "#2a0e18", "width": 1.2},
+			"Sun": {"emissive": true, "use_vc": 0.0, "intensity": 1.2, "fog_max": 0.0},
+			"Glow": {"glow": true, "intensity": 0.5},
+			# Lit from behind by the sun: pink-violet undersides, gold edges.
+			"Cloud": {"light": Vector3(0.3, 0.1, -1.0), "shade": "#d27c96", "soft": 0.1,
+				"bias": 0.1, "rim": 0.35, "rim_color": "#ffe0a0", "width": 0.0,
+				"highlight": 0.0, "fog_max": 0.25},
+			"Twig": {"shade": "#5a3a24", "line": "#2a1a10", "width": 1.2},
+			"Bird": {"flat": true, "fog_max": 0.3},
+		},
+	},
+	"nexus": {
+		"light": Vector3(0.4, 0.7, 0.3),
+		"fog": "#c8a0c8", "fog_near": 60.0, "fog_far": 560.0, "fog_max": 0.6,
+		"sky": {
+			"top_color": Color("#1a2260"), "mid_color": Color("#7a5aa8"),
+			"horizon_color": Color("#ffcf8a"), "glow_dir": Vector3(0.0, 0.15, -1.0),
+			"glow_color": Color("#ffd890"), "glow_amount": 0.5,
+			"mid_at": Vector2(-0.1, 0.2), "top_at": Vector2(0.2, 0.7), "stars": 0.6,
+		},
+		"look": {
+			"Tile": {"shade": "#6a5a7a", "line": "#2a2030", "width": 1.0, "rim": 0.1},
+			"Pillar": {"shade": "#6a5a7e", "line": "#2a2034", "width": 1.4, "rim": 0.3,
+				"rim_color": "#ffd890"},
+			"Rune": {"emissive": true, "use_vc": 0.0, "pulse": 1.0, "intensity": 1.2,
+				"fog_max": 0.2},
+			"Gold": {"shade": "#9a5a2a", "line": "#4a2a10", "width": 1.4, "highlight": 0.35,
+				"rim": 0.4, "rim_color": "#fff0b0"},
+			"Portal": {"emissive": true, "use_vc": 0.0, "intensity": 1.3, "fog_max": 0.1,
+				"pulse": 0.6},
+			"Crystal": {"emissive": true, "use_vc": 0.0, "intensity": 1.1, "fog_max": 0.2},
+			"Planet": {"shade": "#5a5a9a", "width": 0.0, "rim": 0.45, "rim_color": "#ffe0c0",
+				"fog_max": 0.25},
+			"Beam": {"ray": true, "intensity": 0.28},
+			"Glow": {"glow": true, "intensity": 0.5},
+			# Sunset-lit: peach tops, violet undersides, a gold rim.
+			"Cloud": {"light": Vector3(0.1, 0.8, -0.3), "shade": "#8a6ab4", "line": "#6a4a90",
+				"soft": 0.09, "bias": 0.1, "rim": 0.35, "rim_color": "#ffe0a8", "width": 1.2,
+				"highlight": 0.0},
+			"Grass": {"shade": "#3f9a6a", "line": "#24503c"},
+			"Rock": {"shade": "#a26f82", "line": "#4a2d48"},
+			"Leaves": {"shade": "#2f8a5e", "line": "#1b4a36", "sway": 0.02},
+			"Ivy": {"shade": "#2f7a56", "line": "#1b4a36"},
+			"Pine": {"shade": "#1f6a5c", "line": "#113c34", "sway": 0.02},
+			"Trunk": {"shade": "#5e3b4a", "line": "#382230", "sway": 0.02},
+			"Foam": {"shade": "#cfe6ff", "line": "#8fb4dc", "width": 1.2},
+			"Pebble": {"shade": "#7b7599", "line": "#443d5e"},
+			"Flower": {"shade": "#e0b4cf", "width": 0.0, "highlight": 0.0},
+			"Water": {"water": true, "speed": 1.5},
+			"Stream": {"water": true, "speed": 0.6, "fade": 0.0},
+		},
+	},
+	"ocean": {
+		# Light from the surface, straight down.
+		"light": Vector3(0.1, 1.0, 0.2),
+		"fog": "#0e4f94", "fog_near": 12.0, "fog_far": 150.0, "fog_max": 0.85,
+		# The painted board's caustics still ripple over it.
+		"motion": true,
+		"sky": {
+			"top_color": Color("#7fe0ff"), "mid_color": Color("#1f86cc"),
+			"horizon_color": Color("#0b3d7a"), "glow_dir": Vector3(0.1, 1.0, -0.4),
+			"glow_color": Color("#d8faff"), "glow_amount": 0.55,
+			"mid_at": Vector2(-0.3, 0.15), "top_at": Vector2(0.2, 0.85),
+		},
+		"look": {
+			"Sand": {"shade": "#5a86b8", "width": 0.0, "rim": 0.0, "highlight": 0.06,
+				"bias": -0.1},
+			"Reef": {"shade": "#16345a", "line": "#0a1a30", "width": 1.3, "rim": 0.3,
+				"rim_color": "#8ff0ff"},
+			"Coral": {"shade": "#4a4a9a", "line": "#1a1a40", "width": 1.2, "rim": 0.3,
+				"rim_color": "#ffe0f0", "highlight": 0.15},
+			"Kelp": {"shade": "#1e4a3e", "line": "#0c2420", "width": 1.0, "sway": 0.02,
+				"sway_alpha": 1.0, "rim": 0.2, "rim_color": "#b0ffd0"},
+			"Jelly": {"emissive": true, "use_vc": 0.0, "intensity": 1.1, "fog_max": 0.5},
+			"Glow": {"glow": true, "intensity": 0.5},
+			"Fish": {"shade": "#2a4a8a", "line": "#0c1a30", "width": 1.0, "rim": 0.3,
+				"rim_color": "#ffffff"},
+			"Whale": {"flat": true, "fog_max": 0.6},
+			"Bubble": {"shade": "#8fd8f0", "rim": 0.7, "rim_color": "#ffffff", "width": 0.0,
+				"highlight": 0.3, "fog_max": 0.5},
+			"Shaft": {"ray": true, "intensity": 0.2},
+		},
+	},
+	"space": {
+		# From the upper left and in front, so the worlds show a lit face and
+		# a dark limb with the nebula's violet on its edge.
+		"light": Vector3(-0.5, 0.45, 0.6),
+		"fog": "#140a2e", "fog_near": 200.0, "fog_far": 1500.0, "fog_max": 0.4,
+		"sky": {
+			"top_color": Color("#05030f"), "mid_color": Color("#0c0624"),
+			"horizon_color": Color("#130a30"), "mid_at": Vector2(-0.5, 0.0),
+			"top_at": Vector2(0.0, 0.8), "glow_amount": 0.0, "nebula": 0.6,
+			"nebula_a": Color("#2c0e5e"), "nebula_b": Color("#b040c0"),
+			"nebula_dir": Vector3(-0.1, 0.35, -1.0), "stars": 1.2,
+		},
+		"look": {
+			"Planet": {"shade": "#2a1a5a", "width": 0.0, "rim": 0.5, "rim_color": "#e0b0ff",
+				"highlight": 0.1, "bias": -0.05, "soft": 0.05},
+			"Ring": {"flat": true, "fog_max": 0.3},
+			"Moon": {"shade": "#3a3060", "line": "#140c24", "width": 1.2, "rim": 0.4,
+				"rim_color": "#d0c0ff"},
+			"Asteroid": {"shade": "#2a2040", "line": "#0c0814", "width": 1.3, "rim": 0.4,
+				"rim_color": "#c090ff"},
+			"Comet": {"emissive": true, "use_vc": 0.0, "intensity": 1.3, "fog_max": 0.0},
+			"Tail": {"ray": true, "intensity": 0.35},
+			"Glow": {"glow": true, "intensity": 0.5},
+		},
+	},
 	"city": {
 		# From above and a little behind: roofs, shoulders and car tops take
 		# the light, and what faces the camera stays dark with a cold rim,
@@ -106,7 +314,7 @@ const SCENES := {
 		# The wet road reflects everything: a second camera, at this fraction
 		# of the screen's resolution.
 		"reflection": 0.5,
-		"rain": true,
+		"rain": "rain",
 		"sky": {
 			"top_color": Color("#02040f"), "mid_color": Color("#081238"),
 			"horizon_color": Color("#18286e"), "glow_dir": Vector3(0.17, 0.5, -1.1),
@@ -226,8 +434,8 @@ func _ready() -> void:
 		_camera.keep_aspect = Camera3D.KEEP_WIDTH
 		_camera.current = true
 		_apply_fov()
-		if _cfg.get("rain", false):
-			_add_rain()
+		if _cfg.has("rain"):
+			_add_rain(String(_cfg["rain"]))
 		if _cfg.has("reflection"):
 			_add_reflection(float(_cfg["reflection"]))
 
@@ -259,12 +467,18 @@ func _ready() -> void:
 ## Three sheets of rain hung in front of the camera: near drops big and
 ## quick, far ones fine and slow. Sized to cover the tallest screen at their
 ## depth, and on a layer the reflection camera does not see.
-func _add_rain() -> void:
+func _add_rain(kind: String) -> void:
 	var layers := [
 		{"d": 4.0, "columns": 38.0, "rows": 2.0, "speed": 2.6, "strength": 0.2, "len": 0.3},
 		{"d": 10.0, "columns": 70.0, "rows": 3.0, "speed": 2.0, "strength": 0.16, "len": 0.28},
 		{"d": 26.0, "columns": 120.0, "rows": 5.0, "speed": 1.5, "strength": 0.12, "len": 0.24},
 	]
+	if kind == "snow":
+		layers = [
+			{"d": 4.0, "columns": 16.0, "rows": 9.0, "speed": 0.32, "strength": 0.7, "size": 0.2},
+			{"d": 10.0, "columns": 30.0, "rows": 18.0, "speed": 0.24, "strength": 0.55, "size": 0.2},
+			{"d": 26.0, "columns": 60.0, "rows": 36.0, "speed": 0.16, "strength": 0.4, "size": 0.22},
+		]
 	for l: Dictionary in layers:
 		var d := float(l["d"])
 		var w := 2.0 * d * tan(_hfov * 0.5) * _overscan * 1.15
@@ -276,7 +490,14 @@ func _add_rain() -> void:
 		m.set_shader_parameter("rows", float(l["rows"]))
 		m.set_shader_parameter("speed", float(l["speed"]))
 		m.set_shader_parameter("strength", float(l["strength"]))
-		m.set_shader_parameter("drop_len", float(l["len"]))
+		if kind == "snow":
+			m.set_shader_parameter("flakes", 1.0)
+			m.set_shader_parameter("flake_size", float(l["size"]))
+			m.set_shader_parameter("density", 0.3)
+			m.set_shader_parameter("slant", 0.0)
+			m.set_shader_parameter("color", Color(0.92, 0.95, 1.0))
+		else:
+			m.set_shader_parameter("drop_len", float(l["len"]))
 		var mi := MeshInstance3D.new()
 		mi.mesh = q
 		mi.material_override = m
@@ -371,48 +592,21 @@ func _material(name: String, lit: Color) -> Material:
 	var look: Dictionary = looks.get(name, {})
 	var flat := bool(look.get("flat", false))
 	var m := ShaderMaterial.new()
-	if look.get("water", false):
-		m.shader = WATER
+	for kind: String in KINDS:
+		if not look.get(kind, false):
+			continue
+		m.shader = KINDS[kind]
 		_fog(m, look)
-		m.set_shader_parameter("speed", float(look.get("speed", 1.4)))
-		m.set_shader_parameter("fade", float(look.get("fade", 1.0)))
-		m.render_priority = 1
-		return m
-	if look.get("building", false):
-		m.shader = BUILDING
-		_fog(m, look)
-		m.set_shader_parameter("light_dir", _cfg.get("light", Vector3(0.35, 0.75, 0.2)))
-		return m
-	if look.get("road", false):
-		m.shader = ROAD
-		_fog(m, look)
-		m.set_shader_parameter("reflect_amount", float(look.get("reflect_amount", 0.85)))
-		m.set_shader_parameter("sidewalk", float(look.get("sidewalk", 0.0)))
-		_road_mats.append(m)
-		return m
-	if look.get("emissive", false):
-		m.shader = EMISSIVE
-		_fog(m, look)
-		m.set_shader_parameter("color", lit)
-		for k: String in ["intensity", "use_vc", "flicker", "blink"]:
-			if look.has(k):
-				m.set_shader_parameter(k, float(look[k]))
-		return m
-	if look.get("glow", false) or look.get("cone", false):
-		m.shader = GLOW if look.get("glow", false) else CONE
-		_fog(m, look)
-		for k: String in ["intensity", "billboard", "falloff"]:
-			if look.has(k):
-				m.set_shader_parameter(k, float(look[k]))
-		return m
-	if look.get("lava", false):
-		m.shader = LAVA
-		_fog(m, look)
-		for k: String in ["crust_amount", "speed", "scale", "use_uv", "pulse"]:
-			if look.has(k):
-				m.set_shader_parameter(k, float(look[k]))
-		if look.has("flow"):
-			m.set_shader_parameter("flow", look["flow"])
+		match kind:
+			"water":
+				m.render_priority = 1
+			"building":
+				m.set_shader_parameter("light_dir", _cfg.get("light", Vector3(0.35, 0.75, 0.2)))
+			"road":
+				_road_mats.append(m)
+			"emissive":
+				m.set_shader_parameter("color", lit)
+		_pass_through(m, look)
 		return m
 
 	# Everything solid. `flat` is for things that are their own light (the
@@ -433,11 +627,8 @@ func _material(name: String, lit: Color) -> Material:
 	if look.has("rim_color"):
 		m.set_shader_parameter("rim_color", Color(String(look["rim_color"])))
 	m.set_shader_parameter("highlight", 0.0 if flat else float(look.get("highlight", 0.08)))
-	for k: String in ["glow_amount", "glow_height", "glow_vc", "glow_max", "vc_strength"]:
-		if look.has(k):
-			m.set_shader_parameter(k, float(look[k]))
+	_pass_through(m, look)
 	var sway := float(look.get("sway", 0.0))
-	m.set_shader_parameter("sway", sway)
 
 	var width := float(look.get("width", 0.0 if flat else 2.4))
 	if width > 0.0:
@@ -448,6 +639,19 @@ func _material(name: String, lit: Color) -> Material:
 		line.set_shader_parameter("line_color", ink)
 		line.set_shader_parameter("width_px", width)
 		line.set_shader_parameter("sway", sway)
+		line.set_shader_parameter("sway_alpha", float(look.get("sway_alpha", 0.0)))
 		_fog(line, look)
 		m.next_pass = line
 	return m
+
+
+## Every other key in a look is a uniform of the same name, passed straight
+## through; a string starting with # is a colour.
+func _pass_through(m: ShaderMaterial, look: Dictionary) -> void:
+	for k: String in look:
+		if KINDS.has(k) or k in META:
+			continue
+		var v: Variant = look[k]
+		if v is String and String(v).begins_with("#"):
+			v = Color(String(v))
+		m.set_shader_parameter(k, v)

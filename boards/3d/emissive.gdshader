@@ -14,6 +14,8 @@ uniform float intensity = 1.0;
 uniform float use_vc = 1.0;
 uniform float flicker = 0.0;
 uniform float blink = 0.0;
+// A slow breath of brightness, for runes and the like.
+uniform float pulse = 0.0;
 uniform vec3 fog_color : source_color = vec3(0.06, 0.1, 0.3);
 uniform float fog_near = 60.0;
 uniform float fog_far = 520.0;
@@ -29,6 +31,9 @@ void fragment() {
 	if (flicker > 0.0) {
 		float q = floor(mod(TIME, 600.0) * 9.0 + s * 311.0);
 		c *= 1.0 - flicker * step(0.965, hash(q + s * 17.0)) * 0.85;
+	}
+	if (pulse > 0.0) {
+		c *= 1.0 - pulse * 0.5 * (0.5 - 0.5 * sin(TIME * 1.6 + s * 20.0));
 	}
 	if (blink > 0.0) {
 		c *= mix(0.08, 1.0, step(0.72, fract(TIME * blink + s)));

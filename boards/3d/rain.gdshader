@@ -14,6 +14,9 @@ uniform float rows = 3.0;
 uniform float drop_len = 0.3;
 uniform float strength = 0.3;
 uniform float slant = 0.06;
+// Snow instead of rain: round flakes that wander as they fall.
+uniform float flakes = 0.0;
+uniform float flake_size = 0.16;
 
 float hash(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -30,7 +33,17 @@ void fragment() {
 	float cell = floor(y);
 	float f = fract(y);
 	float on = step(1.0 - density, hash(vec2(cx, cell)));
-	float xw = 1.0 - smoothstep(0.05, 0.3, abs(fract(uv.x * columns) - 0.5));
-	float streak = smoothstep(0.0, 0.04, f) * (1.0 - smoothstep(0.04, drop_len, f));
-	ALBEDO = color * on * xw * streak * strength;
+	if (flakes > 0.5) {
+		float fx = fract(uv.x * columns) - 0.5 + (hash(vec2(cx, cell * 1.3)) - 0.5) * 0.5
+				+ sin(t * 1.1 + cell * 2.1 + cx) * 0.22;
+		float fy = f - 0.5;
+		// Round in the quad's own proportions (2.6 times as tall as wide).
+		float d = length(vec2(fx, fy * 2.6 * columns / rows));
+		float sz = flake_size * (0.6 + 0.8 * hash(vec2(cell, cx)));
+		ALBEDO = color * on * (1.0 - smoothstep(sz * 0.5, sz, d)) * strength;
+	} else {
+		float xw = 1.0 - smoothstep(0.05, 0.3, abs(fract(uv.x * columns) - 0.5));
+		float streak = smoothstep(0.0, 0.04, f) * (1.0 - smoothstep(0.04, drop_len, f));
+		ALBEDO = color * on * xw * streak * strength;
+	}
 }

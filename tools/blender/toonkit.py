@@ -433,6 +433,79 @@ def catmull(points, per=10):
     return out
 
 
+# ----------------------------------------------------------------- ground
+
+def terrain(name, mat, x0, x1, y0, y1, nx, ny, height, color=None, ypow=1.0,
+            parent=None):
+    """A heightfield over x0..x1, y0..y1: `height(x, y)` in metres, and
+    `color(x, y, z)` an RGBA per vertex. `ypow` over 1 packs the rows toward
+    y0, which is the camera's end, where the detail is seen."""
+    bm, col = new_bm()
+    rows = []
+    for j in range(ny + 1):
+        y = y0 + (y1 - y0) * (j / ny) ** ypow
+        row = []
+        for i in range(nx + 1):
+            x = x0 + (x1 - x0) * i / nx
+            z = height(x, y)
+            v = bm.verts.new((x, y, z))
+            v[col] = color(x, y, z) if color else (1.0, 1.0, 1.0, 1.0)
+            row.append(v)
+        rows.append(row)
+    for j in range(ny):
+        for i in range(nx):
+            bm.faces.new((rows[j][i], rows[j][i + 1], rows[j + 1][i + 1], rows[j + 1][i]))
+    return bm_object(name, bm, mat, parent, recalc=False)
+
+
+def stamp_sway(bm, col, first, base_z, top=20.0):
+    """Mark the vertices from index `first` on as one tree standing at
+    `base_z`: vertex alpha becomes 1 - height above its foot / `top`, which
+    is what the toon shader's `sway_alpha` sways by. Call after building each
+    tree into a mesh that holds many."""
+    bm.verts.ensure_lookup_table()
+    for v in bm.verts[first:]:
+        c = v[col]
+        v[col] = (c[0], c[1], c[2], 1.0 - clamp((v.co.z - base_z) / top))
+
+
+def rock(bm, col, center, size, seed, squash=0.75, subdiv=2, rgb=(1, 1, 1), under=0.7):
+    """A lumpy boulder with a flattened foot, darker underneath."""
+    verts = puff(bm, col, Vector(center), size, subdiv, squash)
+    for v in verts:
+        d = v.co - Vector(center)
+        k = 1.0 + 0.22 * n3(d.x * 2.2 / size + seed, d.y * 2.2 / size, d.z * 2.2 / size)
+        v.co = Vector(center) + d * k
+        if v.co.z < center[2] - size * squash * 0.35:
+            v.co.z = center[2] - size * squash * 0.35
+        up = clamp((v.co.z - center[2]) / (size * squash) * 0.5 + 0.5)
+        m = under + (1.0 - under) * up
+        v[col] = (rgb[0] * m, rgb[1] * m, rgb[2] * m, 1.0)
+    return verts
+
+
+def ray_quads(items):
+    """Shafts of light, as quads facing the camera's axis. `items` is
+    [(start, end, width, rgb, seed)]; UV.x runs across, UV2.x along from the
+    start. See boards/3d/ray.gdshader."""
+    bm = bmesh.new()
+    col = bm.verts.layers.float_color.new("Color")
+    uv = bm.loops.layers.uv.new("UVMap")
+    uv2 = bm.loops.layers.uv.new("UV2")
+    view = (CAM_M.to_3x3() @ Vector((0, 0, -1))).normalized()
+    for start, end, width, rgb, seed in items:
+        a, b = Vector(start), Vector(end)
+        across = (b - a).cross(view).normalized() * width * 0.5
+        vs = [bm.verts.new(p) for p in (a - across, a + across, b + across * 1.8, b - across * 1.8)]
+        for v in vs:
+            v[col] = tuple(rgb) + (seed,)
+        f = bm.faces.new(vs)
+        for loop, (u, w) in zip(f.loops, ((0, 0), (1, 0), (1, 1), (0, 1))):
+            loop[uv].uv = (u, 0.0)
+            loop[uv2].uv = (w, 0.0)
+    return bm
+
+
 # ----------------------------------------------------------------- export
 
 def export(name):

@@ -20,6 +20,8 @@ uniform vec3 base_a : source_color = vec3(0.03, 0.04, 0.085);
 uniform vec3 base_b : source_color = vec3(0.06, 0.075, 0.14);
 uniform vec3 paint : source_color = vec3(0.72, 0.76, 0.85);
 uniform float sidewalk = 0.0;
+// Off for water: a lake is this with no paint on it.
+uniform float markings = 1.0;
 // The cross streets, as (start, end) pairs along the street.
 uniform vec4 crossings = vec4(100.0, 114.0, 262.0, 274.0);
 uniform float ripples = 1.0;
@@ -48,7 +50,7 @@ float fbm(vec2 p) {
 
 // Lane paint on the street, in the street's own coordinates (x across,
 // y along).
-float markings(vec2 p) {
+float paint_lines(vec2 p) {
 	float ax = abs(p.x);
 	float m = 0.0;
 	bool junction = (p.y > crossings.x && p.y < crossings.y)
@@ -83,8 +85,8 @@ void fragment() {
 	if (sidewalk > 0.5) {
 		vec2 slab = abs(fract(g / 1.6) - 0.5);
 		base *= mix(0.62, 1.0, 1.0 - smoothstep(0.46, 0.49, max(slab.x, slab.y)));
-	} else if (abs(g.x) < 6.0) {
-		mk = markings(g);
+	} else if (markings > 0.5 && abs(g.x) < 6.0) {
+		mk = paint_lines(g);
 	}
 
 	// Rain rings: one cell in each 80 cm has a drop landing, on its own

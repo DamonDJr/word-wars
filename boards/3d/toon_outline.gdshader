@@ -13,6 +13,7 @@ uniform vec3 line_color : source_color = vec3(0.15, 0.15, 0.25);
 // At a 1600 px tall frame; scaled with the frame.
 uniform float width_px = 2.4;
 uniform float sway = 0.0;
+uniform float sway_alpha = 0.0;
 uniform vec3 fog_color : source_color = vec3(0.82, 0.92, 1.0);
 uniform float fog_near = 30.0;
 uniform float fog_far = 130.0;
@@ -23,7 +24,7 @@ varying float v_dist;
 void vertex() {
 	if (sway > 0.0) {
 		vec3 o = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-		float h = max(VERTEX.y, 0.0);
+		float h = sway_alpha > 0.5 ? (1.0 - COLOR.a) * 20.0 : max(VERTEX.y, 0.0);
 		float ph = TIME * 1.4 + o.x * 0.9 + o.z * 0.6 + VERTEX.x * 0.8 + VERTEX.z * 0.8;
 		VERTEX.x += sin(ph) * sway * h * h;
 		VERTEX.z += cos(ph * 0.83) * sway * 0.6 * h * h;
