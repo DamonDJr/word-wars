@@ -43,9 +43,9 @@ from toonkit import TAU, bm_object, empty, keyframes, lathe, new_bm, puff, smoot
 
 PALETTE = {
     "Floor": "#ffffff", "Tactile": "#f0c030", "Edge": "#3a3e4a", "Ballast": "#2a2a30",
-    "Rail": "#9aa0b0", "Tiles": "#ffffff", "TilesDark": "#ffffff", "Vault": "#1e2638",
+    "Rail": "#9aa0b0", "Tiles": "#ffffff", "TilesDark": "#ffffff", "Vault": "#1a2032",
     "Fixture": "#2c3242", "Tube": "#d4e8ff", "TubeFlicker": "#d4e8ff", "Glow": "#ffffff",
-    "Pillar": "#3c4660", "Steel": "#8690a8", "TrainGlass": "#b4c8e6", "TailLight": "#ff2a2a",
+    "Pillar": "#3c4660", "Steel": "#707c96", "TrainGlass": "#b4c8e6", "TailLight": "#ff2a2a",
     "Sign": "#ff3030", "SignPanel": "#141820", "SignText": "#f4f6fa", "SignRed": "#d8141c",
     "Bench": "#3a4252", "Bin": "#7a8294", "Signal": "#ffffff", "Stairs": "#3a4050",
     "Person": "#ffffff",
