@@ -1373,11 +1373,17 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 # in the match. So these are scale-derived instead — every number below is a
 # fraction of the rect it is given — and `board.gd` calls straight into here.
 #
-# Three of them move. Magma's cracks breathe, Coral's bubbles rise and Neon's
-# scan bar sweeps, all read off `Time` rather than off any state, so a block
-# that was drawn this frame and destroyed the next never had anything to clean
-# up. Both callers already redraw every frame, so the motion costs nothing extra
-# to keep running.
+# Most of them move, a little: Magma's cracks breathe and throw the odd spark,
+# Coral's branches sway and a bubble goes up it, snow falls past Glacier and
+# the aurora slides across it, Neon's scan bar sweeps, Nebula's stars catch,
+# Rune's gold pulses and Cumulus's lobes breathe. All of it is read off `Time`
+# rather than off any state, so a block that was drawn this frame and destroyed
+# the next never had anything to clean up. Both callers already redraw every
+# frame, so the motion costs nothing extra to keep running.
+#
+# What painting them does cost is kept near Cumulus's, which the game already
+# carries: `tools/faceshots.gd` is where they are looked at, and a board's worth
+# of each was timed against Cumulus when they were redrawn.
 
 
 ## The block's silhouette: a rectangle with its corners taken off, which is as
@@ -1535,6 +1541,754 @@ static func _cloud_body(r: Rect2, top: float, foot: float) -> PackedVector2Array
 	return pts
 
 
+# ------------------------------------------------------- the faces, redrawn
+#
+# Cumulus was the one face in the set that belonged to its board, and the reason
+# was never the cloud. It was the drawing: two flat tones split by a hard edge,
+# an ink line round the lot, one shine, and a silhouette taken from something in
+# the scene. The boards are toon-shaded 3D now, and every one of them is drawn
+# that way — the volcano's plates, the reef's rocks, the snow on the pines.
+#
+# The faces below were translucent fills with thin lines laid on top, which is
+# the language of a UI tile, not of any of those places. So they are redrawn in
+# the boards' own terms: ink, two tones, a shine, and each one something you can
+# point at in its board. The tier still survives in the hue of the main tones;
+# what changed is the material, never the colour.
+#
+# The helpers first. Everything is a fraction of the rect it is handed, and
+# everything is drawn inside it, ink included: blocks sit six pixels apart, and
+# a line over the edge would sit on the neighbour.
+
+
+## The unit offsets a rounded rectangle's corners are made of, worked out
+## once: three to a corner, which at these radii (a dozen pixels at most) is
+## indistinguishable from more. These faces are painted for every block on the
+## board every frame, and building their outlines was most of what they cost.
+static var _corner_arc := PackedVector2Array()
+
+
+## A rounded rectangle, as a polygon.
+static func _rrect(r: Rect2, rad: float) -> PackedVector2Array:
+	if _corner_arc.is_empty():
+		for i in 4:
+			for k in 3:
+				var a: float = -PI * 0.5 + PI * 0.5 * float(i) + PI * 0.25 * float(k)
+				_corner_arc.append(Vector2(cos(a), sin(a)))
+	var half: float = minf(r.size.x, r.size.y) * 0.5
+	rad = clampf(rad, 0.0, half)
+	var c0 := Vector2(r.end.x - rad, r.position.y + rad)
+	var c1 := Vector2(r.end.x - rad, r.end.y - rad)
+	var c2 := Vector2(r.position.x + rad, r.end.y - rad)
+	var c3 := Vector2(r.position.x + rad, r.position.y + rad)
+	var pts := PackedVector2Array([
+		c0 + _corner_arc[0] * rad, c0 + _corner_arc[1] * rad, c0 + _corner_arc[2] * rad,
+		c1 + _corner_arc[3] * rad, c1 + _corner_arc[4] * rad, c1 + _corner_arc[5] * rad,
+		c2 + _corner_arc[6] * rad, c2 + _corner_arc[7] * rad, c2 + _corner_arc[8] * rad,
+		c3 + _corner_arc[9] * rad, c3 + _corner_arc[10] * rad, c3 + _corner_arc[11] * rad])
+	if rad < half - 0.01:
+		return pts
+	# At a radius of half the short side the straight edges have no length,
+	# and a point laid twice is a polygon the triangulator refuses — the shape
+	# silently does not draw. Rare, so it is only paid for here.
+	var out := PackedVector2Array()
+	for p: Vector2 in pts:
+		if out.is_empty() or out[out.size() - 1].distance_squared_to(p) > 0.0001:
+			out.append(p)
+	if out.size() > 1 and out[0].distance_squared_to(out[out.size() - 1]) <= 0.0001:
+		out.remove_at(out.size() - 1)
+	return out
+
+
+## The ink width a face is outlined at, from its size, as the cloud's is.
+static func _ink_w(rect: Rect2) -> float:
+	return clampf(minf(rect.size.x, rect.size.y) * 0.055, 1.5, 3.2)
+
+
+## The tier a step deeper, for the side of a thing away from the light. The
+## cool tiers turn a little toward blue in shadow, as everything on the boards
+## does; the warm ones keep their hue, because a push either way turns yellow
+## into tan and orange into brown. The same rule the cloud learned.
+static func _deeper(col: Color, k: float) -> Color:
+	if col.h > 0.2 and col.h < 0.8:
+		return Color.from_hsv(minf(col.h + 0.03, 0.7), minf(1.0, col.s * 1.06),
+			col.v * (1.0 - k))
+	return Color.from_hsv(col.h, minf(1.0, col.s * 1.04), col.v * (1.0 - k))
+
+
+## Dark type on a light face, light type on a dark one.
+static func _stamp_on(face: Color, dark: Color, light := Color.WHITE) -> Color:
+	return dark if face.get_luminance() > 0.52 else light
+
+
+## Volcano. A plate of basalt, as the board's floor is made of: dark rock in
+## the tier's hue, the edges nearest the lava lit orange from below, and a
+## corner or two cracked off with the heat showing in the crack.
+##
+## The earlier face ran wandering seams across the middle, which put glowing
+## scribbles through the stamp and read, on the blue tiers, as cracked glass.
+## Basalt breaks in straight lines — the board's floor is hexagons — so the
+## cracks are straight, and they stay in the corners, where the letters are not.
+static func _face_magma(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#0c0406")
+	node.draw_colored_polygon(_rrect(rect, ow * 1.8), ink)
+	var r := rect.grow(-ow * (1.5 if hot else 1.0))
+	var w := r.size.x
+	var h := r.size.y
+	var beat: float = 0.62 + 0.38 * sin(t * 1.7 + _face_seed(base, 1.0) * TAU)
+
+	# The rock: the tier at a fraction of its brightness and a little less of
+	# its saturation, so six tiers are six basalts rather than six tiles.
+	# A yellow taken that dark turns olive, which nothing on the board is, so
+	# the warm tiers lean a step toward the lava's own orange as they darken.
+	var hue: float = col.h
+	if hue > 0.07 and hue < 0.2:
+		hue = lerpf(hue, 0.075, 0.45)
+	var face := Color.from_hsv(hue, minf(1.0, col.s * 0.80), col.v * 0.44)
+	var deep := Color.from_hsv(hue, minf(1.0, col.s * 0.74), col.v * 0.26)
+	var lava := Color("#ff6414")
+	var heat := Color("#ffc93c")
+
+	# Three tones for a slab: the top and left edges in shadow, the face, and
+	# the bottom and right edges lit by the lava the slab is standing in.
+	var bv: float = clampf(minf(w, h) * 0.14, 2.5, 7.0)
+	var rim := face.lerp(lava, 0.50 + 0.16 * beat)
+	var f := _bevel(node, r, bv, ow, deep, face, rim)
+	# A hotter line where the rim meets the lava, right along the bottom.
+	node.draw_rect(Rect2(r.position.x + ow + bv * 0.5, r.end.y - maxf(1.2, bv * 0.32),
+		w - ow * 2.0 - bv * 0.5, maxf(1.2, bv * 0.32)), Color(heat, 0.55 + 0.35 * beat))
+	# And the lava's light up the lower part of the face, in one flat step
+	# with a wavering edge, the way the board's rocks are lit from below.
+	var warm_top: float = f.position.y + f.size.y * 0.68
+	node.draw_rect(Rect2(f.position.x, warm_top, f.size.x, f.end.y - warm_top),
+		face.lerp(lava, 0.14 + 0.05 * beat))
+	var wav := PackedVector2Array()
+	for s2 in 9:
+		var x2: float = lerpf(f.position.x, f.end.x, float(s2) / 8.0)
+		wav.append(Vector2(x2, warm_top + sin(x2 * 0.3 + t * 1.5) * minf(1.5, f.size.y * 0.04)))
+	node.draw_polyline(wav, face.lerp(lava, 0.14 + 0.05 * beat), maxf(1.5, f.size.y * 0.06))
+
+	# Pits in the rock, where gas came out of it as it cooled. In the corners,
+	# small and few; texture is what separates rock from a painted tile.
+	for i in 4:
+		var px := _face_seed(base, 20.0 + float(i))
+		var py := _face_seed(base, 24.0 + float(i))
+		var cx: float = f.position.x + f.size.x * (0.08 + 0.2 * px if i % 2 == 0 else 0.72 + 0.2 * px)
+		var cy: float = f.position.y + f.size.y * (0.12 + 0.2 * py if i < 2 else 0.68 + 0.2 * py)
+		node.draw_circle(Vector2(cx, cy), maxf(0.8, minf(w, h) * 0.022), deep)
+
+	# The cracks: one corner on a small block, two on a big one, never the
+	# same two. Each cuts a chip off its corner; the chip sits at its own
+	# darkness, and the crack between is dark with the heat showing up the
+	# middle of it.
+	var big := f.size.x > 60.0 and f.size.y > 44.0
+	var first := int(_face_seed(base, 30.0) * 4.0) % 4
+	var corners := [first] if not big else [first, (first + 2) % 4]
+	for c: int in corners:
+		var right := c == 1 or c == 2
+		var bottom := c >= 2
+		var cn := Vector2(f.end.x if right else f.position.x, f.end.y if bottom else f.position.y)
+		var sx: float = -1.0 if right else 1.0
+		var sy: float = -1.0 if bottom else 1.0
+		var ax: float = minf(f.size.x * 0.40, 30.0) * (0.75 + 0.5 * _face_seed(base, 31.0 + float(c)))
+		var ay: float = minf(f.size.y * 0.55, 24.0) * (0.75 + 0.5 * _face_seed(base, 35.0 + float(c)))
+		var a := cn + Vector2(sx * ax, 0.0)
+		var b := cn + Vector2(0.0, sy * ay)
+		# One kink, bent out from the corner, so the crack is broken rather
+		# than ruled.
+		var k := a.lerp(b, 0.45 + 0.15 * _face_seed(base, 39.0 + float(c))) \
+			+ Vector2(sx, sy) * minf(ax, ay) * 0.18
+		# The chip has sunk a little: darker, with its broken edge catching
+		# the glow from the crack beside it.
+		node.draw_colored_polygon(PackedVector2Array([cn, a, k, b]), deep.lerp(face, 0.45))
+		# A short fork off the crack, so it branches as cracks do and does not
+		# read as a bracket.
+		var fork_end: Vector2 = k + (k - cn).normalized().rotated(0.5 * sx * sy) \
+			* minf(ax, ay) * 0.45
+		fork_end = Vector2(clampf(fork_end.x, f.position.x + 1.0, f.end.x - 1.0),
+			clampf(fork_end.y, f.position.y + 1.0, f.end.y - 1.0))
+		var seam := PackedVector2Array([a, k, b])
+		var wd: float = maxf(1.3, minf(w, h) * 0.055)
+		node.draw_line(k, fork_end, deep.darkened(0.35), wd * 1.2)
+		node.draw_line(k, k.lerp(fork_end, 0.7), heat.lerp(lava, 0.5), maxf(1.0, wd * 0.55))
+		node.draw_polyline(seam, Color(lava, 0.30 + 0.16 * beat), wd * 3.6)
+		node.draw_polyline(seam, deep.darkened(0.35), wd * 1.7)
+		node.draw_polyline(seam, heat.lerp(lava, 0.35 - 0.3 * beat), maxf(1.0, wd * 0.9))
+		# Now and then a spark comes up out of it and goes out.
+		var es := _face_seed(base, 44.0 + float(c))
+		var life: float = fmod(t * (0.35 + 0.2 * es) + es, 1.0)
+		if life < 0.6:
+			var ep: Vector2 = k + Vector2(-sx, -sy) * minf(w, h) * 0.02 \
+				+ Vector2(sin(life * 9.0 + es * 5.0) * 1.5, -life * minf(h * 0.5, 18.0))
+			ep.y = maxf(ep.y, f.position.y + 1.5)
+			node.draw_circle(ep, maxf(0.9, wd * 0.55) * (1.0 - life), Color(heat, 1.0 - life / 0.6))
+
+	# The top edge of the face catches a little of the glow off the cone.
+	node.draw_rect(Rect2(f.position.x + 1.0, f.position.y, f.size.x - 2.0, maxf(1.0, bv * 0.22)),
+		Color(face.lightened(0.22), 0.8))
+	return Color("#ffeedd")
+
+
+## Ocean. A stone off the reef floor with the reef growing on it: a faceted
+## rock in the tier's colour, lit on its top and left and dark on its right, as
+## the pillars on the board are, and standing on it a few of the things on the
+## board's sand — branching coral, forked and angular, and low coral domes — in
+## the reef's own pinks, violets and golds.
+##
+## The earlier face was a translucent rectangle with three faint circles on it,
+## a tile with a watermark rather than anything that lives in the sea. A first
+## redraw lined the top with little round polyps, which read as a row of beads;
+## the board's coral is sparse and angular, so this is too.
+static func _face_coral(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#0b2442")
+	var line: float = ow * (1.5 if hot else 1.0)
+	var inner := rect.grow(-ow)
+	var w := inner.size.x
+	var h := inner.size.y
+	var cr: float = clampf(h * 0.34, 8.0, 19.0)
+	var stone := Rect2(inner.position.x, inner.position.y + cr * 0.6, w, h - cr * 0.6)
+	var rad: float = clampf(minf(stone.size.x, stone.size.y) * 0.16, 2.5, 8.0)
+
+	# The rock, in three flat tones: its face, a lit top where the light comes
+	# down through the water, and a dark right side.
+	var face := col
+	var top_c := col.lerp(Color.WHITE, 0.26)
+	var side := _deeper(col, 0.30)
+	node.draw_colored_polygon(_rrect(stone.grow(line), rad + line), ink)
+	var outline := _rrect(stone, rad)
+	node.draw_colored_polygon(outline, face)
+	var cut: float = stone.position.x + stone.size.x * (0.72 + 0.08 * _face_seed(base, 71.0))
+	var slant: float = minf(stone.size.x * 0.08, 6.0)
+	var right := outline.duplicate()
+	for i in right.size():
+		var edge: float = lerpf(cut + slant, cut - slant,
+			(right[i].y - stone.position.y) / maxf(1.0, stone.size.y))
+		right[i].x = maxf(right[i].x, edge)
+	node.draw_colored_polygon(right, side)
+	var lid: float = stone.position.y + maxf(2.0, stone.size.y * 0.16)
+	var top := outline.duplicate()
+	for i in top.size():
+		top[i].y = minf(top[i].y, lid)
+	node.draw_colored_polygon(top, top_c)
+	node.draw_line(Vector2(cut + slant, stone.position.y + 1.0),
+		Vector2(cut - slant, stone.end.y - 1.0), Color(ink, 0.35), maxf(1.0, ow * 0.4))
+	# The rock's shine, and two pocks in it.
+	node.draw_circle(Vector2(stone.position.x + rad + 2.0, lid + (stone.end.y - lid) * 0.22),
+		maxf(1.0, rad * 0.3), Color(1, 1, 1, 0.6))
+	for k in 2:
+		node.draw_circle(Vector2(stone.position.x + stone.size.x * (0.14 + 0.62 * float(k)),
+			stone.end.y - stone.size.y * (0.18 + 0.1 * _face_seed(base, 72.0 + float(k)))),
+			maxf(0.8, rad * 0.2), side)
+
+	# The reef. Colours from the board's own corals, skipping any too near the
+	# tier's hue, so the growth is never lost against its rock.
+	var reef := [Color("#ff5c8a"), Color("#a45cf0"), Color("#ffb13d"), Color("#ff7ac8"),
+		Color("#45d6c8"), Color("#ffd84a")]
+	var pal: Array = []
+	for c: Color in reef:
+		var dh: float = absf(c.h - col.h)
+		if minf(dh, 1.0 - dh) > 0.09:
+			pal.append(c)
+	# A cluster in one top corner, or both on a wide block: a branching coral
+	# rooted a little way down the rock, so it can stand tall, with a dome at
+	# its foot on the inside. Corners, because the letters are in the middle.
+	var sides: Array = [_face_seed(base, 96.0) < 0.5]
+	if w > 90.0:
+		sides = [true, false]
+	for i in sides.size():
+		var left: bool = sides[i]
+		var sd := _face_seed(base, 90.0 + float(i))
+		var c1: Color = pal[int(_face_seed(base, 97.0 + float(i)) * float(pal.size())) % pal.size()]
+		var c2: Color = pal[(pal.find(c1) + 1 + int(sd * 3.0)) % pal.size()]
+		var inward: float = 1.0 if left else -1.0
+		var bx: float = inner.position.x + w * (0.13 if left else 0.87)
+		var dx: float = bx + inward * clampf(w * 0.14, 6.0, 16.0)
+		_coral_dome(node, dx, stone.position.y, inner, cr, c2, ink, line)
+		_coral_branch(node, bx, stone.position.y + stone.size.y * 0.30, inner, cr,
+			c1, ink, line, sd if left else 1.0 - sd, t)
+
+	# A bubble going up one side, away from the letters.
+	var hb := _face_seed(base, 5.0)
+	var rise: float = fmod(t * (0.22 + hb * 0.18) + hb, 1.0)
+	var bx: float = stone.position.x + stone.size.x * (0.12 if hb < 0.5 else 0.88)
+	var by: float = stone.end.y - rad - rise * (stone.size.y - rad * 2.0)
+	node.draw_arc(Vector2(bx, by), maxf(1.2, minf(w, h) * 0.05), 0.0, TAU, 10,
+		Color(1, 1, 1, 0.6 * sin(rise * PI)), maxf(1.0, ow * 0.5), true)
+	return _stamp_on(face, Color("#0b2442"))
+
+
+## Branching coral, as it grows on the board's sand: a trunk that forks, and
+## forks again, all in straight segments. Stands on `foot` at `x` and stays
+## inside `inner`.
+static func _coral_branch(node: CanvasItem, x: float, foot: float, inner: Rect2, cr: float,
+		c: Color, ink: Color, line: float, sd: float, t: float) -> void:
+	var tall: float = foot - (inner.position.y + line * 1.5)
+	var bw: float = clampf(tall * 0.13, 1.6, 3.6)
+	var spread: float = tall * 0.42
+	x = clampf(x, inner.position.x + spread + bw + line, inner.end.x - spread - bw - line)
+	var sway: float = sin(t * 0.9 + sd * TAU) * bw * 0.35
+	var b0 := Vector2(x, foot + bw)
+	var fork := Vector2(x + (sd - 0.5) * bw, foot - tall * 0.42)
+	var segs: Array = [[b0, fork]]
+	var lean: float = -1.0 if sd < 0.5 else 1.0
+	for k in 3:
+		var ang: float = (-0.62 + 0.62 * float(k)) * lean
+		var reach: float = tall * (0.58 if k == 1 else 0.46)
+		var tip := fork + Vector2(sin(ang) * reach + sway, -cos(ang) * reach)
+		tip.y = maxf(tip.y, inner.position.y + line * 1.5)
+		segs.append([fork, tip])
+		if k != 1 and tall > 15.0:
+			var mid: Vector2 = fork.lerp(tip, 0.55)
+			var twig := mid + Vector2(sin(ang - 0.7 * lean) * reach * 0.36 + sway,
+				-cos(ang - 0.7 * lean) * reach * 0.36)
+			twig.y = maxf(twig.y, inner.position.y + line * 1.5)
+			segs.append([mid, twig])
+	for pass_i in 2:
+		var wd: float = bw + (line * 2.0 if pass_i == 0 else 0.0)
+		for sg: Array in segs:
+			node.draw_line(sg[0], sg[1], ink if pass_i == 0 else c, wd)
+	# A catch of light up the trunk and the tallest arm.
+	for sg: Array in segs.slice(0, 3):
+		node.draw_line(sg[0], (sg[0] as Vector2).lerp(sg[1], 0.5), c.lerp(Color.WHITE, 0.3),
+			maxf(1.0, bw * 0.4))
+
+
+static var _dome_arc := PackedVector2Array()
+
+
+## A low coral dome, a flattened half of an ellipse sitting on the rock.
+static func _coral_dome(node: CanvasItem, x: float, foot: float, inner: Rect2, cr: float,
+		c: Color, ink: Color, line: float) -> void:
+	var rx: float = clampf(cr * 0.75, 5.0, 13.0)
+	var ry: float = minf(rx * 0.55, foot - inner.position.y - line * 1.5)
+	x = clampf(x, inner.position.x + rx + line, inner.end.x - rx - line)
+	if _dome_arc.is_empty():
+		for k in 9:
+			var a: float = PI + PI * float(k) / 8.0
+			_dome_arc.append(Vector2(cos(a), sin(a)))
+	var o := Vector2(x, foot + 1.0)
+	var pts := PackedVector2Array()
+	var grown := PackedVector2Array()
+	var cap := PackedVector2Array()
+	for v: Vector2 in _dome_arc:
+		pts.append(o + v * Vector2(rx, ry))
+		grown.append(o + v * Vector2(rx + line, ry + line))
+		cap.append(o + Vector2(-rx * 0.12, -ry * 0.06) + v * Vector2(rx * 0.72, ry * 0.8))
+	grown.append(o + Vector2(rx + line, line))
+	grown.append(o + Vector2(-rx - line, line))
+	node.draw_colored_polygon(grown, ink)
+	node.draw_colored_polygon(pts, c.darkened(0.18))
+	node.draw_colored_polygon(cap, c)
+	node.draw_circle(Vector2(x - rx * 0.4, foot + 1.0 - ry * 0.55), maxf(0.8, ry * 0.14),
+		Color(1, 1, 1, 0.7))
+
+
+## Aurora. A block of glacier ice with snow on it: hard facets in the tier's
+## colour, a crack caught inside, the green of the sky sliding across the
+## surface, and a cap of snow drawn the way the board's pines and rocks wear
+## theirs — white on top, lavender underneath, with an ink line round it.
+##
+## The earlier face was a tinted pane with lines to an apex, which read as an
+## envelope; nothing on the board is made of panes.
+static func _face_ice(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#0f2442")
+	var line: float = ow * (1.5 if hot else 1.0)
+	node.draw_colored_polygon(_rrect(rect, ow * 1.2), ink)
+	var r := rect.grow(-line)
+	var w := r.size.x
+	var h := r.size.y
+	var sh: float = clampf(h * 0.34, 7.0, 18.0)
+
+	# The ice, in three facets: a lit one catching the sky up and to the left,
+	# a deep one in the lower right, and the middle between them. Split with
+	# straight edges, because that is what makes it ice and not water.
+	var mid_c := col.lerp(Color.WHITE, 0.34)
+	var lit := col.lerp(Color.WHITE, 0.62)
+	var deep := _deeper(col, 0.14).lerp(Color("#3b4aa8"), 0.18)
+	node.draw_colored_polygon(_rrect(r, ow * 0.6), mid_c)
+	var jig := _face_seed(base, 60.0) * 0.12
+	var lit_poly := PackedVector2Array([
+		r.position + Vector2(1.0, 1.0), Vector2(r.position.x + w * (0.60 + jig), r.position.y + 1.0),
+		Vector2(r.position.x + w * (0.34 + jig), r.position.y + h * 0.52),
+		Vector2(r.position.x + 1.0, r.position.y + h * (0.74 - jig)),
+	])
+	node.draw_colored_polygon(lit_poly, lit)
+	var deep_poly := PackedVector2Array([
+		Vector2(r.end.x - 1.0, r.position.y + h * (0.28 + jig)), r.end - Vector2(1.0, 1.0),
+		Vector2(r.position.x + w * (0.40 - jig), r.end.y - 1.0),
+		Vector2(r.position.x + w * (0.70 - jig), r.position.y + h * 0.60),
+	])
+	node.draw_colored_polygon(deep_poly, deep)
+	# The ridges between facets, lit.
+	node.draw_polyline(PackedVector2Array([lit_poly[1], lit_poly[2], lit_poly[3]]),
+		Color(1, 1, 1, 0.55), maxf(1.0, ow * 0.45), true)
+	node.draw_polyline(PackedVector2Array([deep_poly[0], deep_poly[3], deep_poly[2]]),
+		Color(lit, 0.45), maxf(1.0, ow * 0.4), true)
+
+	# The sky on the surface: a slow band of aurora green crossing the face,
+	# kept inside by building it from the face's own edges.
+	var run: float = fmod(t * 0.07 + _face_seed(base, 61.0), 1.0)
+	var bx: float = r.position.x - w * 0.4 + run * w * 1.8
+	var band := PackedVector2Array([
+		Vector2(clampf(bx, r.position.x + 1.0, r.end.x - 1.0), r.position.y + sh),
+		Vector2(clampf(bx + w * 0.16, r.position.x + 1.0, r.end.x - 1.0), r.position.y + sh),
+		Vector2(clampf(bx + w * 0.16 - h * 0.5, r.position.x + 1.0, r.end.x - 1.0), r.end.y - 1.0),
+		Vector2(clampf(bx - h * 0.5, r.position.x + 1.0, r.end.x - 1.0), r.end.y - 1.0),
+	])
+	node.draw_colored_polygon(band, Color("#6dffc8", 0.16))
+
+	# Now and then, a glint off the lit facet.
+	var gp: float = fmod(t * 0.23 + _face_seed(base, 62.0), 1.0)
+	if gp < 0.14:
+		var gs: float = minf(w, h) * 0.55 * sin(gp / 0.14 * PI)
+		_sprite(node, glint(), Vector2(r.position.x + w * 0.22, r.position.y + sh + h * 0.12),
+			Vector2(gs, gs), Color(1, 1, 1, 0.9))
+
+	# The snow, faceted as it lies on the board's pines: a white top plane and
+	# under it a deep indigo side that is thick in places and thin in others,
+	# with an ink line along the bottom of it. The lumpy cap of a first redraw
+	# read as lace trim; the board's snow is cut, not piped.
+	var steps := maxi(3, int(round(w / 11.0)))
+	var edge := PackedVector2Array()
+	for i in steps + 1:
+		var u: float = float(i) / float(steps)
+		var depth: float = 0.55 + 0.45 * _face_seed(base, 64.0 + float(i))
+		if i == 0 or i == steps:
+			depth = 0.62
+		edge.append(Vector2(r.position.x + w * u, r.position.y + sh * depth))
+	var cap := PackedVector2Array([r.position, Vector2(r.end.x, r.position.y)])
+	for i in range(edge.size() - 1, -1, -1):
+		cap.append(edge[i])
+	var shadow := cap.duplicate()
+	for i in shadow.size():
+		shadow[i].y += line
+	node.draw_colored_polygon(shadow, ink)
+	node.draw_colored_polygon(cap, Color("#5663c4"))
+	var plane := PackedVector2Array([r.position, Vector2(r.end.x, r.position.y)])
+	for i in range(edge.size() - 1, -1, -1):
+		var e: Vector2 = edge[i]
+		var lift: float = 0.66 + 0.18 * _face_seed(base, 80.0 + float(i))
+		plane.append(Vector2(e.x, r.position.y + (e.y - r.position.y) * lift))
+	node.draw_colored_polygon(plane, Color("#f3f7ff"))
+	node.draw_rect(Rect2(r.position.x + 1.0, r.position.y, w - 2.0, maxf(1.0, sh * 0.12)),
+		Color(1, 1, 1, 0.9))
+
+	# Icicles off the deepest points of the snow, on anything big enough to
+	# hang them clear of the letters.
+	if w > 60.0 and h > 56.0:
+		# From the outer quarters of the edge, so they hang at the ends of the
+		# block and not into the letters in the middle of it.
+		var reach := maxi(1, int(float(steps) * 0.25))
+		for k in 2:
+			var ei: int = 1 + int(_face_seed(base, 66.0 + float(k)) * float(reach))
+			if k == 1:
+				ei = steps - ei
+			var p0: Vector2 = edge[ei]
+			var iw: float = maxf(1.5, sh * 0.2)
+			var ih: float = sh * (0.8 + 0.5 * _face_seed(base, 70.0 + float(k)))
+			var icicle := PackedVector2Array([p0 + Vector2(-iw, -1.0), p0 + Vector2(iw, -1.0),
+				p0 + Vector2(0.0, ih)])
+			node.draw_colored_polygon(PackedVector2Array([icicle[0] + Vector2(-line, 0.0),
+				icicle[1] + Vector2(line, 0.0), icicle[2] + Vector2(0.0, line * 1.5)]), ink)
+			node.draw_colored_polygon(icicle, Color("#dff2ff"))
+			node.draw_line(icicle[0].lerp(icicle[2], 0.1), icicle[2].lerp(icicle[0], 0.3),
+				Color(1, 1, 1, 0.9), maxf(1.0, iw * 0.4))
+
+	# And snow coming down across it, as it does over the whole board.
+	for k in 2:
+		var fs := _face_seed(base, 74.0 + float(k))
+		var fall: float = fmod(t * (0.10 + 0.06 * fs) + fs, 1.0)
+		var fx: float = r.position.x + w * (0.15 + 0.7 * fs) + sin(t * 1.3 + fs * 9.0) * w * 0.04
+		var fy: float = r.position.y + sh + fall * (h - sh - 2.0)
+		var fsz: float = maxf(2.5, minf(w, h) * 0.09)
+		_sprite(node, soft_dot(), Vector2(fx, fy), Vector2(fsz, fsz),
+			Color(1, 1, 1, 0.85 * sin(fall * PI)))
+	return Color("#0f2442")
+
+
+## A slab in three tones: `hi` along its top and left edges, `lo` along its
+## bottom and right, and `face` inside them. Returns the face.
+static func _bevel(node: CanvasItem, r: Rect2, b: float, rad: float, hi: Color,
+		face: Color, lo: Color) -> Rect2:
+	node.draw_colored_polygon(_rrect(r, rad), hi)
+	var f := r.grow(-b)
+	node.draw_colored_polygon(PackedVector2Array([
+		Vector2(r.end.x, r.position.y + rad), Vector2(r.end.x, r.end.y - rad),
+		Vector2(r.end.x - rad, r.end.y), Vector2(r.position.x + rad, r.end.y),
+		Vector2(f.position.x, f.end.y), f.end, Vector2(f.end.x, f.position.y),
+	]), lo)
+	node.draw_rect(f, face)
+	return f
+
+
+## A soft cap of lumps along the top of `r` — moss here, and the cloud's lobes
+## are the same idea — inked, in two tones, and kept inside `r`.
+static func _lumpy_cap(node: CanvasItem, r: Rect2, depth: float, lit: Color,
+		shade: Color, ink: Color, line: float, base: float, salt: float) -> void:
+	var n := maxi(2, int(round(r.size.x / (depth * 1.7))))
+	var lumps: Array[Vector3] = []
+	for i in n:
+		var u: float = (float(i) + 0.5) / float(n)
+		var lr: float = depth * 0.5 * (0.8 + 0.45 * _face_seed(base, salt + float(i)))
+		var lx: float = clampf(r.position.x + r.size.x * u, r.position.x + lr, r.end.x - lr)
+		lumps.append(Vector3(lx, r.position.y + depth * 0.5, lr))
+	var band := Rect2(r.position.x, r.position.y, r.size.x, depth * 0.5)
+	for L in lumps:
+		node.draw_circle(Vector2(L.x, L.y), L.z + line, ink)
+	node.draw_rect(Rect2(band.position, band.size + Vector2(0.0, line)), ink)
+	node.draw_colored_polygon(_rrect(band, minf(line * 1.5, band.size.y * 0.5)), shade)
+	for L in lumps:
+		node.draw_circle(Vector2(L.x, L.y), L.z, shade)
+	for L in lumps:
+		node.draw_circle(Vector2(L.x - L.z * 0.15, L.y - L.z * 0.25), L.z * 0.72, lit)
+	node.draw_rect(Rect2(band.position + Vector2(line, 0.0),
+		Vector2(band.size.x - line * 2.0, band.size.y * 0.7)), lit)
+
+
+## Forest. A plank of timber with moss on it: the tier as the wood, a darker
+## edge along the bottom where the plank has thickness, grain that runs round a
+## knot, and a cushion of moss along the top in the greens of the board's trees.
+static func _face_bark(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#1f1a0c")
+	var line: float = ow * (1.5 if hot else 1.0)
+	node.draw_colored_polygon(_rrect(rect, ow * 1.6), ink)
+	var r := rect.grow(-line)
+	var w := r.size.x
+	var h := r.size.y
+	# Wood: the tier, pulled a little toward the timber on the board, so the
+	# blue tiers are weathered grey-blue boards rather than blue plastic.
+	var wood := col.lerp(Color("#9a6534"), 0.20)
+	var edge := wood.darkened(0.30)
+	var grain := wood.darkened(0.24)
+	var plank := _rrect(r, ow)
+	node.draw_colored_polygon(plank, edge)
+	var lip: float = maxf(2.0, h * 0.15)
+	var face := plank.duplicate()
+	for i in face.size():
+		face[i].y = minf(face[i].y, r.end.y - lip)
+	node.draw_colored_polygon(face, wood)
+	node.draw_line(Vector2(r.position.x + ow, r.end.y - lip), Vector2(r.end.x - ow, r.end.y - lip),
+		wood.darkened(0.45), maxf(1.0, ow * 0.5))
+
+	# Grain, bending round a knot in one of the outer thirds.
+	var moss_d: float = clampf(h * 0.24, 5.0, 12.0)
+	var gy0: float = r.position.y + moss_d * 0.9
+	var gy1: float = r.end.y - lip - 2.0
+	# Low and toward an end, where it is a knot in the wood and not a bullet
+	# point beside the letters.
+	var kx: float = r.position.x + w * (0.13 if _face_seed(base, 10.0) < 0.5 else 0.87)
+	var ky: float = lerpf(gy0, gy1, 0.82)
+	var kr: float = clampf(minf(w, h) * 0.10, 2.0, 7.0)
+	if gy1 - gy0 > 6.0:
+		for k in 3:
+			var gy: float = lerpf(gy0, gy1, (float(k) + 0.5) / 3.0)
+			var pts := PackedVector2Array()
+			for s in 7:
+				var x: float = lerpf(r.position.x + ow * 2.0, r.end.x - ow * 2.0, float(s) / 6.0)
+				var d: float = clampf(absf(x - kx) / (kr * 3.0), 0.0, 1.0)
+				var push: float = kr * 1.6 * (1.0 - d * d) * (1.0 - d * d) * signf(gy - ky + 0.01)
+				pts.append(Vector2(x, gy + push + (0.8 if (s + k) % 2 == 0 else -0.8)))
+			node.draw_polyline(pts, grain, maxf(1.0, ow * 0.45), true)
+		node.draw_arc(Vector2(kx, ky), kr * 1.25, 0.0, TAU, 16, grain, maxf(1.0, ow * 0.5), true)
+		node.draw_circle(Vector2(kx, ky), kr * 0.6, wood.darkened(0.38))
+	# The lit top edge of the board, under the moss.
+	node.draw_rect(Rect2(r.position.x + ow, r.position.y + moss_d * 0.62, w - ow * 2.0,
+		maxf(1.0, h * 0.03)), Color(1, 1, 1, 0.25))
+
+	_lumpy_cap(node, Rect2(r.position, Vector2(w, moss_d)), moss_d, Color("#86d64a"),
+		Color("#3d8a36"), ink, line, base, 40.0)
+	return _stamp_on(wood, Color("#1a1208"))
+
+
+## Desert. A block of the canyon: laid-down strata in the tier's colour, lit
+## on top where the sun catches it and in shadow down one side as the canyon
+## walls are, and the corners worn round by the wind.
+static func _face_sandstone(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#4a220c")
+	var line: float = ow * (1.5 if hot else 1.0)
+	var rad: float = clampf(minf(rect.size.x, rect.size.y) * 0.2, 3.0, 11.0)
+	node.draw_colored_polygon(_rrect(rect, rad), ink)
+	var r := rect.grow(-line)
+	rad = maxf(1.0, rad - line)
+	var w := r.size.x
+	var h := r.size.y
+
+	# The strata, drawn from the bottom up: each band is the whole shape cut
+	# flat at its own top, over the ones below it.
+	var tones := [col.lerp(Color.WHITE, 0.30), col.lerp(Color.WHITE, 0.08),
+		_deeper(col, 0.08), col.lerp(Color.WHITE, 0.14), _deeper(col, 0.18)]
+	var n := 3 if h < 50.0 else 5
+	var cuts: Array[float] = []
+	for i in n:
+		var f: float = float(i) / float(n)
+		cuts.append(r.position.y + h * (f * 0.92 + (0.0 if i == 0 else 0.05 * _face_seed(base, 10.0 + float(i)))))
+	var shape := _rrect(r, rad)
+	node.draw_colored_polygon(shape, tones[n - 1])
+	for i in range(n - 2, -1, -1):
+		var band := shape.duplicate()
+		for j in band.size():
+			band[j].y = minf(band[j].y, cuts[i + 1])
+		node.draw_colored_polygon(band, tones[i])
+	# The lines between the layers. Straight, with a step or two where the
+	# rock has worn back unevenly: a wavy line made the blue tiers read as
+	# water, and the canyon's layers are flat.
+	for i in range(1, n):
+		var y0: float = cuts[i]
+		var step_x: float = r.position.x + w * (0.25 + 0.5 * _face_seed(base, 20.0 + float(i)))
+		var dy: float = minf(2.0, h * 0.04) * (1.0 if i % 2 == 0 else -1.0)
+		node.draw_polyline(PackedVector2Array([
+			Vector2(r.position.x + rad * 0.4, y0), Vector2(step_x, y0),
+			Vector2(step_x + 1.5, y0 + dy), Vector2(r.end.x - rad * 0.4, y0 + dy),
+		]), Color(_deeper(col, 0.32), 0.75), maxf(1.0, ow * 0.5))
+
+	# The shaded side of the block.
+	var cut: float = r.position.x + w * (0.80 + 0.06 * _face_seed(base, 30.0))
+	var slant: float = minf(w * 0.05, 4.0)
+	var side := shape.duplicate()
+	for i in side.size():
+		var ex: float = lerpf(cut - slant, cut + slant, (side[i].y - r.position.y) / maxf(1.0, h))
+		side[i].x = maxf(side[i].x, ex)
+	node.draw_colored_polygon(side, Color(_deeper(col, 0.35), 0.55))
+	# The lip of the top layer, where the sun is.
+	node.draw_rect(Rect2(r.position.x + rad, r.position.y + maxf(1.0, h * 0.04), w - rad * 2.0,
+		maxf(1.0, h * 0.035)), Color(1, 1, 1, 0.45))
+
+	return _stamp_on(tones[1], Color("#3a1a08"))
+
+
+## Space. A slab of dark glass with the board's sky caught in it: the tier
+## deep and lit from inside in flat steps, a drift of nebula through it, stars
+## that catch, and on a big one a ringed planet like the one on the board.
+static func _face_nebula(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#150a33")
+	var line: float = ow * (1.5 if hot else 1.0)
+	node.draw_colored_polygon(_rrect(rect, ow * 2.0), ink)
+	var r := rect.grow(-line)
+	var w := r.size.x
+	var h := r.size.y
+	var deep := Color.from_hsv(col.h, minf(1.0, col.s * 1.05), col.v * 0.42)
+	var mid := Color.from_hsv(col.h, minf(1.0, col.s * 1.0), col.v * 0.62)
+	var glow := col.lerp(Color.WHITE, 0.15)
+	node.draw_colored_polygon(_rrect(r, ow * 1.2), deep)
+	# Lit from inside, off-centre, in two flat steps.
+	var core := r.get_center() + Vector2(-w * 0.12, -h * 0.10)
+	var cw: float = w * 0.78
+	var ch: float = h * 0.72
+	node.draw_colored_polygon(_rrect(Rect2(core - Vector2(cw, ch) * 0.5, Vector2(cw, ch)),
+		minf(cw, ch) * 0.45), mid)
+	node.draw_colored_polygon(_rrect(Rect2(core - Vector2(cw, ch) * 0.28, Vector2(cw, ch) * 0.56),
+		minf(cw, ch) * 0.28), Color(glow, 0.55))
+	# A ribbon of nebula across it, magenta, drifting.
+	var drift: float = sin(t * 0.25 + _face_seed(base, 3.0) * TAU) * w * 0.04
+	for k in 5:
+		var u: float = (float(k) + 0.5) / 5.0
+		var cx: float = r.position.x + w * u + drift
+		var cy: float = r.position.y + h * (0.62 - 0.30 * u + 0.08 * sin(u * 6.0 + base))
+		var cr: float = minf(w, h) * (0.14 + 0.06 * _face_seed(base, 4.0 + float(k)))
+		cx = clampf(cx, r.position.x + cr, r.end.x - cr)
+		cy = clampf(cy, r.position.y + cr, r.end.y - cr)
+		node.draw_circle(Vector2(cx, cy), cr, Color("#ff5fd2", 0.13))
+	# The planet, in a corner, only where there is a corner to spare: on
+	# anything shorter than three rows it landed under the letters.
+	if w > 100.0 and h > 90.0:
+		var pr: float = clampf(minf(w, h) * 0.13, 5.0, 11.0)
+		var right := _face_seed(base, 5.0) < 0.5
+		var pc := Vector2(r.end.x - pr * 2.0 if right else r.position.x + pr * 2.0,
+			r.end.y - pr * 1.8)
+		var ring_c := Color("#e8d6ff")
+		node.draw_circle(pc, pr + line, ink)
+		node.draw_circle(pc, pr, Color("#b27cf0"))
+		node.draw_circle(pc + Vector2(-pr * 0.2, -pr * 0.2), pr * 0.72, Color("#c99bff"))
+		var ring := PackedVector2Array()
+		for k in 17:
+			var a: float = PI * float(k) / 16.0
+			ring.append(pc + Vector2(cos(a) * pr * 1.75, sin(a) * pr * 0.42).rotated(-0.35))
+		node.draw_polyline(ring, ink, maxf(2.0, line * 2.2), true)
+		node.draw_polyline(ring, ring_c, maxf(1.2, line * 0.9), true)
+	# Stars. Most are points; one is a glint that catches now and then.
+	for k in 5:
+		var sx := _face_seed(base, 7.0 + float(k))
+		var sy := _face_seed(base, 17.0 + float(k))
+		var tw: float = 0.5 + 0.5 * sin(t * (1.3 + sx * 2.0) + float(k) * 1.7)
+		node.draw_circle(Vector2(r.position.x + w * (0.1 + sx * 0.8), r.position.y + h * (0.1 + sy * 0.8)),
+			maxf(0.8, minf(w, h) * 0.022), Color(1, 1, 1, 0.45 + 0.5 * tw))
+	var gp: float = fmod(t * 0.3 + _face_seed(base, 8.0), 1.0)
+	if gp < 0.2:
+		var gs: float = minf(w, h) * 0.5 * sin(gp / 0.2 * PI)
+		_sprite(node, glint(), Vector2(r.position.x + w * (0.2 + 0.6 * _face_seed(base, 9.0)),
+			r.position.y + h * 0.25), Vector2(gs, gs), Color(1, 1, 1, 0.95))
+	# The glass: a shine across the top corner.
+	node.draw_colored_polygon(PackedVector2Array([
+		r.position + Vector2(ow, ow), r.position + Vector2(w * 0.42, ow),
+		r.position + Vector2(ow, h * 0.46)]), Color(1, 1, 1, 0.10))
+	node.draw_rect(Rect2(r.position.x + ow * 1.5, r.position.y + ow, w * 0.3, maxf(1.0, h * 0.03)),
+		Color(1, 1, 1, 0.5))
+	return Color.WHITE
+
+
+## Nexus. A block of the plaza: pale cut stone in the tier's colour, bevelled
+## so it has an edge to catch the light, and gold set into its corners the way
+## the plaza's floor has gold run through its joints, glowing a little and
+## slowly.
+static func _face_rune(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		base: float, t: float) -> Color:
+	var ow := _ink_w(rect)
+	var ink: Color = Color.WHITE if hot else Color("#2a2046")
+	var line: float = ow * (1.5 if hot else 1.0)
+	node.draw_colored_polygon(_rrect(rect, ow * 1.4), ink)
+	var r := rect.grow(-line)
+	var w := r.size.x
+	var h := r.size.y
+	var stone := col.lerp(Color("#e8e0d0"), 0.35)
+	var bv: float = clampf(minf(w, h) * 0.12, 2.5, 6.0)
+	var f := _bevel(node, r, bv, ow, stone.lerp(Color.WHITE, 0.45), stone,
+		_deeper(stone, 0.26))
+	var gold := Color("#e8a92c")
+	var hotg := Color("#ffe08a")
+	var pulse: float = 0.5 + 0.5 * sin(t * 1.15 + _face_seed(base, 50.0) * TAU)
+	# The inlay: gold set into each corner of the face, a bracket with a stud
+	# at its point. A full border ran through the letters on anything small.
+	var inset: float = maxf(2.0, minf(f.size.x, f.size.y) * 0.10)
+	var ring := f.grow(-inset)
+	var arm: float = clampf(minf(ring.size.x, ring.size.y) * 0.34, 3.0, 14.0)
+	var gw: float = maxf(1.3, minf(w, h) * 0.04)
+	for c: Vector2 in [ring.position, Vector2(ring.end.x, ring.position.y),
+			Vector2(ring.position.x, ring.end.y), ring.end]:
+		var sx: float = 1.0 if c.x < ring.get_center().x else -1.0
+		var sy: float = 1.0 if c.y < ring.get_center().y else -1.0
+		var bracket := PackedVector2Array([c + Vector2(sx * arm, 0.0), c, c + Vector2(0.0, sy * arm)])
+		node.draw_polyline(bracket, gold.darkened(0.35), gw + 1.2)
+		node.draw_polyline(bracket, gold.lerp(hotg, pulse * 0.6), gw * 0.6)
+		var stud: float = maxf(1.4, gw * 1.1)
+		node.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -stud),
+			c + Vector2(stud, 0), c + Vector2(0, stud), c + Vector2(-stud, 0)]),
+			hotg.lerp(Color.WHITE, pulse * 0.4))
+	# And a gold joint along the foot of the big ones, as the plaza's floor
+	# has gold run through it.
+	if f.size.y > 44.0:
+		node.draw_line(Vector2(ring.position.x + arm + 3.0, ring.end.y),
+			Vector2(ring.end.x - arm - 3.0, ring.end.y), Color(gold, 0.35 + 0.3 * pulse),
+			maxf(1.0, gw * 0.5))
+	# A chip off one corner of the stone, so it is cut and worn and not cast.
+	var right := _face_seed(base, 51.0) < 0.5
+	var cc := Vector2(r.end.x if right else r.position.x, r.position.y)
+	var cs: float = bv * 1.4
+	node.draw_colored_polygon(PackedVector2Array([cc, cc + Vector2(-cs if right else cs, 0.0),
+		cc + Vector2(0.0, cs)]), ink)
+	return _stamp_on(stone, Color("#2a2046"))
+
+
 static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 		style: String, hot: bool, key: float = -1.0) -> Color:
 	var t := Time.get_ticks_msec() / 1000.0
@@ -1548,188 +2302,19 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 		else rect.position.x + rect.position.y * 2.27
 
 	match style:
-		# Forest. Heartwood with the grain running across it and a cut top edge,
-		# so a stack of them reads as sawn timber rather than as tiles.
+		# Forest. See `_face_bark`.
 		"bark":
-			_face_body(node, rect, Color(col.darkened(0.18), 0.92 if hot else 0.86))
-			node.draw_rect(Rect2(rect.position + Vector2(w * 0.10, h * 0.09),
-				Vector2(w * 0.80, maxf(1.5, h * 0.05))), Color(1, 1, 1, 0.22), true)
-			var grain := Color(col.darkened(0.45), 0.55)
-			for i in 3:
-				var y: float = rect.position.y + h * (0.32 + float(i) * 0.21)
-				var bow: float = h * 0.035 * (1.0 if i % 2 == 0 else -1.0)
-				node.draw_polyline(PackedVector2Array([
-					Vector2(rect.position.x + w * 0.10, y),
-					Vector2(mid.x, y + bow),
-					Vector2(rect.end.x - w * 0.10, y),
-				]), grain, maxf(1.0, h * 0.030), true)
-			_face_rim(node, rect, Color(col.lightened(0.30), 0.9), hot)
-			return Color("#10200f")
+			return _face_bark(node, rect, col, hot, base, t)
 
-		# Volcano. Cooled crust with the heat still moving underneath it.
-		#
-		# The first version drew a straight vertical line with three straight
-		# horizontal ones crossing it, and at cell size that is not a crack, it
-		# is scaffolding laid on a flat tile. Two things were wrong and both
-		# were structural: a crack in cooling rock is never straight, and the
-		# glow belongs *in* the gap rather than painted over the surface.
-		#
-		# So the face is built the way the backdrop art is — irregular plates
-		# with lit seams between them. The seams wander, each is drawn as a wide
-		# dim bleed with a narrow bright core inside it, and the plates either
-		# side sit at different darknesses so the crust has facets instead of
-		# being one flat wash.
+		# Volcano, and Ocean. See `_face_magma` and `_face_coral`.
 		"magma":
-			# An ink line round the slab first, as round every rock on the
-			# board behind it, and the slab drawn inside it.
-			var mink: float = clampf(minf(w, h) * 0.05, 1.5, 3.0)
-			_face_body(node, rect, Color("#140608"))
-			rect = rect.grow(-mink)
-			w = rect.size.x
-			h = rect.size.y
-			mid = rect.get_center()
-			# Darkened enough to read as crust and not so far that a red 4x3 and
-			# a blue 1x1 become the same brown tile. A board you cannot read by
-			# tier is a board that costs somebody the word they were about to
-			# type.
-			_face_body(node, rect, Color(col.darkened(0.46), 0.97))
-			var beat: float = 0.55 + 0.45 * sin(t * 1.9 + _face_seed(base, 1.0) * TAU)
-			# Pulled toward lava rather than left as a lightened tier colour.
-			# `col.lightened(0.55)` on a cyan tier is very nearly white, and a
-			# white line across a block reads as a scratch, not as something
-			# glowing underneath it. The body keeps the tier — that is where the
-			# colour has to survive — and the seam is allowed to be hot.
-			# Three quarters of the way to lava. At 0.62 a cyan tier came out tan
-			# and the seams read as roads across the block; the tier still has to
-			# survive, but it survives in the crust, not in the fire.
-			var hotcol: Color = col.lightened(0.30).lerp(Color("#ff6a10"), 0.78)
-			var core: Color = hotcol.lightened(0.42)
-
-			# Facets. Two wedges of crust at different darknesses, anchored to
-			# the corners so they read as plates rather than as blobs floating
-			# on the face.
-			var f0 := _face_seed(base, 11.0)
-			var f1 := _face_seed(base, 12.0)
-			node.draw_colored_polygon(PackedVector2Array([
-				rect.position,
-				rect.position + Vector2(w * (0.42 + f0 * 0.22), 0.0),
-				rect.position + Vector2(w * (0.26 + f1 * 0.18),
-					h * (0.52 + f0 * 0.16)),
-				rect.position + Vector2(0.0, h * 0.68),
-			]), Color(col.darkened(0.34), 0.55))
-			node.draw_colored_polygon(PackedVector2Array([
-				Vector2(rect.end.x, rect.position.y + h * (0.18 + f1 * 0.16)),
-				rect.end,
-				Vector2(rect.position.x + w * (0.44 + f1 * 0.20), rect.end.y),
-				Vector2(rect.position.x + w * (0.62 + f0 * 0.16),
-					rect.position.y + h * (0.46 + f1 * 0.14)),
-			]), Color(col.darkened(0.60), 0.50))
-
-			# The slab sits in lava, as the plates on the board do: heat coming
-			# up round its foot, brightest at the bottom edge and breathing with
-			# the seams. And the top edge catches the light, so it is a slab with
-			# a face and not a flat tile.
-			var lava: Color = Color("#ff5a14").lerp(col, 0.15)
-			for i in 6:
-				var f := float(i) / 5.0
-				node.draw_rect(Rect2(rect.position.x + 1.0, rect.end.y - h * 0.36 * (1.0 - f) - 1.0,
-					w - 2.0, h * 0.36 / 6.0 + 1.0),
-					Color(lava, (0.04 + 0.42 * f * f) * (0.7 + 0.3 * beat)))
-			# And licking a little way up both sides.
-			for sx in 2:
-				var ex: float = rect.position.x + 1.0 if sx == 0 else rect.end.x - 1.0 - w * 0.07
-				for i in 4:
-					var f2 := float(i) / 3.0
-					node.draw_rect(Rect2(ex, rect.end.y - h * (0.55 - 0.13 * f2) - 1.0,
-						w * 0.07, h * 0.13 + 1.0),
-						Color(lava, (0.04 + 0.12 * f2) * (0.7 + 0.3 * beat)))
-			node.draw_rect(Rect2(rect.position.x + w * 0.08, rect.end.y - maxf(1.5, h * 0.05) - 1.0,
-				w * 0.84, maxf(1.5, h * 0.05)), Color(lava.lightened(0.35), 0.45 + 0.3 * beat))
-			node.draw_rect(Rect2(rect.position + Vector2(w * 0.08, h * 0.06),
-				Vector2(w * 0.84, maxf(1.5, h * 0.05))), Color(col.lightened(0.45), 0.35))
-
-			# Two seams that wander, one down the block and one across it, so a
-			# pair never reads as two parallel scratches.
-			for s in 2:
-				var sd := _face_seed(base, 13.0 + float(s) * 3.0)
-				var pts := PackedVector2Array()
-				var steps := 5
-				for k in steps + 1:
-					var u := float(k) / float(steps)
-					var ax := 0.0
-					var ay := 0.0
-					if s == 0:
-						ax = w * (0.26 + sd * 0.44) + w * 0.20 * (u - 0.5) * 2.0
-						ay = h * u
-					else:
-						ax = w * u
-						ay = h * (0.32 + sd * 0.36) + h * 0.22 * sin(u * 3.1 + sd * 6.0)
-					# The wander, hashed per point, so a seam has a shape that
-					# belongs to this block and does not redraw itself each frame.
-					var jig: float = _face_seed(base, 30.0 + float(s) * 7.0 + float(k)) - 0.5
-					if s == 0:
-						ax += jig * w * 0.20
-					else:
-						ay += jig * h * 0.18
-					pts.append(Vector2(
-						clampf(rect.position.x + ax, rect.position.x + 1.0,
-							rect.end.x - 1.0),
-						clampf(rect.position.y + ay, rect.position.y + 1.0,
-							rect.end.y - 1.0)))
-				# The bleed, then the core inside it. Two passes is what makes a
-				# line read as something glowing up through a gap rather than as
-				# a stroke drawn on top of the surface.
-				node.draw_polyline(pts, Color(hotcol, 0.11 + 0.08 * beat),
-					maxf(3.0, minf(w, h) * 0.20), true)
-				node.draw_polyline(pts, Color(hotcol, 0.50 + 0.30 * beat),
-					maxf(1.4, minf(w, h) * 0.075), true)
-				# And a thread of white heat down the middle of the core, which
-				# is what stops a wide warm line reading as a painted stripe.
-				node.draw_polyline(pts, Color(core, 0.55 + 0.35 * beat),
-					maxf(1.0, minf(w, h) * 0.028), true)
-
-			_face_rim(node, rect, Color(col.lightened(0.15), 0.95), hot)
-			return Color(col.lightened(0.85))
-
-		# Ocean. A rounded, slightly soft body with air coming off the top of it.
+			return _face_magma(node, rect, col, hot, base, t)
 		"coral":
-			_face_body(node, rect, Color(col, 0.80 if hot else 0.70))
-			# Lobes along the top, which is what stops it reading as a pill.
-			var lobe: float = minf(w * 0.18, h * 0.22)
-			for i in 3:
-				node.draw_circle(Vector2(rect.position.x + w * (0.25 + float(i) * 0.25),
-					rect.position.y + lobe * 0.55), lobe,
-					Color(col.lightened(0.28), 0.55))
-			for i in 3:
-				var hb := _face_seed(base, 5.0 + float(i))
-				var rise: float = fmod(t * (0.35 + hb * 0.30) + hb, 1.0)
-				var bx: float = rect.position.x + w * (0.18 + hb * 0.64)
-				var by: float = rect.end.y - h * 0.12 - rise * h * 0.72
-				node.draw_arc(Vector2(bx, by), maxf(1.2, minf(w, h) * 0.055),
-					0.0, TAU, 9, Color(1, 1, 1, 0.45 * (1.0 - rise)), 1.2, true)
-			_face_rim(node, rect, Color(col.lightened(0.45), 0.9), hot)
-			return Color.WHITE
+			return _face_coral(node, rect, col, hot, base, t)
 
-		# Space. Thin enough to see through, with a field of stars caught inside
-		# it and a bloom at the middle.
+		# Space. See `_face_nebula`.
 		"nebula":
-			# Opaque enough to carry its tier. At 0.48 over a purple backdrop
-			# every tier arrived the same lilac, which is the nebula eating the
-			# one thing the block had to say.
-			_face_body(node, rect, Color(col, 0.78 if not hot else 0.90))
-			for i in 3:
-				var f := float(i) / 2.0
-				node.draw_circle(mid, minf(w, h) * (0.16 + f * 0.26),
-					Color(col.lightened(0.40), 0.13 * (1.0 - f)))
-			for i in 7:
-				var sx := _face_seed(base, 7.0 + float(i))
-				var sy := _face_seed(base, 17.0 + float(i))
-				var tw: float = 0.45 + 0.55 * sin(t * (1.4 + sx * 2.0) + float(i) * 1.7)
-				node.draw_circle(Vector2(rect.position.x + w * (0.12 + sx * 0.76),
-					rect.position.y + h * (0.12 + sy * 0.76)),
-					maxf(0.8, minf(w, h) * 0.030), Color(1, 1, 1, 0.70 * tw))
-			_face_rim(node, rect, Color(col.lightened(0.50), 0.95), hot)
-			return Color.WHITE
+			return _face_nebula(node, rect, col, hot, base, t)
 
 		# Cyber. Housing almost black, edge doing all the work, and a bar
 		# crawling down the inside of it.
@@ -1790,81 +2375,16 @@ static func draw_premium_face(node: CanvasItem, rect: Rect2, col: Color,
 		"cloud":
 			return _face_cloud(node, rect, col, hot, base, t)
 
-		# Desert. Laid-down strata, thickest at the bottom, which is the one
-		# style in the set that says something about which way is up.
+		# Desert, and Nexus. See `_face_sandstone` and `_face_rune`.
 		"sandstone":
-			_face_body(node, rect, Color(col, 0.90 if hot else 0.84))
-			var bands := 4
-			for i in bands:
-				var f := float(i) / float(bands)
-				var y: float = rect.position.y + h * (0.16 + f * 0.74)
-				var thick: float = maxf(1.5, h * (0.045 + f * 0.030))
-				var shade := Color(1, 1, 1, 0.14) if i % 2 == 0 \
-					else Color(0, 0, 0, 0.16)
-				node.draw_rect(Rect2(rect.position.x + w * 0.06, y,
-					w * 0.88, thick), shade, true)
-			node.draw_rect(Rect2(rect.position + Vector2(w * 0.08, h * 0.07),
-				Vector2(w * 0.84, maxf(1.5, h * 0.045))), Color(1, 1, 1, 0.26), true)
-			_face_rim(node, rect, Color(col.darkened(0.30), 0.9), hot)
-			return Color("#2a1405")
-
-		# Nexus. Cut stone with a glyph lit into the face of it — the boards in
-		# the painting are masonry with gold worked through the joints, and this
-		# is that at tile size.
+			return _face_sandstone(node, rect, col, hot, base, t)
 		"rune":
-			_face_body(node, rect, Color(col.darkened(0.30), 0.93))
-			var gold := Color("#ffc850")
-			var pulse: float = 0.5 + 0.5 * sin(t * 1.15
-				+ _face_seed(base, 50.0) * TAU)
-			# Masonry: two courses split by a joint, each a slightly different
-			# darkness, so the block reads as cut rather than cast.
-			#
-			# The joint sits in the upper third rather than across the middle.
-			# Centred it landed exactly where the stamp is and read as a line
-			# struck through the letters — the block is a label first and a
-			# piece of stonework second.
-			var split: float = 0.20 + _face_seed(base, 51.0) * 0.14
-			node.draw_rect(Rect2(rect.position.x + 1.0, rect.position.y + 1.0,
-				w - 2.0, h * split), Color(1, 1, 1, 0.07), true)
-			node.draw_rect(Rect2(rect.position.x + 1.0,
-				rect.position.y + h * split - 1.0, w - 2.0,
-				maxf(1.0, h * 0.02)), Color(0, 0, 0, 0.16), true)
-			# The glyph. A ring with two chords across it, which is enough to
-			# read as carved at 36px and cheap enough to draw on forty blocks.
-			var gr: float = minf(w, h) * 0.26
-			node.draw_arc(mid, gr, 0.0, TAU, 28,
-				Color(gold, 0.30 + 0.30 * pulse), maxf(1.2, gr * 0.16), true)
-			node.draw_arc(mid, gr * 0.58, 0.0, TAU, 20,
-				Color(gold, 0.20 + 0.22 * pulse), maxf(1.0, gr * 0.10), true)
-			for i in 2:
-				var a2: float = _face_seed(base, 52.0 + float(i)) * TAU
-				node.draw_line(mid + Vector2(cos(a2), sin(a2)) * gr * 1.05,
-					mid - Vector2(cos(a2), sin(a2)) * gr * 1.05,
-					Color(gold, 0.22 + 0.20 * pulse), maxf(1.0, gr * 0.09))
-			# Gold worked into the joint, which is the motif the board is built
-			# on and the thing that ties the face to the picture behind it.
-			node.draw_rect(Rect2(rect.position.x + w * 0.08,
-				rect.end.y - h * 0.13, w * 0.84, maxf(1.2, h * 0.035)),
-				Color(gold, 0.26 + 0.18 * pulse), true)
-			_face_rim(node, rect, Color(gold, 0.85), hot)
-			return Color("#fff3d6")
+			return _face_rune(node, rect, col, hot, base, t)
 
-		# Aurora. Cut glass: thin body, hard facets, a frosted double edge.
+		# Aurora. See `_face_ice`.
 		"ice":
-			# Glass, not water. 0.34 was see-through enough that the aurora
-			# behind it decided the block's colour instead of the tier.
-			_face_body(node, rect, Color(col, 0.62 if not hot else 0.76))
-			var apex := Vector2(mid.x + w * 0.10, mid.y - h * 0.06)
-			for c: Vector2 in [rect.position, Vector2(rect.end.x, rect.position.y),
-					Vector2(rect.position.x, rect.end.y), rect.end]:
-				node.draw_line(c.lerp(mid, 0.18), apex, Color(1, 1, 1, 0.26), 1.0)
-			node.draw_colored_polygon(PackedVector2Array([
-				rect.position + Vector2(w * 0.10, h * 0.10),
-				rect.position + Vector2(w * 0.52, h * 0.10),
-				rect.position + Vector2(w * 0.26, h * 0.42),
-			]), Color(1, 1, 1, 0.20))
-			node.draw_rect(rect.grow(-3.0), Color(1, 1, 1, 0.18), false, 1.0)
-			_face_rim(node, rect, Color(col.lightened(0.55), 0.95), hot)
-			return Color.WHITE
+			return _face_ice(node, rect, col, hot, base, t)
+
+	return Color.WHITE
 
 	return Color.WHITE
