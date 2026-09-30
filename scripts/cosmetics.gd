@@ -181,8 +181,8 @@ const THEMES := {
 	},
 
 	# Subway: a 3D board from the start rather than a painting that became
-	# one. Free for now; meant for a pack of its own or an unlock later, which
-	# is a change to its catalogue row in `Profile`, not to anything here.
+	# one. Earned by playing three versus matches against real people; the
+	# lock is its catalogue row in `Profile`, not anything here.
 	#
 	# Its art is a still of its own scene, which is what the previews show and
 	# what `--board2d` falls back to. Red from the line's livery for the frame,

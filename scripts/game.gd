@@ -1030,6 +1030,9 @@ func _ready() -> void:
 	_apply_theme()
 	_apply_prefs()
 	Profile.changed.connect(_apply_theme)
+	# Before the store has had a chance to answer: an entitlement it finds at
+	# launch is a pack that arrived this session, as far as this is concerned.
+	_pack_at_boot = Profile.owns(Profile.PACK_PREMIUM)
 	# Nothing was listening to this before. The sheet opened, something was or
 	# was not sent, and the game never found out either way — which was fine
 	# while sharing earned nothing and is the whole mechanism now.
@@ -2587,6 +2590,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		Sfx.play("back", 1.4)
 		return
 
+	# Before every screen's own keys, the summary's included: it is standing in
+	# front of all of them.
+	if _reveal_up():
+		_reveal_key(k)
+		return
+
 	if phase == Phase.PRACTICE:
 		match k.keycode:
 			KEY_1: _activate("tutorial")
@@ -3403,6 +3412,11 @@ func _share_promo_up() -> bool:
 func _raise_share_promo() -> void:
 	if promo_open or not Profile.owes_share_promo(daily_key()):
 		return
+	# Nor over an unveiling, for the same reason: the pack's is owed to every
+	# owner on the first launch after it arrived, and a pitch stacked behind it
+	# would be the second full-screen thing in a row. Still owed next launch.
+	if not _reveals.is_empty() or Profile.owes_premium_reveal():
+		return
 	share_promo_open = true
 	# Marked on open rather than on close, for the same reason the premium card
 	# is: an app killed from the switcher with the card up would otherwise be
@@ -4018,6 +4032,925 @@ func _bank_open_run(quiet: bool) -> void:
 		_bank_survival_time()
 	elif mode == Mode.DAILY:
 		_end_daily(true, quiet)
+
+
+# ------------------------------------------------------- an unlock, unveiled
+#
+# A board you had earned used to arrive as a line of small print under the XP
+# bar, and buying the whole pack turned a row in Settings from a price into the
+# word "owned". The two biggest things this game can give somebody arrived
+# looking like the smallest.
+#
+# So they are unveiled. A board: the screen goes dark, a seam of light opens
+# across the middle, and what is on the other side is the board itself, running
+# — its own scene, not a picture of it. The pack: its boards are dealt face down
+# and turned over one at a time. Both end on two buttons, and both can be cut
+# short with a tap once they have started, because a ceremony you cannot get out
+# of is a cutscene.
+#
+# Queued rather than drawn where it happens. An unlock is found at the end of a
+# match, on a share coming back, or on a purchase that can land on any screen at
+# all, and the unveiling waits for a screen it can stand in front of: never over
+# a running match, never under an ad break, and not until a summary has been up
+# long enough for the result on it to have been read.
+#
+# Who gets one:
+#
+#   A board earned by doing something — the Subway's three versus matches, the
+#   Nexus's eight days of sharing, and anything added later on a `need` that is
+#   not money. Found by diffing the unlocked set around whatever just happened,
+#   the same way the summary works out what a match paid for.
+#
+#   The pack, for everybody who owns it and has not been shown it — which is
+#   also everybody who bought it before this existed. See
+#   `Profile.owes_premium_reveal`. The people who paid first are the ones who
+#   most deserve the moment, and a ceremony only for new buyers would hand it to
+#   everybody but them.
+
+## What is waiting to be unveiled, oldest first. A board is
+## `{kind: "board", id, how, also}` — its theme id, the line saying what earned
+## it, and anything else the same moment unlocked. The pack is
+## `{kind: "premium", fresh}`, `fresh` when it was bought during this session.
+var _reveals: Array = []
+## Seconds the one at the front has been up. Zero until it has started.
+var _reveal_t := 0.0
+## The beats that have already sounded, by name, so each fires exactly once
+## however the frames fall — and a skip can mark the ones it jumps over as heard
+## without playing a pile of them in one frame.
+var _reveal_heard := {}
+## The new board's own scene, for the board unveiling to open onto. Built when
+## it starts and freed when it ends; see `_reveal_world`.
+var _reveal3d: SubViewport = null
+## Held so the scene loaded in the background stays in the cache until the
+## viewport above has instanced it.
+var _reveal_packed: Resource = null
+## Whether the pack was already owned when this session started. Decides the
+## words its unveiling uses: somebody who has just bought it is welcomed to it,
+## somebody who has had it for months is thanked for having backed the game.
+var _pack_at_boot := false
+
+## Lets a harness see an unveiling. Off otherwise, because every tool in
+## `tools/` builds this scene by hand rather than running it, and most of them
+## do it on the real profile: the pack's unveiling marks itself seen the moment
+## it starts, so a test run would spend it on nobody, and it would sit over the
+## very screen the test was trying to measure. The game proper is the tree's
+## current scene; a harness that wants one says so here.
+var reveal_demo := false
+
+## The board unveiling's clock, in seconds from its start.
+const REVEAL_DARK := 0.45      ## the screen is black
+const REVEAL_SEAM := 0.55      ## a line of light starts across the middle
+const REVEAL_OPEN := 1.35      ## and splits, top and bottom, onto the board
+const REVEAL_OPENED := 2.05    ## all the way open
+const REVEAL_NAME := 2.0       ## its name lands
+const REVEAL_SETTLE := 2.9     ## the buttons arrive, and a tap stops skipping
+
+## The pack's. Its tiles are dealt one every `PACK_DEAL_EVERY` from `PACK_DEAL`,
+## each turning over `PACK_FLIP_AFTER` after it lands and taking `PACK_FLIP` to
+## do it.
+const PACK_HEAD := 1.1
+const PACK_DEAL := 1.6
+const PACK_DEAL_EVERY := 0.3
+const PACK_FLIP_AFTER := 0.22
+const PACK_FLIP := 0.3
+
+## How long a summary is up before an unveiling may cover it. Past the
+## summary's own lockout, so the result has been seen, and short enough that
+## nobody has left yet.
+const REVEAL_OVER_WAIT := 1.6
+## Taps are ignored this far into an unveiling. The press that ended the match,
+## or the one that closed the card before, is still on its way up.
+const REVEAL_DEAF := 0.6
+
+const REVEAL_BTN_H := 62.0
+
+## What goes with what on the "also unlocked" line, so a block face is not just
+## a word nobody recognises.
+const REVEAL_ALSO_NOUN := {
+	"title": "title", "blocks": "blocks", "typing": "typing",
+	"attack": "attack", "cursor": "cursor", "victory": "victory",
+}
+
+
+func _reveal_up() -> bool:
+	return not _reveals.is_empty() and _reveal_live() and _reveal_can_show()
+
+
+func _reveal_live() -> bool:
+	return reveal_demo or get_tree().current_scene == self
+
+
+## Whether the screen underneath is one an unveiling may stand in front of.
+##
+## Not the lobby: a match can be found while it is up, and the countdown would
+## start behind a card. Not the splash, which is its own moment. The summary
+## only after `REVEAL_OVER_WAIT`, and nothing at all under an ad break, which
+## would otherwise be playing the fanfare to a screen nobody can see.
+func _reveal_can_show() -> bool:
+	if _curtain != Curtain.NONE:
+		return false
+	if phase == Phase.OVER:
+		return over_age >= REVEAL_OVER_WAIT
+	return phase in [Phase.TITLE, Phase.MASTERY, Phase.COSMETICS, Phase.SETTINGS,
+		Phase.BOARDS, Phase.WEEKLY, Phase.SOLO, Phase.PRACTICE]
+
+
+## Whether the unveiling has finished arriving: the buttons are up, and a tap
+## is a choice rather than a skip.
+func _reveal_settled() -> bool:
+	return _reveal_t >= _reveal_settle_at()
+
+
+func _reveal_kind() -> String:
+	return String((_reveals[0] as Dictionary)["kind"]) if not _reveals.is_empty() else ""
+
+
+func _reveal_settle_at() -> float:
+	if _reveal_kind() == "premium":
+		return _pack_done_at() + 0.6
+	return REVEAL_SETTLE
+
+
+## When the last of the pack's tiles has finished turning over.
+func _pack_done_at() -> float:
+	var n := _pack_tiles().size()
+	return PACK_DEAL + float(n - 1) * PACK_DEAL_EVERY + PACK_FLIP_AFTER + PACK_FLIP
+
+
+## Whether a theme is a place rather than a palette — it brings a picture or a
+## scene. Those are what get unveiled; a recoloured wash earned at level three
+## keeps the summary's line, which is the size of the thing it is.
+func _is_scenery(id: String) -> bool:
+	return String(Cosmetics.theme_opt(id, "art")) != ""
+
+
+## Queue whatever the unlocks since `before` deserve. `before` is
+## `Profile.unlocked_set()` from before the thing that might have earned them.
+func _queue_reveals(before: Dictionary) -> void:
+	var now := Profile.unlocked_set()
+	var fresh: Array = []
+	for slot: String in Profile.SLOTS:
+		for id in now[slot]:
+			if not (before.get(slot, []) as Array).has(id):
+				fresh.append([slot, String(id)])
+	for pair: Array in fresh:
+		var id := String(pair[1])
+		if String(pair[0]) != "theme" or not _is_scenery(id):
+			continue
+		var need: Dictionary = Profile.entry("theme", id).get("need", {})
+		# The pack's boards arrive with the pack's own unveiling, all at once.
+		if need.is_empty() or need.has("buy"):
+			continue
+		var also: Array = []
+		for other: Array in fresh:
+			if other == pair or (String(other[0]) == "theme" and _is_scenery(String(other[1]))):
+				continue
+			var nm := String(Profile.entry(String(other[0]), String(other[1])).get("name", other[1]))
+			var noun := String(REVEAL_ALSO_NOUN.get(String(other[0]), ""))
+			also.append(nm if noun == "" else "%s %s" % [nm, noun])
+		_reveals.append({"kind": "board", "id": id, "how": _reveal_how(need),
+			"also": also})
+		# Fetched in the background from now, so the scene is in memory by the
+		# time the door opens onto it. From the end of a match that is at least
+		# `REVEAL_OVER_WAIT`, which is longer than any of them take to read.
+		var path := _board_3d_path(id)
+		if path != "" and ResourceLoader.exists(path):
+			ResourceLoader.load_threaded_request(path)
+
+
+## The line under a board's name: what the player did to earn it.
+func _reveal_how(need: Dictionary) -> String:
+	if need.has("versus"):
+		return "earned in %d versus matches against real people" % int(need["versus"])
+	if need.has("shares"):
+		return "earned by sharing Word Wars on %d days" % int(need["shares"])
+	return "earned: %s" % String(Profile.standing(need)["what"])
+
+
+func _reveal_queued(kind: String) -> bool:
+	for r: Dictionary in _reveals:
+		if String(r["kind"]) == kind:
+			return true
+	return false
+
+
+func _tick_reveal(delta: float) -> void:
+	if not _reveal_live():
+		return
+	# Polled, like the pitch's own ownership check, because the pack arrives by
+	# more routes than any one signal hears about. See `owes_premium_reveal`.
+	if Profile.owes_premium_reveal() and not _reveal_queued("premium"):
+		_reveals.append({"kind": "premium", "fresh": not _pack_at_boot})
+	if _reveals.is_empty():
+		return
+	if not _reveal_up():
+		# Walked away onto a screen it cannot stand on — a rematch started
+		# underneath it, say. It starts again from the top when it next can,
+		# rather than resuming behind a door that has already opened.
+		if _reveal_t > 0.0:
+			_reveal_reset()
+		return
+	if _reveal_t == 0.0:
+		_reveal_begin()
+	var was := _reveal_t
+	_reveal_t += delta
+	# The backdrop's own scene is behind a black screen from here, and there is
+	# no reason to render two scenes to show one.
+	if _reveal_t >= REVEAL_DARK and _art3d != null:
+		_art3d.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	for beat: Array in _reveal_beats():
+		var at := float(beat[0])
+		var nm := String(beat[1])
+		if was < at and _reveal_t >= at and not _reveal_heard.has(nm):
+			_reveal_heard[nm] = true
+			_reveal_sound(nm)
+
+
+func _reveal_begin() -> void:
+	var r: Dictionary = _reveals[0]
+	_reveal_heard = {}
+	_hover_action = ""
+	_press_action = ""
+	if String(r["kind"]) == "premium":
+		# Marked as it goes up rather than as it is closed, for the reason the
+		# pitch gives: an app killed from the switcher mid-ceremony would
+		# otherwise run it again on every launch.
+		Profile.note_premium_reveal()
+	else:
+		_reveal_world(String(r["id"]))
+
+
+## When each sound lands, as `[seconds, name]`.
+func _reveal_beats() -> Array:
+	if _reveal_kind() == "premium":
+		var out: Array = [[0.02, "rumble"], [PACK_HEAD, "head"]]
+		for i in _pack_tiles().size():
+			out.append([PACK_DEAL + float(i) * PACK_DEAL_EVERY + PACK_FLIP_AFTER
+				+ PACK_FLIP * 0.5, "flip:%d" % i])
+		out.append([_pack_done_at() + 0.1, "done"])
+		out.append([_reveal_settle_at(), "settle"])
+		return out
+	return [[0.02, "rumble"], [REVEAL_SEAM, "seam"], [REVEAL_OPEN, "open"],
+		[REVEAL_NAME + 0.1, "name"], [REVEAL_SETTLE, "settle"]]
+
+
+func _reveal_sound(nm: String) -> void:
+	if nm.begins_with("flip:"):
+		var i := int(nm.substr(5))
+		# Up a step each, so the deal is a scale climbing to the last one.
+		Sfx.play("clear", 0.8 + float(i) * 0.07, -3.0)
+		Haptics.fire("tap")
+		return
+	match nm:
+		"rumble":
+			Sfx.play("rumble")
+			Haptics.fire("land")
+		"seam":
+			Sfx.play("zap", 0.45, -8.0)
+		"open", "done":
+			Sfx.play("unveil")
+			Haptics.fire("salvo")
+		"name", "head":
+			Sfx.play("land", 0.75)
+			Haptics.fire("win")
+		"settle":
+			Sfx.play("count", 1.25, -4.0)
+
+
+## Jump to the end of the arrival. The big beat still sounds if it had not yet —
+## a skip is impatience, not a request for silence — and everything before it is
+## marked as heard so it does not all go off in one frame.
+func _reveal_skip() -> void:
+	var big := "done" if _reveal_kind() == "premium" else "open"
+	var owed := not _reveal_heard.has(big)
+	for beat: Array in _reveal_beats():
+		_reveal_heard[String(beat[1])] = true
+	if owed:
+		Sfx.play("unveil")
+		Haptics.fire("salvo")
+	_reveal_t = maxf(_reveal_t, _reveal_settle_at())
+
+
+## The new board's scene, in a viewport of its own, for the door to open onto.
+## Nothing when the board has none, or `--board2d` is on — the still is used.
+func _reveal_world(id: String) -> void:
+	_reveal_drop_world()
+	var path := _board_3d_path(id)
+	if path == "" or not ResourceLoader.exists(path):
+		return
+	# Waits for the background load if it is somehow still running, and loads
+	# it outright if nothing asked for it yet. Either way `Board3D` finds it in
+	# the cache.
+	if ResourceLoader.load_threaded_get_status(path) \
+			!= ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+		_reveal_packed = ResourceLoader.load_threaded_get(path)
+	# Built exactly the way `_set_board_3d` builds the backdrop's, scene tag and
+	# all, so that "Use it now" can hand this one over rather than build it again.
+	var vp := SubViewport.new()
+	vp.set_meta("scene", path)
+	vp.own_world_3d = true
+	vp.msaa_3d = Viewport.MSAA_4X
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.size = _board_3d_size()
+	add_child(vp)
+	vp.add_child(Board3D.new(path, _board_3d_overscan()))
+	_reveal3d = vp
+
+
+func _reveal_drop_world() -> void:
+	if _reveal3d != null:
+		_reveal3d.queue_free()
+		_reveal3d = null
+	_reveal_packed = null
+
+
+## Back to not having started: the clock, the beats, the scene, and the
+## backdrop's own scene running again.
+func _reveal_reset() -> void:
+	_reveal_t = 0.0
+	_reveal_heard = {}
+	_reveal_drop_world()
+	if _art3d != null:
+		_art3d.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+
+func _reveal_finish() -> void:
+	if not _reveals.is_empty():
+		_reveals.pop_front()
+	_reveal_reset()
+	_hover_action = ""
+	_press_action = ""
+
+
+func _reveal_action_at(p: Vector2) -> String:
+	for b: Dictionary in _reveal_buttons():
+		if (b["rect"] as Rect2).has_point(p):
+			return String(b["action"])
+	return ""
+
+
+## Owns every press while it is up, including the ones that miss its buttons —
+## the screen under it is live, and a tap through a ceremony onto a title plate
+## would start a match behind it.
+func _reveal_input(event: InputEvent) -> void:
+	var at := get_viewport().get_mouse_position()
+	if event is InputEventMouseMotion:
+		var was := _hover_action
+		_hover_action = _reveal_action_at(at)
+		if _hover_action != "" and _hover_action != was:
+			Sfx.play("key", 1.3, -6.0)
+		return
+	if not (event is InputEventMouseButton):
+		return
+	var mb := event as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	# Down remembers, up decides, as everywhere else. See `_press_action`.
+	if mb.pressed:
+		_press_action = _reveal_action_at(at)
+		return
+	var began := _press_action
+	_press_action = ""
+	if _reveal_t < REVEAL_DEAF:
+		return
+	if not _reveal_settled():
+		_reveal_skip()
+		return
+	var act := _reveal_action_at(at)
+	if act != "" and act == began:
+		_activate(act)
+
+
+func _reveal_key(k: InputEventKey) -> void:
+	if _reveal_t < REVEAL_DEAF:
+		return
+	match k.keycode:
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE, KEY_ESCAPE:
+			if not _reveal_settled():
+				_reveal_skip()
+			elif k.keycode == KEY_ESCAPE:
+				_activate("reveal_close")
+			else:
+				var bs := _reveal_buttons()
+				if not bs.is_empty():
+					_activate(String((bs[0] as Dictionary)["action"]))
+
+
+func _reveal_button_top(size: Vector2) -> float:
+	return size.y - safe_bottom - (58.0 if portrait else 30.0) - REVEAL_BTN_H
+
+
+## Two, once it has settled: the one that does something with it, and the one
+## that leaves it for later. They rise in rather than fade, because a plate is
+## drawn opaque and there is nothing to fade.
+func _reveal_buttons() -> Array:
+	if not _reveal_up() or not _reveal_settled():
+		return []
+	var size := get_viewport_rect().size
+	var r: Dictionary = _reveals[0]
+	var rise: float = clampf((_reveal_t - _reveal_settle_at()) / 0.22, 0.0, 1.0)
+	var by: float = _reveal_button_top(size) + 22.0 * pow(1.0 - rise, 3.0)
+	var w: float = minf(560.0, size.x - GRID_MARGIN * 2.0)
+	var x: float = size.x * 0.5 - w * 0.5
+	var grey := Color("#5d6a92")
+
+	var go_label := ""
+	var go_action := ""
+	var go_accent := Color("#ffd166")
+	if String(r["kind"]) == "premium":
+		# Not from a summary: the wardrobe is a different screen, and walking
+		# there out of a versus summary would leave somebody waiting on a
+		# rematch answer that is never coming.
+		if phase != Phase.OVER:
+			go_label = "Pick a board"
+			go_action = "reveal_pick"
+	else:
+		go_label = "Use it now"
+		go_action = "reveal_use"
+		go_accent = Cosmetics.theme_tint(String(r["id"]), "accent", PLAYER_ACCENT)
+
+	if go_action == "":
+		var cw: float = minf(320.0, w)
+		return [{"rect": Rect2(size.x * 0.5 - cw * 0.5, by, cw, REVEAL_BTN_H),
+			"key": "ENTER", "label": "Continue", "sub": "", "note": "",
+			"rating": 0, "accent": Color("#ffd166"), "action": "reveal_close"}]
+	var gap := 14.0
+	var bw: float = (w - gap) * 0.58
+	return [
+		{"rect": Rect2(x, by, bw, REVEAL_BTN_H), "key": "ENTER",
+			"label": go_label, "sub": "", "note": "", "rating": 0,
+			"accent": go_accent, "action": go_action},
+		{"rect": Rect2(x + bw + gap, by, w - gap - bw, REVEAL_BTN_H), "key": "ESC",
+			"label": "Later" if String(r["kind"]) == "board" else "Continue",
+			"sub": "", "note": "", "rating": 0, "accent": grey,
+			"action": "reveal_close"},
+	]
+
+
+# ---------------------------------------------------------- drawing it
+
+func _draw_reveal(size: Vector2) -> void:
+	if not _reveal_up() or _reveal_t <= 0.0:
+		return
+	var r: Dictionary = _reveals[0]
+	if String(r["kind"]) == "premium":
+		_draw_reveal_pack(size, r)
+	else:
+		_draw_reveal_board(size, r)
+	for b: Dictionary in _reveal_buttons():
+		_draw_menu_button(b)
+
+
+## One board, unveiled: dark, a seam, the seam opens onto the board running, and
+## its name lands on top in its own lettering.
+func _draw_reveal_board(size: Vector2, r: Dictionary) -> void:
+	var t := _reveal_t
+	var id := String(r["id"])
+	var accent := Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)
+	var edge := Cosmetics.theme_tint(id, "frame", accent)
+	var m := SHAKE_MARGIN
+	var full := Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0)
+	var cx := size.x * 0.5
+	var mid := size.y * 0.5
+	var dark := Color("#040509")
+
+	# All the way to black. Anything short of it and the title screen's
+	# wordmark ghosts through behind the name.
+	_overlay.draw_rect(full, Color(dark, _reveal_smooth(t / REVEAL_DARK)), true)
+
+	# The board, through the opening. The picture stays put while the opening
+	# grows, so it reads as a door opening onto a place rather than a picture
+	# being stretched.
+	var open := _reveal_ease(clampf((t - REVEAL_OPEN) / (REVEAL_OPENED - REVEAL_OPEN),
+		0.0, 1.0))
+	if open > 0.0:
+		var h: float = full.size.y * open
+		var hole := Rect2(full.position.x, mid - h * 0.5, full.size.x, h)
+		_draw_reveal_world(id, full, hole, t)
+		_draw_reveal_shade(full, open)
+		if open < 1.0:
+			var lip := Color(edge.lerp(Color.WHITE, 0.35), 0.95 * (1.0 - open))
+			_overlay.draw_rect(Rect2(hole.position.x, hole.position.y - 1.5,
+				hole.size.x, 3.0), lip, true)
+			_overlay.draw_rect(Rect2(hole.position.x, hole.end.y - 1.5,
+				hole.size.x, 3.0), lip, true)
+
+	# The seam: a line drawn out from the middle, with a glow round it.
+	var seam := clampf((t - REVEAL_SEAM) / (REVEAL_OPEN - REVEAL_SEAM), 0.0, 1.0)
+	if seam > 0.0 and open < 1.0:
+		var w: float = full.size.x * _reveal_ease(seam)
+		var fade: float = 1.0 - open
+		var hot := edge.lerp(Color.WHITE, 0.6)
+		for layer: Array in [[34.0, 0.10, edge], [10.0, 0.32, edge], [2.5, 1.0, hot]]:
+			var th := float(layer[0])
+			_overlay.draw_rect(Rect2(cx - w * 0.5, mid - th * 0.5, w, th),
+				Color(layer[2] as Color, float(layer[1]) * fade), true)
+
+	var since_open := t - REVEAL_OPEN
+	if since_open >= 0.0:
+		# A flash as it splits, rings out of the split, and a spray of sparks.
+		var fl: float = 1.0 - clampf(since_open / 0.55, 0.0, 1.0)
+		if fl > 0.0:
+			_overlay.draw_rect(full, Color(1, 1, 1, 0.5 * fl * fl), true)
+		for i in 3:
+			var p: float = (since_open - float(i) * 0.14) / 1.2
+			if p <= 0.0 or p >= 1.0:
+				continue
+			_overlay.draw_arc(Vector2(cx, mid), 30.0 + p * maxf(size.x, size.y) * 0.8,
+				0.0, TAU, 96, Color(accent, 0.55 * (1.0 - p)), 2.0 + 6.0 * (1.0 - p), true)
+		_draw_reveal_burst(Vector2(cx, mid), since_open, accent, 44,
+			maxf(size.x, size.y) * 0.55)
+		_draw_reveal_sparks(size, since_open, accent)
+
+	# What it is.
+	var head_y: float = safe_top + (126.0 if portrait else 70.0)
+	var ka := _reveal_smooth((t - 0.7) / 0.4)
+	if ka > 0.0:
+		_draw_tracked(_font_bold, Vector2(cx, head_y), "NEW BOARD UNLOCKED", 14, 5.0,
+			Color(accent, ka))
+	if t < REVEAL_NAME:
+		return
+	var nm := String(Profile.entry("theme", id).get("name", id)).to_upper()
+	var face: Font = Fonts.for_theme(id)
+	if face == null:
+		face = _font_bold
+	var fs := _fitted_size(face, nm, 88 if portrait else 76,
+		size.x - GRID_MARGIN * 2.0, 30)
+	var at := Vector2(cx, head_y + (80.0 if portrait else 66.0))
+	_draw_reveal_slam(face, at, nm, fs, t - REVEAL_NAME, accent)
+
+	var under: float = at.y + float(fs) * 0.62
+	var u := _reveal_ease(clampf((t - REVEAL_NAME - 0.2) / 0.4, 0.0, 1.0))
+	if u > 0.0:
+		_overlay.draw_rect(Rect2(cx - 80.0 * u, under, 160.0 * u, 3.0), edge, true)
+	var ha := _reveal_smooth((t - REVEAL_NAME - 0.35) / 0.35)
+	if ha > 0.0:
+		_text_fit_overlay(_font, Vector2(cx, under + 34.0), String(r["how"]), 18,
+			size.x - GRID_MARGIN * 2.0, Color("#e6ecff", 0.92 * ha), 12)
+	var also: Array = r.get("also", [])
+	var aa := _reveal_smooth((t - REVEAL_NAME - 0.55) / 0.35)
+	if not also.is_empty() and aa > 0.0:
+		_text_fit_overlay(_font_bold, Vector2(cx, under + 64.0),
+			"also unlocked: %s" % ", ".join(also), 14, size.x - GRID_MARGIN * 2.0,
+			Color(accent, 0.9 * aa), 10)
+
+
+## The board behind the opening: its running scene if it has one, its still if
+## not, cropped to the whole screen and then cut down to `hole`.
+func _draw_reveal_world(id: String, full: Rect2, hole: Rect2, t: float) -> void:
+	var tex: Texture2D = _reveal3d.get_texture() if _reveal3d != null else _theme_art(id)
+	if tex == null:
+		_overlay.draw_rect(hole, Cosmetics.theme_color(id, "top"), true)
+		return
+	var src := _cover_src(tex, full.size)
+	var f0 := (hole.position - full.position) / full.size
+	var fz := hole.size / full.size
+	_overlay.draw_texture_rect_region(tex, hole,
+		Rect2(src.position + src.size * f0, src.size * fz))
+	# A still keeps its painted weather, once there is nothing left to clip it to.
+	if _reveal3d == null and hole.size.y >= full.size.y - 1.0:
+		var mk := _theme_motion(id)
+		if mk != "":
+			_overlay.draw_set_transform(full.position, 0.0, Vector2.ONE)
+			Cosmetics.draw_motion(_overlay, mk, full.size, t,
+				Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT), false)
+			_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## The part of `tex` that covers a box of `want` without stretching: the middle,
+## trimmed on whichever axis is too long.
+func _cover_src(tex: Texture2D, want: Vector2) -> Rect2:
+	var have := Vector2(tex.get_width(), tex.get_height())
+	var src := Rect2(Vector2.ZERO, have)
+	if have.x / have.y > want.x / want.y:
+		src.size.x = have.y * want.x / want.y
+		src.position.x = (have.x - src.size.x) * 0.5
+	else:
+		src.size.y = have.x * want.y / want.x
+		src.position.y = (have.y - src.size.y) * 0.5
+	return src
+
+
+## Dark at the top and bottom of the board, where the type and the buttons sit,
+## and clear through the middle where the board is.
+func _draw_reveal_shade(full: Rect2, k: float) -> void:
+	var dark := Color("#040509")
+	var top_h: float = full.size.y * 0.44
+	var bot_h: float = full.size.y * 0.34
+	var a0 := Color(dark, 0.84 * k)
+	var a1 := Color(dark, 0.0)
+	_overlay.draw_polygon(PackedVector2Array([
+		full.position, Vector2(full.end.x, full.position.y),
+		Vector2(full.end.x, full.position.y + top_h),
+		Vector2(full.position.x, full.position.y + top_h)]),
+		PackedColorArray([a0, a0, a1, a1]))
+	var b0 := Color(dark, 0.9 * k)
+	_overlay.draw_polygon(PackedVector2Array([
+		Vector2(full.position.x, full.end.y - bot_h),
+		Vector2(full.end.x, full.end.y - bot_h), full.end,
+		Vector2(full.position.x, full.end.y)]),
+		PackedColorArray([a1, a1, b0, b0]))
+
+
+## A name landing: from most of twice its size down onto the line, with a glow
+## in the board's colour round it — two rings of copies, wide and faint outside
+## narrow and brighter, because one ring reads as an outline rather than light.
+func _draw_reveal_slam(face: Font, at: Vector2, text: String, fs: int, since: float,
+		glow: Color) -> void:
+	if since < 0.0:
+		return
+	var p := clampf(since / 0.28, 0.0, 1.0)
+	var s: float = 1.0 + 0.7 * pow(1.0 - p, 3.0)
+	var a := clampf(since / 0.1, 0.0, 1.0)
+	_overlay.draw_set_transform(at, 0.0, Vector2(s, s))
+	for ring: Array in [[7.0, 0.07], [3.0, 0.16]]:
+		for i in 12:
+			_otext(face, Vector2.from_angle(TAU * float(i) / 12.0) * float(ring[0]),
+				text, fs, Color(glow, float(ring[1]) * a))
+	_otext(face, Vector2.ZERO, text, fs, Color(1, 1, 1, a))
+	_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## Sparks thrown out of a point, slowing as they go and falling a little. A
+## second and a half, then gone.
+func _draw_reveal_burst(at: Vector2, since: float, tint: Color, n: int,
+		reach: float) -> void:
+	if since < 0.0 or since > 1.4:
+		return
+	var dot := Cosmetics.soft_dot()
+	var life := since / 1.4
+	var go: float = 1.0 - pow(1.0 - life, 3.0)
+	var ink := tint.lerp(Color.WHITE, 0.3)
+	for i in n:
+		var ang: float = TAU * absf(fmod(sin(float(i) * 31.7) * 9713.3, 1.0))
+		var sp: float = 0.35 + 0.65 * absf(fmod(sin(float(i) * 5.11) * 4271.1, 1.0))
+		var p: Vector2 = at + Vector2(cos(ang), sin(ang)) * reach * sp * go \
+			+ Vector2(0.0, since * since * 70.0)
+		var w: float = 5.0 + 10.0 * sp
+		_overlay.draw_texture_rect(dot, Rect2(p - Vector2(w, w) * 0.5, Vector2(w, w)),
+			false, Color(ink, 0.9 * (1.0 - life)))
+
+
+## Sparks drifting up the whole screen once it is open, for as long as it stays
+## up. The same hash as the victory effects, so nothing to seed or keep.
+func _draw_reveal_sparks(size: Vector2, since: float, tint: Color) -> void:
+	var dot := Cosmetics.soft_dot()
+	var arrive := clampf(since / 0.9, 0.0, 1.0)
+	for i in 40:
+		var sx := absf(fmod(sin(float(i) * 12.9898) * 43758.5453, 1.0))
+		var ss := absf(fmod(sin(float(i) * 78.233) * 24634.6345, 1.0))
+		var y: float = size.y + 40.0 - fmod(since * (55.0 + ss * 130.0) + sx * 900.0,
+			size.y + 80.0)
+		var x: float = sx * size.x + sin(since * 1.3 + float(i)) * 14.0
+		var w: float = 5.0 + ss * 11.0
+		var flick: float = 0.4 + 0.6 * absf(sin(since * 3.0 + float(i)))
+		_overlay.draw_texture_rect(dot, Rect2(x - w * 0.5, y - w * 0.5, w, w), false,
+			Color(tint, 0.5 * flick * arrive))
+
+
+func _reveal_ease(x: float) -> float:
+	return 1.0 - pow(1.0 - clampf(x, 0.0, 1.0), 3.0)
+
+
+func _reveal_smooth(x: float) -> float:
+	return smoothstep(0.0, 1.0, clampf(x, 0.0, 1.0))
+
+
+# ---------------------------------------------------------- the pack
+
+## What the pack's unveiling deals out: every board in the pack that is a place,
+## in catalogue order, and then the one thing in it that is not a board. Read off
+## the catalogue so a board added to the pack is dealt without anybody
+## remembering to add it here.
+func _pack_tiles() -> Array:
+	var out: Array = []
+	for e: Dictionary in Profile.entries("theme"):
+		var need: Dictionary = e.get("need", {})
+		if String(need.get("buy", "")) == Profile.PACK_PREMIUM and _is_scenery(String(e["id"])):
+			out.append(String(e["id"]))
+	out.append("")
+	return out
+
+
+## Everything else the pack holds, for the line under the tiles.
+func _pack_extras() -> String:
+	var faces := 0
+	var named: Array = []
+	for slot: String in Profile.SLOTS:
+		for e: Dictionary in Profile.entries(slot):
+			var need: Dictionary = e.get("need", {})
+			if String(need.get("buy", "")) != Profile.PACK_PREMIUM:
+				continue
+			if slot == "blocks":
+				faces += 1
+			elif not (slot == "theme" and _is_scenery(String(e["id"]))):
+				var noun := "board" if slot == "theme" \
+					else String(REVEAL_ALSO_NOUN.get(slot, slot))
+				named.append("the %s %s" % [String(e["name"]), noun])
+	var parts: Array = []
+	if faces > 0:
+		parts.append("%d block faces" % faces)
+	parts.append_array(named)
+	if parts.is_empty():
+		return ""
+	var last := String(parts.pop_back())
+	return "plus %s" % (last if parts.is_empty()
+		else "%s and %s" % [", ".join(parts), last])
+
+
+## Where the pack's words sit, top down: the kicker, the headline and its size,
+## and the two lines under it. One place, so the hand below can hang off where
+## the words actually end — a fixed offset for it put the second line behind
+## the top row of tiles in landscape.
+func _pack_head(size: Vector2) -> Dictionary:
+	var kicker: float = safe_top + (112.0 if portrait else 40.0)
+	var hl := "IT'S ALL YOURS" if _reveal_kind() == "premium" \
+		and bool((_reveals[0] as Dictionary).get("fresh", false)) else "THANK YOU"
+	var hs := _fitted_size(_font_bold, hl, 54 if portrait else 42,
+		size.x - GRID_MARGIN * 2.0, 26)
+	var head: float = kicker + (58.0 if portrait else 42.0)
+	var one: float = head + float(hs) * 0.5 + (30.0 if portrait else 22.0)
+	var two: float = one + (26.0 if portrait else 22.0)
+	return {"kicker": kicker, "headline": hl, "hs": hs, "head": head,
+		"one": one, "two": two}
+
+
+func _pack_tile_rects(size: Vector2, n: int) -> Array:
+	var cols := 3 if portrait else 5
+	var rows := int(ceil(float(n) / float(cols)))
+	var gap := 14.0 if portrait else 12.0
+	var top: float = float(_pack_head(size)["two"]) + (30.0 if portrait else 24.0)
+	var bottom: float = _reveal_button_top(size) - (70.0 if portrait else 52.0)
+	var span: float = minf(size.x - GRID_MARGIN * 2.0, 900.0)
+	var tw: float = (span - gap * float(cols - 1)) / float(cols)
+	var th: float = tw * 4.0 / 3.0
+	var fit: float = (bottom - top - gap * float(rows - 1)) / float(rows)
+	if th > fit:
+		th = fit
+		tw = th * 0.75
+	var tall: float = th * float(rows) + gap * float(rows - 1)
+	var y0: float = top + (bottom - top - tall) * 0.5
+	var out: Array = []
+	for i in n:
+		var row := i / cols
+		var here := mini(cols, n - row * cols)
+		var wide: float = tw * float(here) + gap * float(here - 1)
+		var x0: float = size.x * 0.5 - wide * 0.5
+		out.append(Rect2(x0 + float(i % cols) * (tw + gap),
+			y0 + float(row) * (th + gap), tw, th))
+	return out
+
+
+## The pack, unveiled: dealt face down, turned over one at a time, and then the
+## whole hand lit up at once.
+func _draw_reveal_pack(size: Vector2, r: Dictionary) -> void:
+	var t := _reveal_t
+	var gold := Color("#ffd166")
+	var m := SHAKE_MARGIN
+	var full := Rect2(-m, -m, size.x + m * 2.0, size.y + m * 2.0)
+	var cx := size.x * 0.5
+	var fresh: bool = bool(r.get("fresh", false))
+	var done_at := _pack_done_at()
+	var since_done := t - done_at
+
+	_overlay.draw_rect(full, Color("#040509", _reveal_smooth(t / REVEAL_DARK)), true)
+	var tiles := _pack_tiles()
+	var rects := _pack_tile_rects(size, tiles.size())
+	var grid := Rect2(rects[0].position, Vector2.ZERO)
+	for rr: Rect2 in rects:
+		grid = grid.merge(rr)
+
+	# A warm light behind the hand, coming up as the deal starts, and once the
+	# last tile is over, slow rays and confetti — both behind the tiles, so the
+	# boards are never under anything.
+	var warm := _reveal_smooth((t - PACK_HEAD) / 1.2)
+	if warm > 0.0:
+		for i in 6:
+			var f := float(i) / 5.0
+			_overlay.draw_circle(grid.get_center(), maxf(grid.size.x, grid.size.y)
+				* (0.25 + f * 0.55), Color("#7a4a12", 0.11 * warm * (1.0 - f)))
+	if since_done >= 0.0:
+		Cosmetics.victory_rays(_overlay, grid.get_center(), t, gold)
+		# Its clock pushed on: at zero every piece sits on one diagonal, because
+		# the same hash places it across and down, and it only scatters with time.
+		Cosmetics.victory_confetti(_overlay, size, since_done + 30.0, gold)
+
+	var hd := _pack_head(size)
+	var ka := _reveal_smooth((t - 0.6) / 0.4)
+	if ka > 0.0:
+		_draw_tracked(_font_bold, Vector2(cx, float(hd["kicker"])),
+			"PREMIUM PACK" if fresh else "FOUNDER", 14, 5.0, Color(gold, ka))
+	_draw_reveal_slam(_font_bold, Vector2(cx, float(hd["head"])),
+		String(hd["headline"]), int(hd["hs"]), t - PACK_HEAD, gold)
+	var la := _reveal_smooth((t - PACK_HEAD - 0.3) / 0.4)
+	if la > 0.0:
+		var one := "Thanks for backing Word Wars." if fresh \
+			else "for backing Word Wars."
+		var two := "Pick a board and it's behind every match you play." if fresh \
+			else "Every board you own is a live 3D world now."
+		_text_fit_overlay(_font, Vector2(cx, float(hd["one"])), one, 18,
+			size.x - GRID_MARGIN * 2.0, Color("#e6ecff", 0.92 * la), 12)
+		_text_fit_overlay(_font, Vector2(cx, float(hd["two"])), two, 16,
+			size.x - GRID_MARGIN * 2.0, Color("#aab4d4", la), 11)
+
+	for i in tiles.size():
+		_draw_pack_tile_at(rects[i], String(tiles[i]), i, t)
+
+	# The shine across the whole hand, once, as the last one lands.
+	if since_done >= 0.0 and since_done <= 0.8:
+		var sx: float = lerpf(grid.position.x - 60.0, grid.end.x + 60.0,
+			_reveal_ease(since_done / 0.8))
+		for rr: Rect2 in rects:
+			var band := Rect2(sx - 26.0, rr.position.y, 52.0, rr.size.y).intersection(rr)
+			if band.size.x > 0.0:
+				_overlay.draw_rect(band, Color(1, 1, 1, 0.22), true)
+
+	var fa := _reveal_smooth((since_done - 0.2) / 0.4)
+	if fa > 0.0:
+		_text_fit_overlay(_font_bold, Vector2(cx, grid.end.y + (34.0 if portrait else 26.0)),
+			_pack_extras(), 15, size.x - GRID_MARGIN * 2.0, Color(gold, 0.95 * fa), 10)
+
+
+## One tile at its point in the deal: nothing yet, then a card back sliding in,
+## then turning over onto the board.
+func _draw_pack_tile_at(r: Rect2, id: String, i: int, t: float) -> void:
+	var land: float = PACK_DEAL + float(i) * PACK_DEAL_EVERY
+	if t < land:
+		return
+	var inn := _reveal_ease((t - land) / 0.18)
+	var box := Rect2(r.position + Vector2(0.0, 36.0 * (1.0 - inn)), r.size)
+	var turn := clampf((t - land - PACK_FLIP_AFTER) / PACK_FLIP, 0.0, 1.0)
+	var local := Rect2(-box.size * 0.5, box.size)
+	_overlay.draw_set_transform(box.get_center(), 0.0,
+		Vector2(maxf(0.02, absf(cos(PI * turn))), 1.0))
+	if turn < 0.5:
+		_draw_pack_back(local, inn)
+	else:
+		_draw_pack_face(local, id, t)
+	_overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	var since_flip: float = t - land - PACK_FLIP_AFTER - PACK_FLIP * 0.5
+	if since_flip >= 0.0:
+		var tint := Cosmetics.theme_tint(id, "accent", Color("#ff6b6b")) if id != "" \
+			else Color("#ff6b6b")
+		_draw_reveal_burst(box.get_center(), since_flip, tint, 14, box.size.x * 0.9)
+
+
+func _draw_pack_back(r: Rect2, k: float) -> void:
+	var gold := Color("#ffd166")
+	_overlay.draw_rect(r, Color("#0c1226", k), true)
+	_overlay.draw_rect(r.grow(-7.0), Color(gold, 0.22 * k), false, 1.0)
+	_overlay.draw_rect(r, Color(gold, 0.65 * k), false, 2.0)
+	# A padlock, drawn: a shackle and a body.
+	var c := r.get_center()
+	var s: float = minf(r.size.x, r.size.y) * 0.13
+	_overlay.draw_arc(c + Vector2(0.0, -s * 0.2), s * 0.62, PI, TAU, 18,
+		Color(gold, 0.75 * k), 3.0, true)
+	_overlay.draw_rect(Rect2(c.x - s * 0.9, c.y - s * 0.2, s * 1.8, s * 1.4),
+		Color(gold, 0.75 * k), true)
+
+
+func _draw_pack_face(r: Rect2, id: String, t: float) -> void:
+	if id == "":
+		_draw_pack_no_ads(r, t)
+		return
+	var tex := _theme_art(id)
+	if tex != null:
+		_overlay.draw_texture_rect_region(tex, r, _cover_src(tex, r.size))
+	else:
+		_overlay.draw_rect(r, Cosmetics.theme_color(id, "top"), true)
+	var foot: float = r.size.y * 0.42
+	var clear := Color("#040509", 0.0)
+	var deep := Color("#040509", 0.88)
+	_overlay.draw_polygon(PackedVector2Array([
+		Vector2(r.position.x, r.end.y - foot), Vector2(r.end.x, r.end.y - foot),
+		r.end, Vector2(r.position.x, r.end.y)]),
+		PackedColorArray([clear, clear, deep, deep]))
+	var face: Font = Fonts.for_theme(id)
+	if face == null:
+		face = _font_bold
+	_text_fit_overlay(face, Vector2(r.get_center().x, r.end.y - 22.0),
+		String(Profile.entry("theme", id).get("name", id)).to_upper(), 20,
+		r.size.x - 14.0, Color.WHITE, 10)
+	_overlay.draw_rect(r, Cosmetics.theme_tint(id, "frame", PLAYER_ACCENT), false, 2.0)
+
+
+## The tile that is not a board: the thing the pack takes away, struck out.
+func _draw_pack_no_ads(r: Rect2, t: float) -> void:
+	var red := Color("#ff6b6b")
+	_overlay.draw_rect(r, Color("#0b1020"), true)
+	var c := r.get_center() - Vector2(0.0, r.size.y * 0.08)
+	var rad: float = minf(r.size.x, r.size.y) * 0.24
+	var beat: float = 0.5 + 0.5 * sin(t * 2.0)
+	_overlay.draw_arc(c, rad * (1.12 + 0.04 * beat), 0.0, TAU, 48,
+		Color(red, 0.22), 2.0, true)
+	_overlay.draw_arc(c, rad, 0.0, TAU, 48, red, 4.0, true)
+	var d := Vector2(cos(PI * 0.75), -sin(PI * 0.75)) * rad
+	_overlay.draw_line(c + d, c - d, red, 4.0, true)
+	_text_fit_overlay(_font_bold, c, "AD", int(rad * 0.7), rad * 1.3,
+		Color("#e6ecff"), 9)
+	_text_fit_overlay(_font_bold, Vector2(r.get_center().x, r.end.y - 22.0),
+		"NO AD BREAKS", 16, r.size.x - 14.0, Color.WHITE, 9)
+	_overlay.draw_rect(r, Color(red, 0.8), false, 2.0)
 
 
 # ---------------------------------------------------------- an invite arriving
@@ -5041,6 +5974,7 @@ func _process(delta: float) -> void:
 	_tick_challenges(delta)
 	_tick_scroll()
 	_tick_promo(delta)
+	_tick_reveal(delta)
 
 	# The playfields have nothing to say on the front-of-house screens.
 	var showing_boards := phase != Phase.SPLASH and phase != Phase.TITLE \
@@ -6096,6 +7030,11 @@ func _record_mastery() -> void:
 
 	Profile.record_match({
 		"won": winner == "YOU",
+		# Against a person. Read off the difficulty rather than `net_active`,
+		# because an opponent who walks out mid-match ends it by hanging up, and
+		# by the time this runs there may be no match object left to ask.
+		# "Versus" is only ever dealt by the network paths.
+		"versus": difficulty == "Versus",
 		# Winning without spending a single life. The hardest of the flags and
 		# the only one that gates two cosmetics.
 		"flawless": winner == "YOU" and player.lives >= LIVES,
@@ -6149,6 +7088,9 @@ func _record_mastery() -> void:
 ## rather than at the call sites for the same reason — a level gained in survival
 ## should sound like a level gained anywhere else.
 func _earned_since(was_xp: int, was_level: int, was_unlocked: Dictionary) -> Dictionary:
+	# A board in there gets more than a line on the strip. See "an unlock,
+	# unveiled"; it waits until the summary has been read.
+	_queue_reveals(was_unlocked)
 	var fresh: Array = []
 	var now := Profile.unlocked_set()
 	for slot: String in Profile.SLOTS:
@@ -8400,6 +9342,11 @@ func _draw_overlay() -> void:
 		# match would be one `_promo_up` edit away from being drawn over one.
 		_draw_promo(size)
 		_draw_share_promo(size)
+		# Over both cards, because it can arrive while one is up — the share
+		# card's own button is what earns the Nexus — and it owns the screen
+		# until it is answered. `_reveal_up` refuses a running match, so this
+		# branch is the only one it could ever be drawn from.
+		_draw_reveal(size)
 
 	# Over every screen, for the same reason the curtain is: an invitation can
 	# arrive on any of them, and a banner drawn per-branch is a banner missing
@@ -10922,7 +11869,7 @@ func _lobby_door_h() -> float:
 	var n := float(_lobby_doors().size())
 	var room: float = get_viewport_rect().size.y - safe_bottom \
 		- (_lobby_head_h() + safe_top) - (n - 1.0) * _lobby_door_gap() \
-		- 66.0 - 38.0 - 12.0
+		- 66.0 - 38.0 - 12.0 - _lobby_goal_h()
 	return minf(h, room / n)
 
 
@@ -10956,7 +11903,16 @@ func _lobby_laid() -> float:
 	# to leave room for. Over-reserving it would push the whole block up the
 	# screen, which is the opposite of what the trailing margin is for.
 	return _lobby_head_h() + n * _lobby_door_h() \
-		+ (n - 1.0) * _lobby_door_gap() + 70.0 + (20.0 if portrait else 60.0)
+		+ (n - 1.0) * _lobby_door_gap() + 70.0 + (20.0 if portrait else 60.0) \
+		+ _lobby_goal_h()
+
+
+## Room for the line naming the board versus is counting towards, under the
+## footnotes, while there is one left to earn. Reserved rather than squeezed
+## in: landscape's Back button sits under those footnotes, and the line landed
+## on it when it was only drawn.
+func _lobby_goal_h() -> float:
+	return 26.0 if not _versus_goal().is_empty() else 0.0
 
 
 ## True once a search has gone on long enough to be worth apologising for. Only
@@ -11257,6 +12213,17 @@ func _draw_lobby(size: Vector2) -> void:
 	_text_fit_overlay(_font, Vector2(cx, foot + 20.0),
 		"Invites work for anyone you can text. Ask again once they have the game.", 12,
 		size.x - GRID_MARGIN * 2.0, Color("#4d5878"), 9)
+
+	# The board this screen is the way to. Said here, where the matches are
+	# played, rather than only on a locked card in the wardrobe, which is not
+	# where anybody goes looking for a reason to play a person.
+	var goal := _versus_goal()
+	if not goal.is_empty():
+		var left: int = int(goal["want"]) - int(goal["have"])
+		_text_fit_overlay(_font_bold, Vector2(cx, foot + 46.0),
+			"Play %d more versus match%s to unlock the %s board" % [left,
+				"" if left == 1 else "es", String(goal["name"]).capitalize()], 14,
+			size.x - GRID_MARGIN * 2.0, goal["accent"], 10)
 
 
 ## Overlay twin of `_text_fit`, since the lobby draws on the overlay layer.
@@ -12583,6 +13550,7 @@ func _on_share_finished(ok: bool, _detail: String) -> void:
 		Sfx.play("start")
 		_say("UNLOCKED: %s" % ", ".join(won).to_upper(), Color("#ffd166"))
 		Haptics.fire("level")
+		_queue_reveals(before)
 		return
 
 	var have := Profile.shares()
@@ -13597,7 +14565,34 @@ func _draw_mastery_strip(cx: float) -> float:
 		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED: " + line, 14,
 			minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
 		return strip_y + 34.0
+	# A versus match that unlocked nothing still moved the count towards the
+	# board versus pays for, and the moment after one is when that is worth
+	# knowing: it is the moment somebody decides whether to play another.
+	if difficulty == "Versus":
+		var goal := _versus_goal()
+		if not goal.is_empty():
+			_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0),
+				"%s BOARD: %d / %d VERSUS MATCHES" % [goal["name"], int(goal["have"]),
+					int(goal["want"])], 14,
+				minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0),
+				goal["accent"], 10)
+			return strip_y + 34.0
 	return strip_y + 10.0
+
+
+## The board versus matches are counting towards, as `{id, name, have, want,
+## accent}`, or empty once there is none left to earn. Read off the catalogue,
+## so the Subway is not named anywhere but its own row.
+func _versus_goal() -> Dictionary:
+	for e: Dictionary in Profile.entries("theme"):
+		var need: Dictionary = e.get("need", {})
+		if need.has("versus") and not Profile.meets(need):
+			var id := String(e["id"])
+			return {"id": id, "name": String(e["name"]).to_upper(),
+				"have": mini(Profile.versus_matches, int(need["versus"])),
+				"want": int(need["versus"]),
+				"accent": Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)}
+	return {}
 
 
 # ------------------------------------------------------------------ networking
@@ -13988,7 +14983,7 @@ func _menu_buttons() -> Array:
 			# edge. At +22 this sat on top of them.
 			out.append({
 				"rect": Rect2(cx - 90.0, _grid_bottom(drects, 360.0 + safe_top)
-					+ 66.0, 180.0, 38.0),
+					+ 66.0 + _lobby_goal_h(), 180.0, 38.0),
 				"key": "ESC", "label": "Back", "sub": "", "note": "", "rating": 0,
 				"accent": Color("#8d99bd"), "action": "title"})
 	elif phase == Phase.WEEKLY:
@@ -14951,6 +15946,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				if not ib.pressed:
 					_activate(String(b["action"]))
 				return
+	# Straight after the banner, which is drawn over it: nothing below this —
+	# the scroll, the back chevron, the summary's lockout — applies to a screen
+	# that is covered.
+	if _reveal_up():
+		_reveal_input(event)
+		return
 	# Two thumbs. Godot turns touches into mouse presses one at a time — the
 	# second finger down while the first is still held produces no event at all —
 	# and a keystroke that never arrives is indistinguishable, from the typist's
@@ -15148,6 +16149,8 @@ func _action_at(p: Vector2) -> String:
 	for b: Dictionary in _invite_banner_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
+	if _reveal_up():
+		return _reveal_action_at(p)
 	# The pitch owns the screen while it is up, and swallows presses that miss
 	# it — the title screen's plates are directly underneath, and a press that
 	# fell through would start a match out from under a card the player was
@@ -15452,6 +16455,31 @@ func _activate(action: String) -> void:
 		# on an advert when they dismiss it.
 		_close_share_promo()
 		_do_share()
+	elif action == "reveal_use":
+		var id := String((_reveals[0] as Dictionary).get("id", "")) \
+			if not _reveals.is_empty() else ""
+		# The scene it opened onto is handed to the backdrop as it is, still
+		# running, so what was just unveiled becomes the board rather than
+		# cutting to a fresh copy of it. `_set_board_3d` finds the scene it
+		# wants already in place and keeps it.
+		if _reveal3d != null and Profile.is_unlocked("theme", id):
+			if _art3d != null:
+				_art3d.queue_free()
+			_art3d = _reveal3d
+			_reveal3d = null
+		Profile.equip("theme", id)
+		flash = 1.0
+		flash_color = Cosmetics.theme_tint(id, "accent", PLAYER_ACCENT)
+		Sfx.play("start")
+		Haptics.fire("level")
+		_reveal_finish()
+	elif action == "reveal_pick":
+		_reveal_finish()
+		mastery_slot = maxi(0, Profile.SLOTS.find("theme"))
+		_activate("cosmetics")
+	elif action == "reveal_close":
+		_reveal_finish()
+		Sfx.play("back", 1.2)
 	elif action == "promo_close":
 		_close_promo()
 	elif action == "promo_next":

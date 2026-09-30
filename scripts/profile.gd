@@ -34,6 +34,10 @@ var best_chain := 0
 var best_combo := 0
 var best_score := 0
 var longest_word := ""
+## Matches played through against a real person, won or lost. Its own count
+## rather than something read off `matches`, because the Subway asks for three of
+## these and a CPU match is not what it is asking for.
+var versus_matches := 0
 ## Power word name -> times earned.
 var powers: Dictionary = {}
 
@@ -283,6 +287,11 @@ const PREF_DEFAULTS := {
 	## anything new being written; see `PROMO_DROP`.
 	"promo_seen": 0,
 	"cosmetics_seen": 0,
+	## The last drop whose unveiling this player has sat through as an owner of
+	## the pack. The third counter against `PROMO_DROP`, and the only one that
+	## is owed to buyers rather than to everybody else: `promo_seen` is the
+	## pitch, this is what the pitch was for. See `owes_premium_reveal`.
+	"premium_reveal": 0,
 	## The same idea as `promo_seen`, for the share ladder. Its own counter
 	## rather than sharing one, because the two pitches are owed to different
 	## people: the premium card is for anybody who has not bought the pack, and
@@ -396,6 +405,25 @@ func cosmetics_are_new() -> bool:
 func note_promo_seen() -> void:
 	if int(pref("promo_seen")) < PROMO_DROP:
 		set_pref("promo_seen", PROMO_DROP)
+
+
+## Whether this player owns the pack and has not yet been shown what is in it.
+##
+## Asked rather than told. The pack arrives by four routes — a purchase, a
+## restore, an entitlement found at launch, an Ask to Buy approved days later —
+## and a fifth that is not a route at all: having bought it before the unveiling
+## existed. A flag compared against the drop answers every one of them the same
+## way, where a signal from the store would only ever hear about the first.
+##
+## Keyed to `PROMO_DROP`, so the day the pack gains something, everybody who
+## owns it is owed the unveiling again, of a pack that got bigger.
+func owes_premium_reveal() -> bool:
+	return owns(PACK_PREMIUM) and int(pref("premium_reveal")) < PROMO_DROP
+
+
+func note_premium_reveal() -> void:
+	if int(pref("premium_reveal")) < PROMO_DROP:
+		set_pref("premium_reveal", PROMO_DROP)
 
 
 func note_cosmetics_seen() -> void:
@@ -562,9 +590,11 @@ const COSMETICS := {
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
 		{"id": "vapor", "name": "Vapor", "need": {"level": 10}},
 		{"id": "bone", "name": "Bone", "need": {"level": 16}},
-		# Free for now. Meant for a pack of its own or an unlock later: when it
-		# goes, this is the one line that changes.
-		{"id": "subway", "name": "Subway", "need": {}},
+		# Three matches against real people, won or lost. The one board in the
+		# game that somebody else has to turn up for, which is the point: it
+		# goes to the players who keep versus busy. A CPU match does not count
+		# and neither does a win — see `versus_matches`.
+		{"id": "subway", "name": "Subway", "need": {"versus": 3}},
 		{"id": "prism", "name": "Prism", "need": {"buy": PACK_PREMIUM}},
 		# The painted eight. All in the pack that was already being sold rather
 		# than in a second one: there is one product in this game, and a player
@@ -691,6 +721,7 @@ func standing(need: Dictionary) -> Dictionary:
 		"level": have = level(); what = "reach level %d" % want
 		"matches": have = matches; what = "play %d matches" % want
 		"wins": have = wins; what = "win %d matches" % want
+		"versus": have = versus_matches; what = "play %d versus matches" % want
 		"flawless": have = flawless; what = "win %d without losing a life" % want
 		"words": have = words; what = "type %d words" % want
 		"salvos": have = salvos; what = "land %d salvos" % want
@@ -739,6 +770,8 @@ func unlocked_set() -> Dictionary:
 ## Fold one finished match into the lifetime record. Peaks only move up.
 func record_match(r: Dictionary) -> void:
 	matches += 1
+	if bool(r.get("versus", false)):
+		versus_matches += 1
 	if bool(r.get("won", false)):
 		wins += 1
 		if bool(r.get("flawless", false)):
@@ -1287,6 +1320,9 @@ func _apply(cfg: ConfigFile) -> Error:
 	best_combo = int(cfg.get_value("record", "best_combo", 0))
 	best_score = int(cfg.get_value("record", "best_score", 0))
 	longest_word = String(cfg.get_value("record", "longest_word", ""))
+	# Absent from every save written before the Subway was earned, and zero is
+	# right for those: nothing was counting.
+	versus_matches = maxi(0, int(cfg.get_value("record", "versus", 0)))
 	powers = cfg.get_value("record", "powers", {})
 	owned = cfg.get_value("shop", "owned", {})
 	since_ad = int(cfg.get_value("shop", "since_ad", 0))
@@ -1411,6 +1447,7 @@ func _encode() -> ConfigFile:
 	cfg.set_value("record", "best_combo", best_combo)
 	cfg.set_value("record", "best_score", best_score)
 	cfg.set_value("record", "longest_word", longest_word)
+	cfg.set_value("record", "versus", versus_matches)
 	cfg.set_value("record", "powers", powers)
 	cfg.set_value("shop", "owned", owned)
 	cfg.set_value("shop", "since_ad", since_ad)
@@ -1460,7 +1497,8 @@ func _encode() -> ConfigFile:
 ## the larger of the two is the better answer.
 const MERGE_MAX_INT := ["matches", "wins", "flawless", "words", "chars",
 	"salvos", "multi_clears", "best_chain", "best_combo", "best_score",
-	"survival_runs", "survival_best_score", "daily_best", "daily_best_streak"]
+	"versus_matches", "survival_runs", "survival_best_score", "daily_best",
+	"daily_best_streak"]
 
 const MERGE_MAX_FLOAT := ["best_wpm", "survival_best_time"]
 

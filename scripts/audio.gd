@@ -98,6 +98,13 @@ func _build_bank() -> void:
 	_bank["win"] = _arp([523.0, 659.0, 784.0, 1047.0], 0.095, 0.95, 1.8, 0.38)
 	_bank["lose"] = _arp([440.0, 392.0, 330.0, 247.0], 0.110, 1.05, 1.6, 0.34)
 
+	# Something being unveiled — a board earned, or the pack. A low swell under
+	# the screen going dark, then a chord bigger than a win, because it is: a
+	# win is one match, and this is something kept.
+	_bank["rumble"] = _tone(74.0, 36.0, 1.2, 1.4, 0.2, 0.3, 0.55)
+	_bank["unveil"] = _arp([262.0, 330.0, 392.0, 523.0, 659.0, 784.0, 1047.0, 1319.0],
+		0.06, 1.9, 1.4, 0.44)
+
 
 # -------------------------------------------------------------------- synthesis
 
