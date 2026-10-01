@@ -132,6 +132,7 @@ func _init() -> void:
 		"settings": await _shot_settings()
 		"versus": await _shot_versus()
 		"cosmetics": await _shot_cosmetics()
+		"unlock": await _shot_unlock()
 		_:
 			push_error("unknown shot: %s" % shot)
 			quit(1)
@@ -332,6 +333,27 @@ func _shot_cosmetics() -> void:
 	game.mastery_slot = _profile.SLOTS.find("theme")
 	game.phase = game.Phase.COSMETICS
 	await _hold(1.0)
+
+
+## A board earned: the Subway's unveiling, settled, its scene running behind
+## its name. Through the game's own ceremony, put at the moment it settles,
+## rather than anything staged here. `reveal_demo` is what lets a scene built
+## by hand show one; see the note on it in game.gd.
+func _shot_unlock() -> void:
+	_pose_profile()
+	_profile.versus_matches = 3
+	# The board under the ceremony is covered by it, so it stays plain: a
+	# second scene rendering behind the one on show is all cost.
+	_profile.equipped["theme"] = "midnight"
+	game._apply_theme()
+	game.phase = game.Phase.TITLE
+	game.reveal_demo = true
+	game._reveals = [{"kind": "board", "id": "subway",
+		"how": game._reveal_how({"versus": 3}), "also": []}]
+	await _hold(0.4)
+	game._reveal_skip()
+	game._reveal_t = game._reveal_settle_at() + 1.2
+	await _hold(1.6)
 
 
 ## The progression screen, posed with an invented player rather than whatever is

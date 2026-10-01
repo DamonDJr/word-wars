@@ -16,6 +16,7 @@ RENDERS=(
 	"solo volcano"
 	"solo space"
 	"versus clouds"
+	"unlock subway"
 	"daily midnight"
 	"survival ember"
 	"cosmetics aurora"

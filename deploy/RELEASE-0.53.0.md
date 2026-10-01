@@ -3,8 +3,8 @@
 The 3D boards, a new board you earn in versus, unlocks you can watch, the
 Premium block styles redrawn, and a new icon. Three blocks below: the first
 goes in **App Review Information → Notes**, the second in **What's New in This
-Version**, the third in **Promotional Text**. This version also needs new
-**screenshots**, because the live ones show the boards as still pictures (see
+Version**, the third in **Promotional Text**. This version also replaces the
+**screenshots** and **App Previews**; new ones are rendered and ready (see
 *The listing*).
 
 `0.53.0` is this repository's build track. The App Store marketing version is
@@ -221,15 +221,36 @@ The Premium boards are now living 3D worlds, and there's a new Subway board you 
 
 ## The listing
 
-**Screenshots: replace them.** Any shot with a Premium board in it now shows
-a still picture where the game shows a moving scene, and the block faces in
-them are the old ones. Re-render with `tools/store-shots.sh` after this build;
-`tools/boardshots.gd` makes one still per board for picking from.
+**Screenshots: replace them, from `build/shots/store/`.** Re-rendered on
+2026-09-30 from this build, with `tools/store-shots.sh`: the boards behind play
+are the 3D scenes and the blocks wear the redrawn styles. Eight cards now, not
+seven: **04-unlock** is new, Subway's unveiling, captioned "EARN NEW BOARDS. /
+PLAY VERSUS, UNLOCK SUBWAY." It carries no Premium tag, because Subway is free.
+07-boards now reads "8 BOARDS, ALL IN 3D." The rest keep their captions and,
+on Premium boards, their PREMIUM BOARD tags (guideline 2.3.2).
 
-**App Previews: re-cut them.** The previews date from before the redesign
-(see the 0.52.0 notes) and now also predate the 3D boards. A moving preview
-is the best place to show the scenes, which a screenshot can't.
-`tools/previewcut.py` makes new ones.
+| Set | Folder | Size | Upload as |
+|---|---|---|---|
+| iPhone | `build/shots/store/iphone/01-launch.png` … `08-leaderboard.png` | 1320 x 2868, RGB | iPhone 6.9" |
+| iPad | `build/shots/store/ipad/01-launch.png` … `08-leaderboard.png` | 2064 x 2752, RGB | iPad 13" |
+
+Delete the live set and upload these in file order; the first three are what
+most people see.
+
+**App Previews: replace them too.** Re-recorded and re-cut on 2026-09-30, the
+same five-scene arc on Volcano, Space, Clouds, Cyber and Forest, now as 3D
+scenes with the new block styles. Every scene keeps its PREMIUM BOARD tag.
+
+| File | Size | Length | Upload as |
+|---|---|---|---|
+| `build/trailer/word-wars-preview.mp4` | 886 x 1920, 30fps, H.264, stereo AAC | 27.6s | iPhone 6.9" |
+| `build/trailer/word-wars-preview-ipad.mp4` | 1200 x 1600, 30fps, H.264, stereo AAC | 26.6s | iPad 13" |
+
+Both are inside Apple's 15 to 30 seconds and about 28 MB. Recorded with
+`tools/trailer.sh --seed 11 --preview` (`--size 886x1920`, and
+`--size 1200x1600 --tablet` for the iPad), cut with `tools/previewcut.py`.
+Subway isn't in them: a sixth scene would take the take past 30 seconds, and
+the screenshot covers it.
 
 **Description: two small edits suggested, not made.** `STORE-LISTING.md` has
 an uncommitted edit of yours in it, so it's left alone. These are the two

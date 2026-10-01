@@ -57,13 +57,16 @@ SHOTS = [
      (199, 125, 255), (22, 10, 50), (8, 4, 28), None),
     ("versus", "clouds", "03-friends", "PLAY YOUR FRIENDS.", "SEND A LINK. YOU'RE IN.",
      (79, 195, 247), (18, 40, 70), (8, 18, 36), None),
-    ("daily", "midnight", "04-daily", "ONE BOARD A DAY.", "THE SAME FOR EVERYONE.",
+    # Subway is free, earned in versus, so it carries no premium tag.
+    ("unlock", "subway", "04-unlock", "EARN NEW BOARDS.", "PLAY VERSUS, UNLOCK SUBWAY.",
+     (255, 200, 58), (16, 20, 34), (4, 6, 14), None),
+    ("daily", "midnight", "05-daily", "ONE BOARD A DAY.", "THE SAME FOR EVERYONE.",
      (100, 223, 223), (14, 20, 44), (4, 8, 22), None),
-    ("survival", "ember", "05-survival", "NO CLOCK.", "HOW LONG CAN YOU LAST?",
+    ("survival", "ember", "06-survival", "NO CLOCK.", "HOW LONG CAN YOU LAST?",
      (249, 65, 68), (40, 14, 12), (16, 6, 6), None),
-    ("cosmetics", "aurora", "06-boards", "PICK YOUR BATTLEFIELD.", "8 ANIMATED BOARDS.",
+    ("cosmetics", "aurora", "07-boards", "PICK YOUR BATTLEFIELD.", "8 BOARDS, ALL IN 3D.",
      (94, 234, 212), (6, 30, 42), (2, 12, 20), "IN THE PREMIUM PACK"),
-    ("boards", "midnight", "07-leaderboard", "CLIMB THE DAILY BOARD.", "BEAT THE WORLD.",
+    ("boards", "midnight", "08-leaderboard", "CLIMB THE DAILY BOARD.", "BEAT THE WORLD.",
      (255, 209, 102), (14, 20, 44), (4, 8, 22), None),
 ]
 
@@ -179,6 +182,14 @@ def compose(device, spec):
 
 
 def main():
+    # Cleared first: the set is uploaded as a folder, and a card renumbered
+    # out from under an old file would leave both of them in it.
+    for device in DEVICES:
+        dest = os.path.join(OUT, device)
+        if os.path.isdir(dest):
+            for f in os.listdir(dest):
+                if f.endswith(".png") or f.endswith(".png.import"):
+                    os.remove(os.path.join(dest, f))
     for device in DEVICES:
         for spec in SHOTS:
             path = compose(device, spec)
