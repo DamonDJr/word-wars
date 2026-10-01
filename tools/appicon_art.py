@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The App Store icon: BloqBot, hyped, with the wordmark's tiles flying.
+"""The app icon: BloqBot, hyped, with the wordmark's tiles flying.
 
     tools/appicon_art.py              writes appicon-1024.png
     tools/appicon_art.py --preview    and a sheet of it at home-screen sizes
+    tools/appicon_art.py --android    and the Android launcher set
 
 The old icon was the wordmark's tiles alone, flat on navy: correct, and the
 least fun thing in a game whose mascot punches the air when you win. So the
@@ -54,8 +55,9 @@ def shade(hex_, k):
     return "#" + "".join(f"{v:02x}" for v in c)
 
 
-def backdrop():
+def backdrop(cx=CX, cy=CY):
     """A warm burst: lit in the middle, deeper at the edges, with rays."""
+    CX, CY = cx, cy
     out = [
         '<defs>'
         f'<radialGradient id="glow" cx="{CX}" cy="{CY}" r="820" gradientUnits="userSpaceOnUse">'
@@ -164,40 +166,104 @@ def bot_png(scale):
     return canvas.size, pad, base64.b64encode(buf.getvalue()).decode()
 
 
-def icon_svg():
-    body = [backdrop()]
-    scale = 1.9
-    (bw, bh), pad, data = bot_png(scale)
-    # Placed by eye from the frame: his head on the burst, a little right of
-    # centre and as big as the square allows, because his face is what has to
-    # survive at sixty pixels; his legs run off the bottom, where they say
-    # nothing anyway. The tiles he has just thrown are up and away on the left.
-    bx = 655 - bw * 0.56
-    by = 1080 - bh * 0.93
-    # The speed lines run back toward him, so they go behind him: drawn over
-    # him they read as scratches across his face.
-    body.append(streaks(205, 505, 225, math.radians(35)))
-    body.append(streaks(315, 215, 250, math.radians(55)))
-    body.append(f'<image x="{bx:.1f}" y="{by:.1f}" width="{bw}" height="{bh}" '
-                f'href="data:image/png;base64,{data}"/>')
-    body.append(tile(205, 505, 225, "W", RED, 12))
-    body.append(tile(315, 215, 250, "W", BLUE, -10))
-    body.append(sparkle(915, 150, 46))
-    body.append(sparkle(590, 80, 26))
-    body.append(sparkle(120, 760, 30))
+def svg(body):
     return (f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'xmlns:xlink="http://www.w3.org/1999/xlink" width="{SIZE}" height="{SIZE}" '
             f'viewBox="0 0 {SIZE} {SIZE}">{"".join(body)}</svg>\n')
 
 
-def render(svg_path, png_path):
-    cmd = ["resvg", "--width", str(SIZE), "--height", str(SIZE)]
+def bot_image(scale, x_at, foot):
+    """BloqBot at `scale`, his frame's horizontal 56% at `x_at` and 93% of
+    the way down it at `foot`."""
+    (bw, bh), pad, data = bot_png(scale)
+    bx = x_at - bw * 0.56
+    by = foot - bh * 0.93
+    return (f'<image x="{bx:.1f}" y="{by:.1f}" width="{bw}" height="{bh}" '
+            f'href="data:image/png;base64,{data}"/>')
+
+
+def ios_layers():
+    """The App Store square, as two layers: the burst, and everything on it."""
+    # Placed by eye from the frame: his head on the burst, a little right of
+    # centre and as big as the square allows, because his face is what has to
+    # survive at sixty pixels; his legs run off the bottom, where they say
+    # nothing anyway. The tiles he has just thrown are up and away on the left.
+    # The speed lines run back toward him, so they go behind him: drawn over
+    # him they read as scratches across his face.
+    fg = [streaks(205, 505, 225, math.radians(35)),
+          streaks(315, 215, 250, math.radians(55)),
+          bot_image(1.9, 655, 1080),
+          tile(205, 505, 225, "W", RED, 12),
+          tile(315, 215, 250, "W", BLUE, -10),
+          sparkle(915, 150, 46), sparkle(590, 80, 26), sparkle(120, 760, 30)]
+    return [backdrop()], fg
+
+
+def adaptive_layers(motion=True):
+    """Android's adaptive icon: the same pieces, pulled in.
+
+    A launcher crops the layer to a circle, a squircle or a teardrop, and
+    only the middle 66 of its 108 units are promised to survive every one of
+    them — a circle of radius 313 on this 1024 canvas. The App Store layout
+    has tiles out near the edges, so here they are tucked in beside him and
+    his head sits in the middle, where every mask keeps it. `motion` leaves
+    off the speed lines and the sparkle, for the one-colour layer, where they
+    come out as stray dashes."""
+    fg = []
+    if motion:
+        fg += [streaks(345, 575, 112, math.radians(30), n=2),
+               streaks(360, 385, 118, math.radians(45), n=2)]
+    fg += [bot_image(1.2, 620, 880),
+           tile(345, 575, 112, "W", RED, 12),
+           tile(360, 385, 118, "W", BLUE, -10)]
+    if motion:
+        fg.append(sparkle(735, 320, 26))
+    return [backdrop(600, 480)], fg
+
+
+def render(svg_path, png_path, size=SIZE, alpha=False):
+    cmd = ["resvg", "--width", str(size), "--height", str(size)]
     for f in FONTS:
         cmd += ["--use-font-file", str(f)]
     subprocess.run(cmd + [str(svg_path), str(png_path)], check=True)
     # No alpha channel, which is what Apple checks for, not just no
-    # transparent pixels.
-    Image.open(png_path).convert("RGB").save(png_path)
+    # transparent pixels. The Android layers are the exception: a foreground
+    # is nothing but what sits on the background.
+    if not alpha:
+        Image.open(png_path).convert("RGB").save(png_path)
+
+
+def android(out_dir):
+    """The launcher set the Android presets point at, in `packaging/android/`."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bg, fg = adaptive_layers()
+    for name, body, size in (("icon_background_432.png", bg, 432),
+                             ("icon_foreground_432.png", fg, 432)):
+        src = SRC / name.replace(".png", ".svg")
+        src.write_text(svg(body))
+        render(src, out_dir / name, size, alpha=name.startswith("icon_foreground"))
+    # The themed layer Android 13 tints to the wallpaper: one colour, shape
+    # only. Taken from the foreground's light parts — his head, his eyes and
+    # smile, the tiles round their letters — so the face still reads when
+    # everything is the same colour. Without the speed lines, which come out
+    # as dashes, and dark enough a cut that the red tile survives it.
+    plain = SRC / "icon_monochrome_src.svg"
+    plain.write_text(svg(adaptive_layers(motion=False)[1]))
+    render(plain, SRC / "icon_monochrome_src.png", 432, alpha=True)
+    fore = Image.open(SRC / "icon_monochrome_src.png").convert("RGBA")
+    lum = fore.convert("L").point(lambda v: 255 if v > 95 else 0)
+    shape = Image.composite(fore.getchannel("A"), Image.new("L", fore.size, 0), lum)
+    mono = Image.new("RGBA", fore.size, (255, 255, 255, 0))
+    mono.putalpha(shape)
+    mono.save(out_dir / "icon_monochrome_432.png")
+    # The square ones: the legacy launcher icon and the Play listing's, which
+    # Play masks itself, so they are the App Store square at their sizes.
+    full = Image.open(ROOT / "appicon-1024.png").convert("RGB")
+    full.resize((192, 192), Image.LANCZOS).save(out_dir / "icon_192.png")
+    full.resize((512, 512), Image.LANCZOS).save(out_dir / "play_icon_512.png")
+    for n in ("icon_192.png", "icon_background_432.png", "icon_foreground_432.png",
+              "icon_monochrome_432.png", "play_icon_512.png"):
+        print(f"[appicon_art] packaging/android/{n}")
 
 
 def preview(png_path, out):
@@ -221,10 +287,13 @@ def preview(png_path, out):
 def main():
     SRC.mkdir(parents=True, exist_ok=True)
     src = SRC / "appicon.svg"
-    src.write_text(icon_svg())
+    bg, fg = ios_layers()
+    src.write_text(svg(bg + fg))
     out = ROOT / "appicon-1024.png"
     render(src, out)
     print(f"[appicon_art] {out.name}  {SIZE}x{SIZE}, no alpha")
+    if "--android" in sys.argv:
+        android(ROOT / "packaging" / "android")
     if "--preview" in sys.argv:
         prev = ROOT / "build" / "appicon-preview.png"
         prev.parent.mkdir(exist_ok=True)
