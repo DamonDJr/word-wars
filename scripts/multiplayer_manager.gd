@@ -201,6 +201,7 @@ func _ready() -> void:
 		# Nothing to wait for: Epic signs in on the first search rather than at
 		# launch, so a player who never opens versus never touches Epic at all.
 		_set_state(State.READY, "ready")
+		_watch_deeplinks()
 		# Deferred so the game's own `_ready` has connected `invite_offered` —
 		# autoloads are ready before the main scene is.
 		_check_link.call_deferred(true)
@@ -1105,7 +1106,8 @@ func offer_code(text: String) -> void:
 ## without a relaunch, so launch alone would miss it.
 ##
 ## Android hands the link to `GodotApp` (see tools/android-template.sh), which
-## holds it until asked. On a desktop `--join=CODE` stands in for a link.
+## holds it until asked. iOS hands it to the Deeplink plugin (ios/plugins), which
+## holds it the same way. On a desktop `--join=CODE` stands in for a link.
 func _check_link(at_launch: bool = false) -> void:
 	if transport != Transport.EOS:
 		return
@@ -1114,6 +1116,8 @@ func _check_link(at_launch: bool = false) -> void:
 		var app = JavaClassWrapper.wrap("com.godot.game.GodotApp")
 		if app != null:
 			link = String(app.takeLink())
+	else:
+		link = _take_deeplink()
 	if at_launch:
 		for arg in OS.get_cmdline_user_args():
 			if arg.begins_with("--join="):
@@ -1127,6 +1131,31 @@ func _check_link(at_launch: bool = false) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_RESUMED:
 		_check_link()
+
+
+## The iOS Deeplink plugin, when this build has it.
+var _deeplink: Object = null
+
+
+## Listen for links on iOS. Resuming is not enough there: iOS wakes the game
+## first and delivers the link after, so the check on resume finds nothing and
+## the plugin's signal is what says one has landed.
+func _watch_deeplinks() -> void:
+	if not Engine.has_singleton("DeeplinkPlugin"):
+		return
+	_deeplink = Engine.get_singleton("DeeplinkPlugin")
+	_deeplink.connect("deeplink_received", func(_url): _check_link())
+
+
+## The link the plugin is holding, taken rather than read. A link that launched
+## the game is seen twice, by the check at launch and by the signal the plugin
+## queued as it arrived, so without clearing it one tap would join twice.
+func _take_deeplink() -> String:
+	if _deeplink == null:
+		return ""
+	var link := String(_deeplink.get_url())
+	_deeplink.clear_data()
+	return link
 
 
 ## The room code out of anything that might carry one: the page's link

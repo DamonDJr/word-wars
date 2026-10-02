@@ -47,6 +47,17 @@ func _orient(tall: bool) -> void:
 	game.portrait = tall
 
 
+## Stands in for the iOS Deeplink plugin, which only exists on a phone.
+class FakeDeeplink:
+	var url := ""
+
+	func get_url() -> String:
+		return url
+
+	func clear_data() -> void:
+		url = ""
+
+
 func _press(code: int) -> void:
 	var ev := InputEventKey.new()
 	ev.keycode = code
@@ -589,6 +600,26 @@ func _a_loss_says_how_close_it_was() -> void:
 	game.winner = was_winner
 
 
+## A tapped invite has to come out as the room it names, in each shape a phone
+## hands it over in: the scheme the invite page opens, the page's own address
+## (what Android's verified link delivers), and a bare code. And the iOS
+## plugin's copy has to be taken, not read: one launch asks for it twice.
+func _a_link_names_its_room() -> void:
+	for link in ["wordwars://join/K7QMX", "wordwars://join/K7QMX/",
+			"https://damondjr.github.io/word-wars/j/?c=K7QMX", "k7qmx"]:
+		_expect("%s is room K7QMX" % link, mm.code_from_link(link) == "K7QMX")
+	_expect("a link with no code in it is no room",
+		mm.code_from_link("wordwars://join/") == "")
+
+	var was: Object = mm._deeplink
+	var held := FakeDeeplink.new()
+	held.url = "wordwars://join/K7QMX"
+	mm._deeplink = held
+	_expect("the plugin's link is taken", mm._take_deeplink() == "wordwars://join/K7QMX")
+	_expect("and only once", mm._take_deeplink() == "")
+	mm._deeplink = was
+
+
 func _init() -> void:
 	await process_frame
 	mm = root.get_node("MultiplayerManager")
@@ -611,6 +642,7 @@ func _init() -> void:
 	_rematch_follows_the_opponent()
 	_summary_fits_a_phone()
 	_an_invite_asks_before_it_takes_the_screen()
+	_a_link_names_its_room()
 
 	print("--- what the title says with Game Center off ---")
 	print("  %s" % game._versus_sub())

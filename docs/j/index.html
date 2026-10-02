@@ -68,6 +68,13 @@
     <p class="steps" id="steps">In the game: <b>Versus</b> → <b>Join with a code</b>.</p>
   </div>
 
+  <div id="getit" hidden>
+    <p class="steps">Don't have Word Wars yet? It's free.</p>
+    <a class="cta" href="https://apps.apple.com/app/id6802900966">Get it on the App&nbsp;Store</a>
+    <p class="steps">Once it's installed, come back here and tap
+    <b>Open Word Wars</b> to go straight to your friend's room.</p>
+  </div>
+
   <div class="stores">
     <span class="note">Don't have it yet? It's free.</span>
     <a href="https://apps.apple.com/app/id6802900966">App Store</a>
@@ -149,6 +156,28 @@ room stays open while your friend waits in it.</p>
     document.body.removeChild(t);
   }
 
+  // A page cannot ask iOS whether the game is installed. What it can see is
+  // whether it lost the screen: if the game opened, Safari is in the background
+  // by now. Still in front a moment later almost always means there was nothing
+  // to open (Safari has just said the address is invalid), so the App Store
+  // becomes the main thing to tap. Shown rather than redirected to: iOS asks
+  // "Open in Word Wars?" first and the page stays in front while it does, so a
+  // redirect would send people who have the game to the store.
+  var left = false;
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) left = true;
+  });
+  window.addEventListener('pagehide', function () { left = true; });
+  function offerStore() {
+    left = false;
+    setTimeout(function () {
+      if (left) return;
+      document.getElementById('getit').hidden = false;
+      document.querySelector('.stores').hidden = true;
+      open.classList.add('quiet');
+    }, 2500);
+  }
+
   if (android) {
     // Android hands the whole link to the game, so this drops straight into
     // the room. The copy is only a spare, in case it opens to the title.
@@ -170,12 +199,16 @@ room stays open while your friend waits in it.</p>
       'then <b>Versus</b> → <b>Join with a code</b> → <b>Paste</b>.<br>' +
       'Or tap <b>⋯</b> and choose <b>Open in Safari</b>.';
   } else if (ios) {
-    // iOS opens the game from wordwars:// but cannot pass it the link, so the
-    // code travels on the clipboard: copied here, pasted in the game.
-    open.textContent = 'Copy code & open Word Wars';
+    // The game takes the link itself now (the Deeplink plugin), so this drops
+    // straight into the room like Android. The copy is a spare for an install
+    // from before the plugin, which still opens to the title.
+    open.textContent = 'Open Word Wars';
     open.href = scheme;
-    open.addEventListener('click', copy);
-    steps.innerHTML = 'Then in the game: <b>Versus</b> → <b>Join with a code</b> → <b>Paste</b>.';
+    open.addEventListener('click', function () {
+      copy();
+      offerStore();
+    });
+    steps.innerHTML = 'If it opens to the title instead: <b>Versus</b> → <b>Join with a code</b> → <b>Paste</b>.';
   } else {
     // A desktop browser has no game to open. `hidden` alone loses to the
     // button's own display rule, which is how this once showed a dead button.

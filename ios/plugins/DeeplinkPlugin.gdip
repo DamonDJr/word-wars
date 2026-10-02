@@ -1,0 +1,29 @@
+;
+; © 2024-present https://github.com/cengiz-pz
+;
+
+[config]
+name="DeeplinkPlugin"
+binary="DeeplinkPlugin.xcframework"
+
+initialization="deeplink_plugin_init"
+deinitialization="deeplink_plugin_deinit"
+
+use_swift_runtime=true
+
+; Word Wars: what the plugin's editor half would have added. That half is
+; left switched off (addons/DeeplinkPlugin is not installed) because its Android
+; export plugin injects an activity of its own, and Android already takes links
+; through GodotApp. So the iOS needs live here instead.
+[dependencies]
+linked=[]
+embedded=[]
+system=["Foundation.framework", "UIKit.framework"]
+
+capabilities=[]
+
+files=[]
+
+linker_flags=["-ObjC"]
+
+[plist]
