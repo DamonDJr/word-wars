@@ -274,6 +274,7 @@ const BOARD_3D := {
 	"ocean": "res://boards/3d/ocean.glb",
 	"space": "res://boards/3d/space.glb",
 	"subway": "res://boards/3d/subway.glb",
+	"atlantis": "res://boards/3d/atlantis.glb",
 }
 const Board3D := preload("res://scripts/board3d.gd")
 var _art3d: SubViewport = null

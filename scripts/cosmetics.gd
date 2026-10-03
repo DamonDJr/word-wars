@@ -228,6 +228,28 @@ const THEMES := {
 		"font": "res://fonts/boards/Cinzel.ttf", "font_axes": {"wght": 800},
 		"font_scale": 1.0, "font_dy": 0.048,
 	},
+
+	# Atlantis: the first board rendered rather than drawn live. The scene is
+	# a picture made in Blender's path tracer, and what moves (the merman, the
+	# kelp, the fish and jellyfish, the light) is added over it; see
+	# `tools/blender/atlantis.py` and the plate path in `board3d.gd`.
+	#
+	# Sea blue for the frame, the trident's gold for the accent, and Cinzel,
+	# the inscriptional face, because this is a city of carved stone. Nexus
+	# uses it too, at a heavier weight.
+	"atlantis": {
+		"top": "#031424", "bottom": "#0a2e46", "panel": "#05202f", "panel_a": 0.42,
+		"grid": "#bff4ff", "grid_a": 0.10, "nodes": true,
+		"frame": "#3cc8e8", "frame_a": 0.92, "frame_pulse": 0.16,
+		"accent": "#f0c060",
+		"key_bg": "#082234", "key_edge": "#3cc8e8", "key_ink": "#e4f8ff",
+		"fire_bg": "#1a4258", "fire_edge": "#f0c060",
+		"glow": "#2aa8d8", "glow_a": 0.22,
+		"art": "res://boards/3d/previews/atlantis.jpg", "art_a": 0.9, "art_dim": 0.3,
+		"motion": "",
+		"font": "res://fonts/boards/Cinzel.ttf", "font_axes": {"wght": 700},
+		"font_scale": 1.0, "font_dy": 0.048,
+	},
 }
 
 ## What a theme may set beyond the five originals, and what it falls back to.

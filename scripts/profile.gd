@@ -586,6 +586,9 @@ const COSMETICS := {
 	],
 	"theme": [
 		{"id": "midnight", "name": "Midnight", "need": {}},
+		# Free from the first launch: the rendered board, and the one a new
+		# player can try without earning or buying anything.
+		{"id": "atlantis", "name": "Atlantis", "need": {}},
 		{"id": "ember", "name": "Ember", "need": {"level": 3}},
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
 		{"id": "vapor", "name": "Vapor", "need": {"level": 10}},

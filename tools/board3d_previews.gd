@@ -10,6 +10,10 @@ extends SceneTree
 ## at the stop, the comet in the sky), and they are regenerated whenever a
 ## scene changes: run this after `tools/blender/*.py`, then import.
 ##
+## Name scenes after `--` to redo only those:
+##
+##     godot --script tools/board3d_previews.gd -- atlantis
+##
 ## **Do not pass `--headless`**: the dummy renderer saves blank images.
 
 const SIZE := Vector2i(900, 1600)
@@ -19,6 +23,7 @@ const OUT := "res://boards/3d/previews"
 const MOMENT := {
 	"sky_islands": 6.0, "volcano": 3.0, "city": 12.5, "forest": 5.0, "aurora": 5.0,
 	"desert": 7.5, "nexus": 5.0, "ocean": 5.0, "space": 8.0, "subway": 2.0,
+	"atlantis": 5.0,
 }
 
 
@@ -26,7 +31,10 @@ func _init() -> void:
 	await process_frame
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var board3d: GDScript = load("res://scripts/board3d.gd")
+	var only := OS.get_cmdline_user_args()
 	for scene: String in MOMENT:
+		if not only.is_empty() and not only.has(scene):
+			continue
 		var vp := SubViewport.new()
 		vp.size = SIZE
 		vp.own_world_3d = true

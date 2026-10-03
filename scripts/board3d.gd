@@ -7,7 +7,12 @@ extends Node3D
 ## SubViewport and draws that viewport's texture where the painted picture
 ## would go, so the wash, the dim and the crop all treat it the same.
 ##
-## Clouds, Volcano and Cyber use it; `godot -- --board2d` turns it off.
+## A scene whose entry has a `plate` is rendered instead (Atlantis): the
+## glTF brings only the camera and what swims, and the rest is a picture
+## made in Blender's path tracer, hung behind them with its depth so they
+## can pass behind its stone. See `_load_plate` and `tools/blender/realkit.py`.
+##
+## Every 3D board uses it; `godot -- --board2d` turns it off.
 
 const TOON := preload("res://boards/3d/toon.gdshader")
 const OUTLINE := preload("res://boards/3d/toon_outline.gdshader")
@@ -27,17 +32,27 @@ const LAYER_EYE_ONLY := 1 << 19
 const RAY := preload("res://boards/3d/ray.gdshader")
 const AURORA := preload("res://boards/3d/aurora.gdshader")
 const TILES := preload("res://boards/3d/tiles.gdshader")
+# A rendered (plate) board: the picture, the pieces of it that move in place,
+# and what swims over it. See `tools/blender/realkit.py`.
+const PLATE := preload("res://boards/3d/plate.gdshader")
+const LAYER := preload("res://boards/3d/layer.gdshader")
+const CREATURE := preload("res://boards/3d/creature.gdshader")
+const JELLY := preload("res://boards/3d/jelly.gdshader")
+const SEA_RAY := preload("res://boards/3d/sea_ray.gdshader")
+const SPECK := preload("res://boards/3d/speck.gdshader")
 
 ## Which shader a look asks for, by the flag it sets. A look with none of
 ## these is something solid, and gets the toon shader.
 const KINDS := {
 	"water": WATER, "building": BUILDING, "road": ROAD, "emissive": EMISSIVE,
 	"glow": GLOW, "cone": CONE, "lava": LAVA, "ray": RAY, "aurora": AURORA,
-	"tiles": TILES,
+	"tiles": TILES, "creature": CREATURE, "jelly": JELLY, "sea_ray": SEA_RAY,
 }
 ## Keys in a look that describe the look rather than naming a uniform.
 const META := ["flat", "shade", "line", "width", "soft", "bias", "rim", "rim_color",
 	"light", "fog_max", "eye_only"]
+## The kinds drawn over a plate, which need its picture and depth.
+const ON_PLATE := ["creature", "jelly", "sea_ray"]
 
 ## The frame the scenes are composed in, in Blender (1080x1920). The camera
 ## keeps this frame's width on every screen, so what is at the sides stays in
@@ -361,6 +376,36 @@ const SCENES := {
 				"rim": 0.4, "rim_color": "#c8d8ff"},
 		},
 	},
+	"atlantis": {
+		# Not drawn here but rendered in Blender (`tools/blender/atlantis.py`):
+		# the glTF holds only the camera and what swims, and everything else
+		# is the picture in this folder.
+		"plate": "res://boards/3d/atlantis/",
+		"plate_look": {"caustics": 0.55, "caustic_range": Vector2(5.0, 60.0), "caustic_scale": 0.5},
+		"murk": 0.0105,
+		# Each moving piece of the picture: how far away it hangs (for what
+		# swims in front of or behind it) and how it moves.
+		"layers": {
+			"merman": {"depth": 5.0, "mode": 2, "speed": 1.0, "amount": 1.0},
+			"kelp": {"depth": 9.5, "mode": 1, "speed": 0.8, "amount": 1.0},
+		},
+		"bubbles": true,
+		"snow": true,
+		"look": {
+			# Backlit: dark against the bright water, with a silver flash as
+			# they turn.
+			"Fish": {"creature": true, "stroke": 0, "beat": 0.08, "rate": 2.8, "wander": 0.25,
+				"base": "#5a6e82", "sheen": 0.9, "rim": 0.5},
+			"FishGold": {"creature": true, "stroke": 0, "beat": 0.03, "rate": 2.2, "wander": 0.08,
+				"base": "#ffffff", "sheen": 0.4, "rim": 0.2},
+			"Whale": {"creature": true, "stroke": 1, "beat": 0.9, "rate": 0.5, "base": "#3a4c62",
+				"sheen": 0.1, "rim": 0.25},
+			"Manta": {"creature": true, "stroke": 2, "beat": 0.55, "rate": 0.9, "base": "#2c3a4c",
+				"sheen": 0.15, "rim": 0.3},
+			"Jelly": {"jelly": true, "intensity": 1.1},
+			"Ray": {"sea_ray": true, "intensity": 0.07},
+		},
+	},
 	"city": {
 		# From above and a little behind: roofs, shoulders and car tops take
 		# the light, and what faces the camera stays dark with a cold rim,
@@ -441,6 +486,8 @@ var _refl_vp: SubViewport
 var _refl_cam: Camera3D
 var _refl_scale := 0.5
 var _road_mats: Array[ShaderMaterial] = []
+## A plate board's picture, depth, frame and layout, once loaded.
+var _plate := {}
 
 
 func _init(path := "", overscan := 1.0) -> void:
@@ -482,6 +529,8 @@ func _ready() -> void:
 		return
 	var root := packed.instantiate()
 	add_child(root)
+	if _cfg.has("plate"):
+		_load_plate(String(_cfg["plate"]))
 
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
 		_dress(mi)
@@ -498,6 +547,13 @@ func _ready() -> void:
 			_add_rain(String(_cfg["rain"]))
 		if _cfg.has("reflection"):
 			_add_reflection(float(_cfg["reflection"]))
+		if not _plate.is_empty():
+			_add_plate()
+			if _cfg.get("snow", false):
+				_camera.add_child(_snow())
+	if not _plate.is_empty() and _cfg.get("bubbles", false):
+		for n: Node3D in root.find_children("Bubbles*", "Node3D", true, false):
+			n.add_child(_bubbles())
 
 	var sky_mat := ShaderMaterial.new()
 	sky_mat.shader = SKY
@@ -509,6 +565,10 @@ func _ready() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
+	if not _plate.is_empty():
+		# The plate is the sky and everything else.
+		env.background_mode = Environment.BG_COLOR
+		env.background_color = Color.BLACK
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -672,6 +732,8 @@ func _material(name: String, lit: Color) -> Material:
 				_road_mats.append(m)
 			"emissive":
 				m.set_shader_parameter("color", lit)
+		if kind in ON_PLATE:
+			_plate_uniforms(m)
 		_pass_through(m, look)
 		return m
 
@@ -708,6 +770,145 @@ func _material(name: String, lit: Color) -> Material:
 		line.set_shader_parameter("sway_alpha", float(look.get("sway_alpha", 0.0)))
 		_fog(line, look)
 		m.next_pass = line
+	return m
+
+
+## Read a plate board's folder: the picture, its depth and `plate.json`,
+## which says how wide the picture's frame is and where each moving piece of
+## it sits. Written by the Blender script, so the two cannot disagree.
+func _load_plate(dir: String) -> void:
+	var f := FileAccess.open(dir + "plate.json", FileAccess.READ)
+	if f == null:
+		push_warning("board3d: no plate.json in %s" % dir)
+		return
+	var meta: Dictionary = JSON.parse_string(f.get_as_text())
+	var over: Array = meta["over"]
+	_plate = {
+		"dir": dir,
+		"meta": meta,
+		"tex": load(dir + "plate.png"),
+		"depth": load(dir + String(meta.get("depth", "depth.exr"))),
+		"frame": Vector2(float(meta["tx"]) * float(over[0]), float(meta["ty"]) * float(over[1])),
+	}
+
+
+func _plate_uniforms(m: ShaderMaterial) -> void:
+	m.set_shader_parameter("plate_tex", _plate["tex"])
+	m.set_shader_parameter("plate_depth", _plate["depth"])
+	m.set_shader_parameter("frame", _plate["frame"])
+	m.set_shader_parameter("murk", float(_cfg.get("murk", 0.016)))
+
+
+## The picture, hung at the far end of the camera and sized so its frame
+## fills the view; then each moving piece of it, hung at its own depth over
+## the place it was cut from.
+func _add_plate() -> void:
+	var fr: Vector2 = _plate["frame"]
+	var far := _camera.far * 0.95
+	var q := QuadMesh.new()
+	q.size = Vector2(2.0 * far * fr.x, 2.0 * far * fr.y)
+	var m := ShaderMaterial.new()
+	m.shader = PLATE
+	_plate_uniforms(m)
+	_pass_through(m, _cfg.get("plate_look", {}))
+	var mi := MeshInstance3D.new()
+	mi.mesh = q
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = Vector3(0.0, 0.0, -far)
+	_camera.add_child(mi)
+	var layers: Dictionary = (_plate["meta"] as Dictionary).get("layers", {})
+	var how: Dictionary = _cfg.get("layers", {})
+	for name: String in layers:
+		_add_layer(layers[name], how.get(name, {}))
+
+
+func _add_layer(info: Dictionary, how: Dictionary) -> void:
+	var tex := load(String(_plate["dir"]) + String(info["file"])) as Texture2D
+	if tex == null:
+		return
+	var fr: Vector2 = _plate["frame"]
+	var r: Array = info["rect"]
+	var u0 := float(r[0])
+	var v0 := float(r[1])
+	var u1 := float(r[2])
+	var v1 := float(r[3])
+	var d := float(how.get("depth", 10.0))
+	var q := QuadMesh.new()
+	q.size = Vector2((u1 - u0) * 2.0 * fr.x * d, (v1 - v0) * 2.0 * fr.y * d)
+	var m := ShaderMaterial.new()
+	m.shader = LAYER
+	var size := Vector2(tex.get_width(), tex.get_height())
+	m.set_shader_parameter("tex", tex)
+	m.set_shader_parameter("size", size)
+	m.set_shader_parameter("mode", int(how.get("mode", 0)))
+	m.set_shader_parameter("speed", float(how.get("speed", 1.0)))
+	m.set_shader_parameter("amount", float(how.get("amount", 1.0)))
+	# Anchors come in plate UV; the shader wants the layer's own pixels.
+	var anchors: Dictionary = info.get("anchors", {})
+	for k: String in anchors:
+		var a: Array = anchors[k]
+		m.set_shader_parameter(k, Vector2((float(a[0]) - u0) / (u1 - u0), (float(a[1]) - v0) / (v1 - v0)) * size)
+	var mi := MeshInstance3D.new()
+	mi.mesh = q
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = Vector3(((u0 + u1) - 1.0) * fr.x * d, (1.0 - (v0 + v1)) * fr.y * d, -d)
+	_camera.add_child(mi)
+
+
+## Bubbles rising from a vent: a thin wobbling stream, faster as they climb.
+func _bubbles() -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.amount = 18
+	p.lifetime = 7.0
+	p.preprocess = 7.0
+	p.mesh = QuadMesh.new()
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	p.emission_sphere_radius = 0.12
+	p.direction = Vector3.UP
+	p.spread = 6.0
+	p.gravity = Vector3(0.0, 0.25, 0.0)
+	p.initial_velocity_min = 0.25
+	p.initial_velocity_max = 0.6
+	p.tangential_accel_min = -0.15
+	p.tangential_accel_max = 0.15
+	p.scale_amount_min = 0.03
+	p.scale_amount_max = 0.09
+	p.color = Color(0.85, 0.97, 1.0, 0.9)
+	p.material_override = _speck_material(1)
+	return p
+
+
+## Specks drifting in the water in front of the camera: what makes water
+## read as water rather than as blue air.
+func _snow() -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.amount = 220
+	p.lifetime = 24.0
+	p.preprocess = 24.0
+	p.local_coords = true
+	p.mesh = QuadMesh.new()
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	p.emission_box_extents = Vector3(9.0, 16.0, 14.0)
+	p.position = Vector3(0.0, 0.0, -17.0)
+	p.direction = Vector3(0.3, -1.0, 0.1)
+	p.spread = 40.0
+	p.gravity = Vector3.ZERO
+	p.initial_velocity_min = 0.04
+	p.initial_velocity_max = 0.14
+	p.scale_amount_min = 0.02
+	p.scale_amount_max = 0.06
+	p.color = Color(0.8, 0.95, 1.0, 0.4)
+	p.material_override = _speck_material(0)
+	return p
+
+
+func _speck_material(kind: int) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = SPECK
+	m.set_shader_parameter("kind", kind)
+	_plate_uniforms(m)
 	return m
 
 
