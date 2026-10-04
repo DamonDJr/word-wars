@@ -620,6 +620,53 @@ func _a_link_names_its_room() -> void:
 	mm._deeplink = was
 
 
+## A match over Epic used to learn that the other phone had gone only when Epic
+## said so, which took up to two and a half minutes of playing on against a
+## frozen board. Both ends beat now and give up on a silence, but only against
+## an opponent that beats too: a build from before this never sends one, and a
+## quiet results screen against it is not a dropped connection.
+func _a_silent_opponent_is_dropped() -> void:
+	var was_transport = mm.transport
+	var was_state = mm.state
+	var was_match = mm.current_match
+	var was_status: String = game.net_status
+	var ended := []
+	var on_end := func(r): ended.append(r)
+	mm.match_ended.connect(on_end)
+	var heard := []
+	var on_data := func(p): heard.append(p)
+	mm.data_received.connect(on_data)
+
+	mm.transport = mm.Transport.EOS
+	mm.state = mm.State.PLAYING
+	# Anything that isn't null: there is no connection, so the beats it sends
+	# fail quietly, which is all this needs.
+	mm.current_match = RefCounted.new()
+	mm._peer_beats = false
+	mm._silence = 0.0
+	mm._keep_alive(mm.SILENCE_LIMIT + 5.0)
+	_expect("an opponent who never beats is not timed out", ended.is_empty())
+
+	mm._on_data(JSON.stringify({"type": "beat"}).to_utf8_buffer())
+	_expect("a beat arms the watchdog", mm._peer_beats)
+	_expect("and is not handed to the game as match data", heard.is_empty())
+	mm._keep_alive(mm.SILENCE_LIMIT * 0.6)
+	mm._on_data(JSON.stringify({"type": "versustest"}).to_utf8_buffer())
+	mm._keep_alive(mm.SILENCE_LIMIT * 0.6)
+	_expect("any packet keeps a match alive", ended.is_empty())
+	mm._keep_alive(mm.SILENCE_LIMIT * 0.5)
+	_expect("a silence that long ends it", ended.size() == 1)
+	_expect("and drops the connection", mm.current_match == null)
+
+	mm.match_ended.disconnect(on_end)
+	mm.data_received.disconnect(on_data)
+	mm.transport = was_transport
+	mm.state = was_state
+	mm.current_match = was_match
+	mm._peer_beats = false
+	game.net_status = was_status
+
+
 func _init() -> void:
 	await process_frame
 	mm = root.get_node("MultiplayerManager")
@@ -643,6 +690,7 @@ func _init() -> void:
 	_summary_fits_a_phone()
 	_an_invite_asks_before_it_takes_the_screen()
 	_a_link_names_its_room()
+	_a_silent_opponent_is_dropped()
 
 	print("--- what the title says with Game Center off ---")
 	print("  %s" % game._versus_sub())

@@ -46,6 +46,9 @@ const GAME_CONNECTIONS := {
 	# Over Epic: our own room is open and its code can be shared. The share
 	# sheet is the game's to raise, since only it knows which screen is up.
 	"invite_ready": "_on_invite_ready",
+	# The app is going into the background. A versus match is left on it, by
+	# the game, which is the half that knows whether one is running.
+	"going_away": "_on_going_away",
 }
 
 ## Signals the manager emits that nothing in `game.gd` connects to, on purpose.

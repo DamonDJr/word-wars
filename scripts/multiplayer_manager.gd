@@ -53,6 +53,9 @@ signal data_received(packet: Dictionary)
 ## Somebody's invitation is in hand and waiting on an answer. See the invite
 ## section below for why this is a signal rather than a join.
 signal invite_offered(who: String)
+## The app is going into the background. Raised before Epic is told, so a match
+## being left on the way out can still be heard leaving.
+signal going_away
 
 enum State { OFF, AUTHENTICATING, READY, MATCHMAKING, CONNECTING, HANDSHAKING, PLAYING }
 
@@ -233,6 +236,9 @@ func _process(delta: float) -> void:
 
 	if transport == Transport.EOS:
 		_eos_process(delta)
+
+	if state == State.PLAYING:
+		_keep_alive(delta)
 
 	if state == State.CONNECTING:
 		_wait_age += delta
@@ -863,6 +869,10 @@ func _on_data(data: PackedByteArray, _player = null) -> void:
 	if typeof(packet) != TYPE_DICTIONARY:
 		return
 	var kind := String(packet.get("type", ""))
+	_silence = 0.0
+	if kind == "beat":
+		_peer_beats = true
+		return
 
 	# They are connected and willing but Apple's sheet is still over their screen.
 	# Nothing to do but wait, and say so — the point of the packet is that it
@@ -1130,7 +1140,27 @@ func _check_link(at_launch: bool = false) -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_RESUMED:
+		_set_app_status(true)
 		_check_link()
+	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		# The game hears first, so a match it leaves can still say goodbye:
+		# the `bye` is pushed out by hand, since no frame will run to send it.
+		going_away.emit()
+		if _eos_platform_up:
+			for peer in _closing:
+				peer.poll()
+			IEOS.tick()
+		_set_app_status(false)
+
+
+## Epic asks a phone game to say when it goes into the background and when it
+## comes back, so the SDK can stop and restart its own networking around a
+## suspended app instead of finding its sockets dead on the way back.
+func _set_app_status(foreground: bool) -> void:
+	if not _eos_platform_up:
+		return
+	EOS.Platform.PlatformInterface.set_application_status(EOS.Platform.ApplicationStatus.Foreground if foreground
+		else EOS.Platform.ApplicationStatus.BackgroundSuspended)
 
 
 ## The iOS Deeplink plugin, when this build has it.
@@ -1233,6 +1263,7 @@ func _eos_start() -> bool:
 	if not await HPlatform.setup_eos_async(EOSConfig.make_credentials()):
 		push_warning("EOS: platform setup failed")
 		return false
+	_eos_platform_up = true
 	# Relayed only. A direct connection hands each player the other's IP
 	# address; through Epic's relays neither sees it. The cost is a few tens of
 	# milliseconds, which a word game does not feel.
@@ -1350,6 +1381,9 @@ func _on_eos_connected(_id: int) -> void:
 	_send_failures = 0
 	_wait_age = 0.0
 	_hello_timer = 0.0
+	_silence = 0.0
+	_beat_timer = 0.0
+	_peer_beats = false
 	_set_state(State.HANDSHAKING, "saying hello")
 
 
@@ -1410,18 +1444,41 @@ func _eos_close() -> void:
 	_quick_joining = false
 	invite_code = ""
 	if _eos_peer != null:
-		# Closed on the next frame, never here. The commonest way to arrive is a
-		# `bye` read out of the packet loop in `_eos_process`, and closing an
-		# EOSG peer from inside that loop segfaults — measured, on the first
-		# match that ever ended. Deferred, nothing is mid-read when it goes.
+		# Closed later, never here. The commonest way to arrive is a `bye` read
+		# out of the packet loop in `_eos_process`, and closing an EOSG peer from
+		# inside that loop segfaults — measured, on the first match that ever
+		# ended.
+		#
+		# And held until then. This used to be `peer.close.call_deferred()`,
+		# which keeps no reference: with `_eos_peer` and `current_match` both
+		# cleared, the peer was freed the moment this returned. That is inside
+		# its own `poll` when Epic reports the far end gone, and it threw away
+		# our own `bye` before it was sent, so the other player sat on in a dead
+		# match until Epic noticed. Kept for `LINGER`, then closed, then let go.
 		var peer = _eos_peer
 		_eos_peer = null
 		for sig in [[peer.peer_connected, _on_eos_connected],
 				[peer.peer_disconnected, _on_eos_disconnected]]:
 			if (sig[0] as Signal).is_connected(sig[1]):
 				(sig[0] as Signal).disconnect(sig[1])
-		peer.close.call_deferred()
+		_closing.append(peer)
+		get_tree().create_timer(LINGER).timeout.connect(_finish_close.bind(peer))
 	_close_lobby()
+
+
+## How long a peer we have hung up on is kept open: long enough for a `bye`
+## to leave, and comfortably past any `poll` that was running when we let go.
+const LINGER := 1.0
+## Peers hung up on and not yet closed. Holding them here is what keeps them
+## alive; see `_eos_close`.
+var _closing: Array = []
+
+
+func _finish_close(peer) -> void:
+	if not _closing.has(peer):
+		return
+	peer.close()
+	_closing.erase(peer)
 
 
 ## Fire-and-forget: the requests go out before the first await, and nothing
@@ -1435,6 +1492,68 @@ func _close_lobby() -> void:
 		lobby.destroy_async()
 	else:
 		lobby.leave_async()
+
+
+## A match over Epic learns that the other end has gone from Epic itself, and
+## Epic takes its time: a phone killed mid-match left its opponent playing on
+## against a frozen board for between half a minute and two and a half minutes
+## (measured: two copies of the game on one machine, one of them killed). So
+## both ends send a heartbeat for as long as they are connected, and give up
+## on a silence.
+##
+## Armed only once the other end has sent one. A build from before this never
+## will, and a quiet results screen against one is not a dropped connection;
+## against those Epic's own timeout is left to do the job, as before.
+const BEAT_EVERY := 2.0
+const SILENCE_LIMIT := 10.0
+var _beat_timer := 0.0
+var _silence := 0.0
+var _peer_beats := false
+
+
+func _keep_alive(delta: float) -> void:
+	if transport != Transport.EOS or current_match == null:
+		return
+	_beat_timer -= delta
+	if _beat_timer <= 0.0:
+		_beat_timer = BEAT_EVERY
+		_send({"type": "beat"}, false)
+	if not _peer_beats:
+		return
+	_silence += delta
+	if _silence >= SILENCE_LIMIT:
+		_fail("lost the connection to the other player")
+
+
+## Whether Epic's platform has been created this run, and so has to be torn down.
+var _eos_platform_up := false
+
+
+## Epic's SDK runs threads of its own. Left running at exit, one of them is
+## still inside the SDK when Godot unloads the extension, and the app segfaults
+## on its way out: every desktop quit after a versus match, and Android's back
+## gesture off the title screen. (Measured on Linux: signal 11 in a thread whose
+## code had already been unmapped.) So the connection and the platform are shut
+## while the tree is still standing. iOS never gets here; it kills apps outright.
+func _exit_tree() -> void:
+	_eos_shutdown()
+
+
+func _eos_shutdown() -> void:
+	if not _eos_platform_up:
+		return
+	_eos_platform_up = false
+	_attempt += 1
+	if _eos_peer != null:
+		_closing.append(_eos_peer)
+		_eos_peer = null
+	current_match = null
+	for peer in _closing:
+		peer.close()
+	_closing.clear()
+	_lobby = null
+	EOS.Platform.PlatformInterface.release()
+	EOS.Platform.PlatformInterface.shutdown()
 
 
 func _eos_give_up(reason: String) -> void:

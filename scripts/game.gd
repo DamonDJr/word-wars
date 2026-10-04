@@ -920,8 +920,8 @@ var _press_action := ""
 ## `_end_daily`, whose `quiet` argument is this call and nothing else.
 ##
 ## Only the daily. Survival already pays as it goes through
-## `_bank_survival_time`, a versus match is ended by the peer noticing the
-## connection drop, and neither practice nor the tutorial banks anything at all.
+## `_bank_survival_time`, a versus match is left through `_on_going_away`, and
+## neither practice nor the tutorial banks anything at all.
 ##
 ## `NOTIFICATION_APPLICATION_PAUSED` rather than `FOCUS_OUT`: focus is lost to a
 ## notification banner or the control centre, which is not leaving the game, and
@@ -963,6 +963,7 @@ func _notification(what: int) -> void:
 func _ready() -> void:
 	MultiplayerManager.match_started.connect(_on_match_started)
 	MultiplayerManager.match_ended.connect(_on_match_ended)
+	MultiplayerManager.going_away.connect(_on_going_away)
 	MultiplayerManager.invite_ready.connect(_on_invite_ready)
 	MultiplayerManager.state_changed.connect(_on_net_status)
 	MultiplayerManager.data_received.connect(_on_multiplayer_data)
@@ -1052,6 +1053,21 @@ func _ready() -> void:
 func _on_match_started() -> void:
 	net_status = ""
 	start_match("Versus", 0, [], Mode.NORMAL)
+
+
+## The app going into the background in the middle of a versus match.
+##
+## A match can't go on from there: the phone stops talking to the other one
+## within seconds, their board freezes in front of them, and over Epic it took
+## minutes for anybody to say why. So going away is leaving, exactly as the
+## pause menu's Leave is: they're told at once and take the win, and this end
+## comes back to the title rather than to a match that is no longer there.
+## (Came back, it used to declare *this* end the winner once the dead
+## connection finally failed.)
+func _on_going_away() -> void:
+	if (phase == Phase.PLAY or phase == Phase.COUNTDOWN) and net_active():
+		print("[Versus] the app went into the background mid-match — leaving it")
+		_do_leave_match()
 
 
 ## Matchmaking was cancelled, refused, or the opponent left.
