@@ -586,9 +586,9 @@ const COSMETICS := {
 	],
 	"theme": [
 		{"id": "midnight", "name": "Midnight", "need": {}},
-		# Free from the first launch: the rendered board, and the one a new
-		# player can try without earning or buying anything.
-		{"id": "atlantis", "name": "Atlantis", "need": {}},
+		# Atlantis is held back for a later update: its theme, art and scene
+		# are all wired (`Cosmetics.THEMES`, `game.gd`'s BOARD_3D), and a row
+		# here is all it takes to put it back.
 		{"id": "ember", "name": "Ember", "need": {"level": 3}},
 		{"id": "chlorophyll", "name": "Chlorophyll", "need": {"level": 6}},
 		{"id": "vapor", "name": "Vapor", "need": {"level": 10}},
@@ -679,6 +679,13 @@ func entries(slot: String) -> Array:
 	return COSMETICS.get(slot, [])
 
 
+func has_entry(slot: String, id: String) -> bool:
+	for e: Dictionary in entries(slot):
+		if String(e["id"]) == id:
+			return true
+	return false
+
+
 func entry(slot: String, id: String) -> Dictionary:
 	for e: Dictionary in entries(slot):
 		if String(e["id"]) == id:
@@ -691,14 +698,17 @@ func entry(slot: String, id: String) -> Dictionary:
 ## saved one has been renamed away or is not earned yet.
 func worn(slot: String) -> String:
 	var id := String(equipped.get(slot, ""))
-	if id != "" and is_unlocked(slot, id):
+	# In the catalogue as well as unlocked: `entry` answers an unknown id with
+	# the first entry, whose requirement is nothing, so a board taken out of
+	# the catalogue would otherwise stay on anybody already wearing it.
+	if id != "" and has_entry(slot, id) and is_unlocked(slot, id):
 		return id
 	var list: Array = entries(slot)
 	return String(list[0]["id"]) if not list.is_empty() else ""
 
 
 func equip(slot: String, id: String) -> bool:
-	if not is_unlocked(slot, id):
+	if not has_entry(slot, id) or not is_unlocked(slot, id):
 		return false
 	equipped[slot] = id
 	save()
