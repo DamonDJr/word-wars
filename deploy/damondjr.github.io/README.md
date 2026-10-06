@@ -38,3 +38,17 @@ is set. Until then, Android stays on a page in the site's style. Add `?c=tiktok`
 (or `instagram`, `youtube`…) and, once `PROVIDER_TOKEN` is filled in, that tag
 reaches App Store Connect as the campaign name. Both constants are at the top
 of the page's script.
+
+### The Android "Email me when it's out" form
+
+Android visitors get a sign-up form that posts to Buttondown
+(`buttondown.com/api/emails/embed-subscribe/<user>`), tagged `android`. The form
+stays hidden until `BUTTONDOWN_USER` (next to the other two constants) is set to
+your Buttondown username. Leave Buttondown's confirmation email switched on: the
+page tells people to look for it.
+
+When the Android version ships, set `PLAY_URL` (Android then redirects and never
+sees the form) and send the announcement from Buttondown to the `android` tag.
+
+The form is the only place we collect an email, so `docs/privacy.html` in the
+game repo has a section on it (`#notify`); keep the two in step.

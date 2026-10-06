@@ -45,6 +45,10 @@
   // The Play listing, once the game is live there. Until then Android stays on
   // this page rather than being sent to an App Store it can't use.
   var PLAY_URL = "";
+  // Your Buttondown username (the bit after buttondown.com/). While it's empty
+  // the Android page has no sign-up form. Signups are tagged "android" there.
+  // Once PLAY_URL is set Android never sees this page, so the form goes with it.
+  var BUTTONDOWN_USER = "damonjgaming";
 
   var APP_ID = "6802900966";
   var ua = navigator.userAgent || "";
@@ -70,7 +74,7 @@
   }
 
   var dest = android ? PLAY_URL : apple;
-  window.WW = { store: dest || apple, ios: ios, android: android };
+  window.WW = { store: dest || apple, ios: ios, android: android, notify: BUTTONDOWN_USER };
 
   if (!dest) {
     document.documentElement.className = "android";
@@ -123,6 +127,28 @@
   .copy button { font: 700 .8rem/1 "Space Grotesk", sans-serif; cursor: pointer;
                  padding: .45rem .7rem; border-radius: 8px; border: 1px solid var(--edge);
                  background: var(--deep); color: var(--ink); }
+
+  /* Android's "tell me when it's out" sign-up. Hidden until the script has an
+     endpoint to point it at. */
+  .notify { margin: 0 0 1.8rem; max-width: 30rem; }
+  .notify[hidden] { display: none; }
+  .notify .eyebrow { margin-bottom: .7rem; }
+  .notify .row { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .notify input[type=email] { flex: 1 1 14rem; min-width: 0; padding: .7rem .9rem;
+             border-radius: 10px; border: 1px solid var(--edge); background: var(--deep);
+             color: var(--ink); font: 400 1rem/1.3 "Space Grotesk", sans-serif; }
+  .notify input[type=email]::placeholder { color: var(--dim); }
+  .notify input[type=email]:focus { border-color: var(--you); }
+  .notify button { cursor: pointer; }
+  .notify button:disabled { opacity: .6; cursor: default; transform: none; }
+  .notify .fine { margin: .7rem 0 0; color: var(--dim); font-size: .85rem; }
+  .notify .msg { margin: .7rem 0 0; font-weight: 500; }
+  .notify .msg:empty { display: none; }
+  .notify .msg.bad { color: var(--them); }
+  .notify .done { padding: 1rem 1.1rem; border-radius: 12px; border: 1px solid var(--you);
+             background: linear-gradient(180deg, var(--panel), #0d1329); }
+  .notify .done p { margin: 0; }
+  .notify .done .hint { margin-top: .5rem; color: var(--dim); font-size: .9rem; }
 
   .pitch { display: grid; grid-template-columns: 7.5rem 1fr; gap: 1.1rem; align-items: start;
            padding-top: 1.6rem; border-top: 1px solid var(--edge); }
@@ -201,6 +227,21 @@
       <p class="lede">Word Wars is on iPhone and iPad right now, and the Android
       version is on its way. When it lands, iPhone and Android players will be
       able to play each other.</p>
+
+      <form class="notify js-notify" method="post" target="_blank" hidden>
+        <label class="eyebrow" for="notify-email">Email me when it's out</label>
+        <div class="row">
+          <input type="email" id="notify-email" name="email" required
+                 autocomplete="email" inputmode="email" placeholder="you@example.com">
+          <button type="submit" class="btn btn-go">Notify me</button>
+        </div>
+        <input type="hidden" name="embed" value="1">
+        <input type="hidden" name="tag" value="android">
+        <p class="msg" role="status" aria-live="polite"></p>
+        <p class="fine">One email when the Android version is out, and nothing
+        else. <a href="/word-wars/privacy.html#notify">Privacy</a></p>
+      </form>
+
       <div class="actions">
         <a class="btn btn-go" href="/">About the game</a>
       </div>
@@ -222,6 +263,53 @@
 
   var links = document.querySelectorAll(".js-store");
   for (var i = 0; i < links.length; i++) if (W.store) links[i].href = W.store;
+
+  // Android sign-up. Buttondown's embed endpoint takes a plain form POST and
+  // allows cross-origin requests, so this is fetch with the form's own native
+  // submit (which opens Buttondown's thank-you page in a new tab) as the
+  // fallback when fetch can't be used or can't reach it.
+  var form = document.querySelector(".js-notify");
+  if (form && W.notify && root.className === "android") {
+    form.action = "https://buttondown.com/api/emails/embed-subscribe/" +
+      encodeURIComponent(W.notify);
+    form.hidden = false;
+    // Signing up is the main thing on this page now; "About the game" steps back.
+    var about = document.querySelector(".when-android .actions .btn-go");
+    if (about) about.className = "btn";
+
+    var msg = form.querySelector(".msg");
+    var button = form.querySelector("button");
+    var say = function (text, bad) {
+      msg.textContent = text;
+      msg.className = "msg" + (bad ? " bad" : "");
+    };
+
+    form.addEventListener("submit", function (e) {
+      if (!window.fetch || !window.URLSearchParams || !window.FormData) return;
+      e.preventDefault();
+      button.disabled = true;
+      say("Signing you up…");
+
+      fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)) })
+        .then(function (res) {
+          if (res.ok) {
+            form.innerHTML =
+              '<div class="done"><p><b>You’re on the list.</b></p>' +
+              '<p class="hint">Check your inbox for a confirmation email and ' +
+              'tap the link in it. That’s what makes the notification ' +
+              'reach you.</p></div>';
+          } else {
+            button.disabled = false;
+            say("That didn’t go through. Check the address and try again.", true);
+          }
+        }, function () {
+          // Couldn't send or couldn't read the answer: let the browser post it.
+          button.disabled = false;
+          say("");
+          form.submit();
+        });
+    });
+  }
 
   var copy = document.querySelector(".js-copy");
   if (copy) copy.addEventListener("click", function () {
