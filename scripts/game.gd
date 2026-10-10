@@ -939,6 +939,12 @@ var _press_action := ""
 ## than the one this fixes. `cloud.gd` takes both because writing a save file
 ## twice costs nothing; this ends a run and has to be sure.
 func _notification(what: int) -> void:
+	# The app going away takes the releases of whatever was under a finger with
+	# it, and on coming back there is nothing under one.
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_APPLICATION_RESUMED \
+			or what == NOTIFICATION_APPLICATION_FOCUS_OUT \
+			or what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		_release_keys()
 	# Android's back gesture. Left to Godot's default it quits the app — from a
 	# menu, from the versus lobby, and from the middle of a match, run and all —
 	# and it is the gesture Android players reach for more than any other. So
@@ -2236,6 +2242,7 @@ func start_match(diff: String, bots: int = 1, lineup: Array = [],
 	score_pops.clear()
 	power_pops.clear()
 	_key_flecks.clear()
+	_release_keys()
 	tracers.clear()
 	_clear_hitstop()
 	score_shown = 0.0
@@ -5915,6 +5922,10 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
+	# First, ahead of every early return below: the ad curtain is exactly when a
+	# release goes missing, and the bubble should not wait for it to lift.
+	_tick_keys_held()
+
 	# The curtain moves whatever else is or is not happening — it is the one thing
 	# on screen while everything under it is stopped, so it cannot be inside the
 	# part that stops.
@@ -7419,7 +7430,56 @@ func _draw() -> void:
 ## Cleared on release, so a finger slid off a key does not leave it looking
 ## stuck. A dictionary rather than one string because two thumbs hold two keys —
 ## the mouse, which cannot, uses index -1.
+##
+## Cosmetic and nothing else: a letter is typed on the press, so what this
+## answers is only "is the bubble still up", and that is why it can be thrown
+## away freely. It has to be, because a release is the one thing it depends on
+## and a release can go missing — a touch the system took for a gesture, a
+## notification, an ad curtain going up under a thumb. Cleared by the release
+## alone, a lost one pinned its letter's bubble over the keyboard until some
+## later touch happened to land on the same index, and a tester saw an H up in
+## every game.
 var _keys_down: Dictionary = {}
+## When each of those went down, in `Time.get_ticks_msec()`, keyed the same way.
+var _keys_down_at: Dictionary = {}
+## The longest a key is drawn as held, in seconds. Longer than any press that is
+## typing — a thumb that has been on one key this long has typed what it meant to
+## and is resting — and short enough that a lost release is gone before anybody
+## could mistake it for something real.
+const KEY_HELD_MAX := 1.2
+
+
+func _key_hold(index: int, id: String) -> void:
+	_keys_down[index] = id
+	_keys_down_at[index] = Time.get_ticks_msec()
+
+
+## Returns whether there was anything held at `index` to let go of.
+func _key_let_go(index: int) -> bool:
+	_keys_down_at.erase(index)
+	return _keys_down.erase(index)
+
+
+## Every key up, and every bubble with it. For the moments a release cannot be
+## relied on to arrive: a new match, a pause, the app leaving and coming back.
+func _release_keys() -> void:
+	_keys_down.clear()
+	_keys_down_at.clear()
+	_key_pops.clear()
+
+
+## Run every frame. Nothing is held while the keyboard is not live, and nothing
+## is held for longer than `KEY_HELD_MAX` however long ago it was pressed.
+func _tick_keys_held() -> void:
+	if _keys_down.is_empty():
+		return
+	if not _keys_live() or _ad_paused():
+		_release_keys()
+		return
+	var now := Time.get_ticks_msec()
+	for index: int in _keys_down_at.keys():
+		if float(now - int(_keys_down_at[index])) > KEY_HELD_MAX * 1000.0:
+			_key_let_go(index)
 
 ## Set once real touch events start arriving, after which the mouse is no longer
 ## allowed to work the keyboard. See `_unhandled_input`.
@@ -16189,13 +16249,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			if _keys_live():
 				var key := _key_at(st.position)
 				if key != "":
-					_keys_down[st.index] = key
+					_key_hold(st.index, key)
 					_note_tap(key, st.position)
 					_pop_key(key)
 					_press_key(key)
 					return
 		elif _keys_down.has(st.index):
-			_keys_down.erase(st.index)
+			_key_let_go(st.index)
 			return
 
 	# Before anything else, and before the splash swallows input: the back button
@@ -16283,11 +16343,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				var hit := _key_at(get_viewport().get_mouse_position())
 				if mb.pressed:
 					if hit != "":
-						_keys_down[-1] = hit
+						_key_hold(-1, hit)
 						_press_key(hit)
 						return
 				elif _keys_down.has(-1):
-					_keys_down.erase(-1)
+					_key_let_go(-1)
 					return
 	if phase == Phase.SPLASH:
 		if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:

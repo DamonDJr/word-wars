@@ -29,6 +29,7 @@ func _init() -> void:
 	_every_letter_types()
 	_shortcuts_still_work()
 	_the_lean_stays_bounded()
+	await _a_lost_release_does_not_stick()
 
 	print("--- %s ---" % ("keys behave" if fails == 0 else "%d FAILURES" % fails))
 	quit(1 if fails > 0 else 0)
@@ -165,6 +166,74 @@ func _the_lean_stays_bounded() -> void:
 
 ## `_key_at` lifts the sample before matching it, so a test naming a point on a
 ## key has to put it back or it is asking about the key above.
+## The pressed look and the bubble over a key hang off the held state, and the
+## held state is cleared by the release — which is the one event that can go
+## missing: a touch the system took for a gesture, a banner, an ad curtain going
+## up under a thumb. A tester had an H pinned over the keyboard in every game.
+func _a_lost_release_does_not_stick() -> void:
+	print("--- a lost release does not pin a key down ---")
+	# The drawn keyboard is a phone's, and is not live on the desktop layout.
+	game.portrait = true
+	game.start_match("Rookie", 1)
+	game.phase = game.Phase.PLAY
+	game.paused = false
+	game.typed = ""
+	await process_frame
+
+	game._key_hold(0, "h")
+	game._pop_key("h")
+	await process_frame
+	_expect("a key that is down is drawn as held", game._keys_down.has(0))
+	_expect("and keeps its bubble while it is", not game._key_pops.is_empty())
+
+	game._key_let_go(0)
+	for i in 30:
+		await process_frame
+	_expect("a release lets go of it", game._keys_down.is_empty())
+	_expect("and the bubble fades", game._key_pops.is_empty())
+
+	# The release never arrives.
+	game._key_hold(0, "h")
+	game._pop_key("h")
+	game._keys_down_at[0] = Time.get_ticks_msec() - int(game.KEY_HELD_MAX * 1000.0) - 200
+	for i in 30:
+		await process_frame
+	_expect("a key held past the limit lets go by itself", game._keys_down.is_empty())
+	_expect("and takes its bubble with it", game._key_pops.is_empty())
+
+	# Still down, and still fresh: it must not be cut short.
+	game._key_hold(1, "p")
+	await process_frame
+	_expect("a fresh press is not cut short", game._keys_down.has(1))
+	game._key_let_go(1)
+
+	# A match starting is a boundary nothing may be held across.
+	game._key_hold(2, "t")
+	game._pop_key("t")
+	game.start_match("Rookie", 1)
+	_expect("a new match starts with nothing held", game._keys_down.is_empty())
+	_expect("and no bubble", game._key_pops.is_empty())
+
+	# Nor is anything held while the keyboard is not live.
+	game.phase = game.Phase.PLAY
+	game._key_hold(0, "h")
+	game._pop_key("h")
+	game.paused = true
+	await process_frame
+	await process_frame
+	_expect("pausing lets go of everything", game._keys_down.is_empty())
+	game.paused = false
+
+	# And the app leaving takes the lot.
+	game.phase = game.Phase.PLAY
+	game._key_hold(0, "h")
+	game._pop_key("h")
+	game.notification(NOTIFICATION_APPLICATION_PAUSED)
+	_expect("the app being paused lets go of everything",
+		game._keys_down.is_empty() and game._key_pops.is_empty())
+	game.portrait = false
+
+
 func _lift(at: Vector2) -> Vector2:
 	return at + Vector2(0.0, game._touch_lift(game.get_viewport_rect().size))
 
