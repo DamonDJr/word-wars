@@ -22,6 +22,7 @@ func _init() -> void:
 	_every_step_can_be_finished()
 	_the_lesson_can_be_run_again()
 	_lesson_advances_on_touch()
+	_the_card_gets_out_of_the_way()
 	_normal_still_works()
 
 	print("--- %s ---" % ("practice behaves" if fails == 0 else "%d FAILURES" % fails))
@@ -304,6 +305,75 @@ func _the_lesson_can_be_run_again() -> void:
 	_expect("and stays in the tutorial", game.mode == game.Mode.TUTORIAL)
 	_expect("and takes the button down with it",
 		not game._lesson_restart.has_area())
+
+
+## The card across the middle of the board is for reading, and "couldn't see
+## what letters were popping up behind it" is what it was for everything after.
+## So it has to leave once the player is playing — and has to come back for the
+## one card that is about what a word just did.
+func _the_card_gets_out_of_the_way() -> void:
+	print("--- the card gets out of the way ---")
+	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+	game.phase = game.Phase.PLAY
+	game.typed = ""
+	_tick(0.6)
+	_expect("a step opens on the full card", game._lesson_dock == 0.0)
+
+	game.typed = "s"
+	_tick(0.6)
+	_expect("the first letter sends it to the dock", game._lesson_dock >= 0.99)
+	game.typed = ""
+	_tick(0.6)
+	_expect("and rubbing it out does not bring it back", game._lesson_dock >= 0.99)
+
+	game.lesson_done = true
+	_tick(0.6)
+	_expect("a finished step shows its card in full again",
+		game._lesson_dock <= 0.01)
+
+	game.lesson_done = false
+	game._lesson_next()
+	_expect("the next step opens on the full card, wherever the last left it",
+		game._lesson_dock == 0.0 and not game._lesson_docked)
+
+	_tick(game.LESSON_CARD_HOLD + 1.0)
+	_expect("a card nobody has acted on docks anyway", game._lesson_dock >= 0.99)
+
+	# The last card has a button on it and nothing to protect.
+	game.lesson = Tutorial.count() - 1
+	game._lesson_begin()
+	game.typed = "s"
+	_tick(1.0)
+	_expect("the last card never docks", game._lesson_dock == 0.0)
+	game.typed = ""
+
+	# The strip says one thing per step, and it is never a brace left over.
+	for i in Tutorial.count() - 1:
+		for touch in [false, true]:
+			var line: String = game._lesson_fill(
+				String(Tutorial.step(i, touch).get("dock", "")))
+			_expect("step %d has a dock line%s" % [i + 1, " (touch)" if touch else ""],
+				line != "" and not line.contains("{"))
+	_expect("and the phone's never names a key it has not got",
+		not String(Tutorial.step(0, true)["dock"]).contains("SPACE"))
+
+	# No rival chip over a rival who does not exist.
+	game.start_match("Rookie", 0, [], game.Mode.TUTORIAL)
+	game.phase = game.Phase.PLAY
+	_expect("a lesson has no rival card in the phone header",
+		game._portrait_rival_cards(Vector2(720.0, 1440.0)).is_empty())
+	game.start_match("Rookie", 0, [], game.Mode.TRAINING)
+	game.phase = game.Phase.PLAY
+	_expect("and neither has a drill",
+		game._portrait_rival_cards(Vector2(720.0, 1440.0)).is_empty())
+
+
+func _tick(seconds: float) -> void:
+	var left := seconds
+	while left > 0.0:
+		var d := minf(0.05, left)
+		game._lesson_tick(d)
+		left -= d
 
 
 ## The guards must not have leaked into ordinary play.

@@ -66,6 +66,13 @@ class_name Tutorial
 ## `card: "low"` sits the card on the bottom of the board rather than across
 ## the middle, for the one step whose blocks are at the top.
 ##
+## `dock` is the whole step in one line, for after the player has started. The
+## card is read once, and then it is a sheet of paper lying across the playfield
+## they are now trying to play on: more than one tester said they could not see
+## the letters arriving behind it. So it holds the middle of the board for the
+## first look at a step and then shrinks to a strip clear of the board, and this
+## is what the strip says. The same braces as the body.
+##
 ## Anything in braces is filled in by `game.gd` when the card is drawn: {word}
 ## and {sent} are the player's word and what it landed, {their} and {stamp} are
 ## the opponent's word and the block it left, {example} is a word that answers
@@ -80,6 +87,8 @@ const STEPS := [
 			+ "starts with {sent} to clear it.",
 		"hint": "three letters or more, then SPACE to fire",
 		"hint_touch": "three letters or more, then tap FIRE",
+		"dock": "Type any word, then press SPACE",
+		"dock_touch": "Type any word, then tap FIRE",
 		"stuck": "type on your keyboard, then press SPACE",
 		"stuck_touch": "tap the letters below, then tap FIRE",
 	},
@@ -89,6 +98,7 @@ const STEPS := [
 		"body": "They fired {their} back at you. Type a word that STARTS "
 			+ "with {stamp} to clear the block.",
 		"hint": "any other word just flies at them",
+		"dock": "Type a word that STARTS with {stamp}",
 		"stuck": "stuck? try {example}",
 	},
 	{
@@ -97,6 +107,7 @@ const STEPS := [
 		"body": "If the stack reaches the top you lose a life and the whole "
 			+ "board, but not the match. You have three.",
 		"hint": "clear the block in the red",
+		"dock": "Clear the block in the red",
 		"stuck": "stuck? try {example}",
 		"card": "low",
 	},
@@ -106,6 +117,7 @@ const STEPS := [
 		"body": "You don't have to wait for blocks. Every word you fire "
 			+ "scores and hits them with a block.",
 		"hint": "any word counts · {left} more",
+		"dock": "Any word counts · {left} more",
 		"stuck": "any word at all, like {example}",
 	},
 	{
@@ -143,7 +155,7 @@ static func step(i: int, touch: bool = false) -> Dictionary:
 	if not touch:
 		return s
 	var out := s.duplicate()
-	for key in ["body", "hint", "title", "stuck"]:
+	for key in ["body", "hint", "title", "stuck", "dock"]:
 		if out.has(key + "_touch"):
 			out[key] = out[key + "_touch"]
 	return out

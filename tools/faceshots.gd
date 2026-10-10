@@ -166,15 +166,12 @@ func _block(cell: Rect2, tier: int, rows: int, stamp: String, font: Font,
 		fscale: float, key: int, hot := false) -> void:
 	var rect := cell.grow(-3.0)
 	var ink: Color = Cosmetics.draw_block_face(canvas, rect, tiers[tier], style, hot,
-		float(key))
+		float(key), Cosmetics.is_bright(board))
 	var fs := int(float(22 + 6 * mini(rows, 3)) * fscale)
 	while fs > 9 and font.get_string_size(stamp, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x \
 			> rect.size.x - 8.0:
 		fs -= 1
-	var m := font.get_string_size(stamp, HORIZONTAL_ALIGNMENT_LEFT, -1, fs)
-	canvas.draw_string(font, Vector2(rect.get_center().x - m.x * 0.5,
-		rect.get_center().y - m.y * 0.5 + font.get_ascent(fs)), stamp,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, ink)
+	Cosmetics.draw_stamp(canvas, font, rect.get_center(), stamp, fs, ink)
 
 
 ## Held, not just loaded. A texture loaded inside the draw callback and dropped

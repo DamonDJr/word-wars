@@ -34,6 +34,7 @@ func _init() -> void:
 	_premium_theme_actually_differs()
 	_the_painted_boards_are_painted()
 	_the_faces_match_the_boards()
+	_a_light_board_says_so()
 	_the_boards_bring_their_lettering()
 	_the_share_ladder_is_not_for_sale()
 	_a_day_is_the_unit_of_sharing()
@@ -370,6 +371,55 @@ func _the_faces_match_the_boards() -> void:
 	_expect("every painted board is spoken for", claimed.size() == PAINTED.size())
 	_expect("and there is exactly one face per board",
 		Cosmetics.BLOCK_PAIRING.size() == PAINTED.size())
+
+
+## Wireframe and Glass are mostly see-through, and the pale ink they were drawn
+## with is only readable on a dark board. A board with a light picture has to
+## say `bright` so they switch to frost and dark ink; one that forgets is a
+## board where those two faces are invisible, which is exactly how Clouds
+## shipped. Measured off the picture rather than off a list of names, so the
+## ninth light board is caught the day it is added.
+##
+## The threshold sits between Clouds (0.45) and the next brightest board,
+## Desert (0.29), whose own halo carries Wireframe fine.
+const LIGHT_BOARD := 0.37
+## Board id -> the scene its preview still is named after, where they differ.
+const STILL := {"clouds": "sky_islands", "cyber": "city"}
+
+
+func _a_light_board_says_so() -> void:
+	print("--- a light board says so ---")
+	for id: String in Cosmetics.THEMES:
+		if Cosmetics.theme_opt(id, "art") == "":
+			_expect("%s (a wash) is dark" % id, not Cosmetics.is_bright(id))
+			continue
+		var lum := _playfield_luminance(id)
+		_expect("%s is %s behind the playfield" % [id,
+			"light" if lum > LIGHT_BOARD else "dark"],
+			Cosmetics.is_bright(id) == (lum > LIGHT_BOARD))
+
+
+## Mean relative luminance of the picture where the playfield sits, the way the
+## game lays it down: over the board's own wash, at the art's alpha, dimmed.
+func _playfield_luminance(id: String) -> float:
+	var still := "res://boards/3d/previews/%s.jpg" % String(STILL.get(id, id))
+	var path := still if ResourceLoader.exists(still) \
+		else String(Cosmetics.theme_opt(id, "art"))
+	var img := (load(path) as Texture2D).get_image()
+	img.convert(Image.FORMAT_RGB8)
+	var w := img.get_width()
+	var h := img.get_height()
+	var top := Cosmetics.theme_color(id, "top")
+	var a := float(Cosmetics.theme_opt(id, "art_a"))
+	var dim := float(Cosmetics.theme_opt(id, "art_dim")) * 0.45
+	var sum := 0.0
+	var n := 0
+	for y in range(int(h * 0.2), int(h * 0.7), 3):
+		for x in range(int(w * 0.33), int(w * 0.67), 3):
+			var c := top.lerp(img.get_pixel(x, y), a).lerp(top, dim).srgb_to_linear()
+			sum += 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+			n += 1
+	return sum / float(maxi(n, 1))
 
 
 ## The three share rewards are the only things in the game that money cannot

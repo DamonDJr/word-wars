@@ -152,6 +152,7 @@ const THEMES := {
 		"motion": "drift",
 		"font": "res://fonts/boards/Comfortaa.ttf", "font_axes": {"wght": 700},
 		"font_scale": 0.9, "font_dy": 0.067,
+		"bright": true,
 	},
 	"desert": {
 		"top": "#1a0c05", "bottom": "#35190a", "panel": "#2b1408", "panel_a": 0.42,
@@ -299,6 +300,14 @@ const THEME_EXTRAS := {
 	# Zero holds it at a constant brightness, which is what every painted-wash
 	# theme did and should keep doing.
 	"frame_pulse": 0.0,
+	# Whether the picture behind the playfield is light. The block faces that
+	# are mostly see-through (Wireframe, Glass) are drawn for a dark board:
+	# pale ink and a pale frame, because everything behind them was dark. On a
+	# light one that is pale on pale and the stamp is gone, so a board that is
+	# light says so and those two faces put a pane of frost under themselves
+	# and switch to dark ink. Only the playfield asks; a menu is washed in the
+	# board's dark `top` whatever is equipped, so it never does.
+	"bright": false,
 }
 
 
@@ -1333,6 +1342,132 @@ static func face_for_board(theme_id: String) -> String:
 # one fixed colour off the character's own visor.
 
 
+const STAMP_DARK := Color("#0b1020")
+
+## The ink for a plain filled block: whichever of the house dark and white reads
+## better on the tier's colour.
+##
+## Dark was assumed for every tier, and on the lightest four it is right. On the
+## blue it is 4.1:1 and on the red 3.7:1, which is the whole of why those two
+## stamps read as muddy; white is 4.7 and 5.1 on the same faces. The tier
+## colours carry meaning, so it is the letters that move. `alpha` is how opaque
+## the fill is, because a translucent one shows a little of the board's dark
+## panel through it and reads a little darker than the tier.
+static func plain_ink(col: Color, hot := false, alpha := 1.0) -> Color:
+	var face := col.lightened(0.25) if hot else col
+	face = Color(face.r * alpha + 0.055 * (1.0 - alpha),
+		face.g * alpha + 0.078 * (1.0 - alpha),
+		face.b * alpha + 0.165 * (1.0 - alpha))
+	var fl := face.srgb_to_linear()
+	var lum := 0.2126 * fl.r + 0.7152 * fl.g + 0.0722 * fl.b
+	var dl := STAMP_DARK.srgb_to_linear()
+	var dark_lum := 0.2126 * dl.r + 0.7152 * dl.g + 0.0722 * dl.b
+	var vs_dark := (maxf(lum, dark_lum) + 0.05) / (minf(lum, dark_lum) + 0.05)
+	var vs_white := 1.05 / (lum + 0.05)
+	return STAMP_DARK if vs_dark >= vs_white else Color.WHITE
+
+
+## The edge a stamp is set against. Dark letters get a pale one and light
+## letters a dark one, so the stroke has an opposite-toned rim wherever the art
+## behind it goes the wrong way: a bright blob in the nebula, the lit half of an
+## ice facet, a crack through a magma block. It is what keeps a thin face (Josefin,
+## Comfortaa, Cinzel's hairlines) readable at a size where the strokes are two
+## pixels wide, and it costs nothing on a face that was already fine, because a
+## rim the same tone as what is behind it cannot be seen.
+static func stamp_halo(ink: Color) -> Color:
+	var l := ink.srgb_to_linear()
+	var lum := 0.2126 * l.r + 0.7152 * l.g + 0.0722 * l.b
+	return Color(STAMP_DARK, 0.62) if lum > 0.3 else Color(1, 1, 1, 0.5)
+
+
+## How wide the rim is for a stamp set at `size`.
+##
+## A tenth of the type, but never the two pixels it used to be at the bottom of
+## the range. A rim that is a fifth of the stroke is not an edge, it is a smear:
+## on the compressed face the gaps between letters are about two pixels, so a
+## two-pixel rim closed them and `ING` read as one grey blob. Under the size
+## where a stroke is a pixel and a half there is no rim at all, which is also
+## where the ink is dark on a face that is already light enough to carry it.
+static func stamp_rim(size: int) -> int:
+	if size < 14:
+		return 0
+	if size < 20:
+		return 1
+	return clampi(int(round(float(size) * 0.10)), 2, 4)
+
+
+## Draw a stamp: the halo, then the letters. Centred the way every label in the
+## game is, on the middle of the font's line box. The width scales with the type
+## and is clamped so a one-cell block does not get a smear and a big one does not
+## get a sticker.
+static func draw_stamp(node: CanvasItem, font: Font, center: Vector2, text: String,
+		size: int, ink: Color) -> void:
+	if font == null or text == "":
+		return
+	var m := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	var at := Vector2(center.x - m.x * 0.5, center.y - m.y * 0.5 + font.get_ascent(size))
+	var rim := stamp_rim(size)
+	if rim > 0:
+		node.draw_string_outline(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, rim,
+			Color(stamp_halo(ink), stamp_halo(ink).a * ink.a))
+	node.draw_string(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, ink)
+
+
+## A pane of frost, for a see-through face to sit on when the board behind the
+## playfield is light.
+const FROST := Color("#f2f7ff")
+
+
+## Whether a board's picture is light behind the playfield; see `THEME_EXTRAS`.
+static func is_bright(theme_id: String) -> bool:
+	return bool(theme_opt(theme_id, "bright"))
+
+
+## Wireframe: the frame and nothing else. Reads as a hologram, and lets the
+## board's own grid show through the stack.
+##
+## On a light board there is no hologram to read: pale ink and a pale frame on a
+## pale sky are the same colour as the ground. So the frame goes dark, there is
+## frost behind it for the letters to sit on, and the ink is the tier colour
+## taken most of the way to black. The hue is still the tier's, in the frame and
+## in the letters, because that is the rule the whole slot lives under.
+static func outline_face(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		bright := false) -> Color:
+	if bright:
+		node.draw_rect(rect, Color(FROST, 0.74 if hot else 0.62), true)
+		node.draw_rect(rect, Color(col, 0.34 if hot else 0.16), true)
+		node.draw_rect(rect, Color(col.darkened(0.6 if hot else 0.35), 0.95), false,
+			3.0 if hot else 2.0)
+		node.draw_rect(rect.grow(-5.0), Color(col.darkened(0.35), 0.45), false, 1.0)
+		return col.darkened(0.78)
+	node.draw_rect(rect, Color(col, 0.10), true)
+	node.draw_rect(rect, Color(col.lightened(0.2) if not hot else Color.WHITE,
+		0.95), false, 2.0 if not hot else 3.0)
+	node.draw_rect(rect.grow(-5.0), Color(col, 0.35), false, 1.0)
+	return col.lightened(0.55)
+
+
+## Glass: the tier colour as a tint, a highlight across the top and a bright
+## edge. On a light board the tint alone is a light block on a light sky, so it
+## sits on frost and the letters go dark; the edge is the tier colour rather than
+## a paler one, since pale is what the sky already is.
+static func glass_face(node: CanvasItem, rect: Rect2, col: Color, hot: bool,
+		bright := false) -> Color:
+	if bright:
+		node.draw_rect(rect, Color(FROST, 0.62), true)
+	node.draw_rect(rect, Color(col, 0.46 if bright else 0.34), true)
+	node.draw_rect(Rect2(rect.position + Vector2(3, 3),
+		Vector2(rect.size.x - 6.0, rect.size.y * 0.38)),
+		Color(1, 1, 1, 0.30 if bright else 0.13), true)
+	if bright:
+		node.draw_rect(rect, Color(col.darkened(0.6 if hot else 0.25), 0.95), false,
+			3.0 if hot else 2.0)
+		return col.darkened(0.8)
+	node.draw_rect(rect, Color(col.lightened(0.4) if not hot else Color.WHITE,
+		0.9), false, 2.0 if not hot else 3.0)
+	return Color.WHITE
+
+
 ## Paint one, and report what colour its label should be — the ink has to be
 ## decided per style rather than assumed dark, because two of the four are
 ## mostly transparent.
@@ -1341,23 +1476,15 @@ static func face_for_board(theme_id: String) -> String:
 ## scrolling screen, a preview swatch that shifts when the panel resizes — has
 ## to pass one, or the pattern re-rolls as it moves. Anything static may leave
 ## it and be seeded from its own rect.
+## `bright` is for a block that sits on a light board's picture; see `is_bright`.
+## Only Wireframe and Glass care, since every other face brings its own ground.
 static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
-		style: String, hot: bool, key: float = -1.0) -> Color:
+		style: String, hot: bool, key: float = -1.0, bright := false) -> Color:
 	match style:
 		"outline":
-			node.draw_rect(rect, Color(col, 0.10), true)
-			node.draw_rect(rect, Color(col.lightened(0.2) if not hot else Color.WHITE,
-				0.95), false, 2.0 if not hot else 3.0)
-			node.draw_rect(rect.grow(-5.0), Color(col, 0.35), false, 1.0)
-			return col.lightened(0.55)
+			return outline_face(node, rect, col, hot, bright)
 		"glass":
-			node.draw_rect(rect, Color(col, 0.34), true)
-			node.draw_rect(Rect2(rect.position + Vector2(3, 3),
-				Vector2(rect.size.x - 6.0, rect.size.y * 0.38)),
-				Color(1, 1, 1, 0.13), true)
-			node.draw_rect(rect, Color(col.lightened(0.4) if not hot else Color.WHITE,
-				0.9), false, 2.0 if not hot else 3.0)
-			return Color.WHITE
+			return glass_face(node, rect, col, hot, bright)
 		"circuit":
 			node.draw_rect(rect, Color(col, 0.92 if hot else 0.80), true)
 			var pad := rect.get_center()
@@ -1368,7 +1495,7 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 				node.draw_line(pad, out, Color(0, 0, 0, 0.30), 2.0)
 				node.draw_circle(out, 2.5, Color(0, 0, 0, 0.35))
 			node.draw_circle(pad, 7.0, Color(0, 0, 0, 0.22))
-			return Color("#0b1020")
+			return plain_ink(col, hot, 0.92 if hot else 0.80)
 		"bark", "magma", "coral", "nebula", "neon", "cloud", "sandstone", "ice", \
 				"rune":
 			return draw_premium_face(node, rect, col, style, hot, key)
@@ -1379,7 +1506,7 @@ static func draw_block_face(node: CanvasItem, rect: Rect2, col: Color,
 			node.draw_rect(Rect2(rect.position + Vector2(4.0, 4.0),
 				Vector2(rect.size.x - 8.0, 2.0)), Color(1, 1, 1, 0.30), true)
 			node.draw_rect(rect.grow(-5.0), Color(1, 1, 1, 0.10), false, 1.0)
-			return Color("#0b1020")
+			return plain_ink(col, hot, 0.92 if hot else 0.80)
 
 
 # ------------------------------------------------------- the premium block set

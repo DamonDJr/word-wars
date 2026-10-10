@@ -31,6 +31,10 @@ const BOARD_MARGIN_X := 120.0
 const PORTRAIT_BOARD_TOP := 208.0
 const BOARD_TOP := 130.0
 const RIVAL_SCALE := 0.55
+## How far a desktop duel's columns open out. Less than a phone's: there is no
+## hand's width of nothing down each side to spend, only a centre column that
+## still has to hold the clock, the score and what the opponent is up to.
+const LANDSCAPE_CELL_ASPECT := 1.3
 const RIVAL_TOP := 196.0
 const RIVAL_X := [0.0, 662.0, 854.0, 1046.0]
 const CHIP_W := 82.0
@@ -811,6 +815,12 @@ var _first_word_fade := 0.0
 ## ask for "three more" rather than for a total that carries the whole tutorial's
 ## typing into it.
 var _lesson_mark := 0
+## How far the lesson card has got from the middle of the board to its dock, 0
+## to 1. See `_lesson_tick` for what sends it and `_draw_coaching` for what it
+## looks like at either end.
+var _lesson_dock := 0.0
+## Whether the card has been sent to its dock this step; see `_lesson_tick`.
+var _lesson_docked := false
 ## Where the last step's RUN IT AGAIN button was drawn, or an empty rect when it
 ## is not on screen. Set by `_draw_coaching` and read by the input handler, so a
 ## button that was never drawn can never be pressed.
@@ -1249,7 +1259,7 @@ func _apply_theme() -> void:
 	var style := Profile.worn("blocks")
 	var nodes: bool = bool(Cosmetics.theme_opt(id, "nodes"))
 	for s: SideState in sides:
-		s.board.set_theme(panel, grid, grid_a, style)
+		s.board.set_theme(panel, grid, grid_a, style, Cosmetics.is_bright(id))
 		s.board.set_grid_nodes(nodes)
 		# A frame that a theme can own. Every board wore the player accent
 		# before, which meant the one part of the playfield with a hard edge on
@@ -1439,6 +1449,11 @@ func _layout_boards() -> void:
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var duel := slots_in_play <= 2
 
+	# Square cells everywhere but a phone's portrait board, which is the one place
+	# that opens them out; the branches below set it themselves.
+	for s0: SideState in sides:
+		s0.board.set_cell_w(WWBoard.CELL)
+
 	if portrait and tablet:
 		_layout_tablet_boards(size)
 		return
@@ -1452,9 +1467,18 @@ func _layout_boards() -> void:
 		var top := _portrait_board_top()
 		var room := _portrait_board_bottom() - top
 		var scale: float = clampf(minf(room / bh, (size.x - 72.0) / bw), 0.7, 1.6)
+		# Height is what limits a phone board, so the width it is left over is
+		# spent on the columns rather than on margin: see `WWBoard.CELL_ASPECT_MAX`
+		# for why a stamp wants it. How far they open is whatever leaves the two
+		# rails the width their chips need.
+		var wide_w: float = size.x - 2.0 * (PORTRAIT_RAIL_MIN + 10.0)
+		var cw: float = clampf(wide_w / (WWBoard.COLS * scale), WWBoard.CELL,
+			WWBoard.CELL * WWBoard.CELL_ASPECT_MAX)
+		var w := WWBoard.COLS * cw * scale
 		for s2: SideState in sides:
+			s2.board.set_cell_w(cw)
 			s2.board.scale = Vector2(scale, scale)
-			s2.board.position = Vector2((size.x - bw * scale) * 0.5, top)
+			s2.board.position = Vector2((size.x - w) * 0.5, top)
 		return
 
 	_layout_landscape_boards(size, bw, duel)
@@ -1547,6 +1571,17 @@ func _layout_tablet_boards(size: Vector2) -> void:
 	var scale: float = clampf(
 		minf((size.x - fixed) / per_scale, room / bh), 0.7, TABLET_BOARD_MAX)
 
+	# Where the height is what stopped it, there is width left over, and the same
+	# inequality says how far the columns can open to take it: see
+	# `WWBoard.CELL_ASPECT_MAX` for why a stamp wants it. Solved against the same
+	# floor for the rails, so what the columns take is never what they need.
+	var cw: float = clampf(
+		(size.x - fixed) / (per_scale * scale) * WWBoard.CELL,
+		WWBoard.CELL, WWBoard.CELL * WWBoard.CELL_ASPECT_MAX)
+	for s0: SideState in sides:
+		s0.board.set_cell_w(cw)
+	bw = WWBoard.COLS * cw
+
 	var rscale: float = scale * TABLET_RIVAL_SCALE
 	var rw: float = bw * rscale
 	# A rival column only as wide as it has to be, so the space it does not use
@@ -1593,7 +1628,15 @@ func _layout_tablet_boards(size: Vector2) -> void:
 		s3.board.position = Vector2(rx, y)
 
 
-func _layout_landscape_boards(size: Vector2, bw: float, duel: bool) -> void:
+func _layout_landscape_boards(size: Vector2, _bw: float, duel: bool) -> void:
+	# Two boards or fewer have the room to open their columns out, for the same
+	# reason a phone's does: a four-letter stamp on one column is cramped on a
+	# square 42. Three and four boards are placed by hand around the screen
+	# (`RIVAL_X`), and the rivals are drawn at half size, so they keep theirs.
+	var cw: float = WWBoard.CELL * LANDSCAPE_CELL_ASPECT if duel else WWBoard.CELL
+	for s0: SideState in sides:
+		s0.board.set_cell_w(cw)
+	var bw: float = WWBoard.COLS * cw
 	for s: SideState in sides:
 		if s.slot == 0:
 			s.board.position = Vector2(BOARD_MARGIN_X, BOARD_TOP)
@@ -1635,6 +1678,11 @@ func _portrait_rival_cards(size: Vector2) -> Array:
 	# path, and anything new that asks for a card gets nothing rather than a
 	# plausible rectangle over the middle of somebody's playfield.
 	if tablet:
+		return out
+	# And none in a lesson or a drill. There is nobody there: the chip said
+	# LESSON, or PRACTICE, over three lives that belong to no one, and the slot is
+	# worth more as somewhere to put the thing the mode is actually telling you.
+	if mode == Mode.TUTORIAL or mode == Mode.TRAINING:
 		return out
 	var rivals: Array = []
 	for s: SideState in sides:
@@ -1730,9 +1778,9 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	var kick := score_kick * score_kick
 	_text_pair(_font_bold, _font_bold, Vector2(cx, top + 32.0),
 		_daily_clock(clock) if daily else "%d:%02d" % [int(clock) / 60, int(clock) % 60],
-		_commas(int(round(score_shown))), 34, int(34 + 10.0 * kick),
+		_commas(int(round(score_shown))), 38, int(50 + 10.0 * kick),
 		Color("#ff6b6b") if (daily and clock <= DAILY_ALARM) else Color("#e6ecff"),
-		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 40.0)
+		Color("#ffd166").lerp(Color.WHITE, kick * 0.7), 44.0)
 	# The countdown to the next row of pressure is the reading this whole header
 	# exists for — it is the only thing up here that changes what you do next —
 	# and it was set at 16, under nine points on the device. Dimmed rather than
@@ -1796,7 +1844,7 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# top row of keys the moment a tablet made the band shorter than the numbers
 	# written into it.
 	var band := _kb_type_scale(size)
-	var bw := WWBoard.COLS * WWBoard.CELL * player.board.scale.x
+	var bw := _board_rect(player).size.x
 	var meter := Rect2(cx - bw * 0.5, below + 30.0 * band, bw, 6.0)
 	draw_rect(meter, Color("#141b33"), true)
 	if player.chain > 0:
@@ -1849,7 +1897,7 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# has spare attention for mid-word. The band under the board was widened by
 	# the same amount it grew, so it is not sitting on the keyboard.
 	if note != "":
-		_text_fit(_font, Vector2(cx, below + 96.0 * band), note, 17,
+		_text_fit(_font, Vector2(cx, below + 99.0 * band), note, 21,
 			_input_width(size),
 			Color("#ffd166") if hits > 0 else Color("#8d99bd"))
 
@@ -1889,7 +1937,9 @@ func _draw_portrait_rails() -> void:
 	var gutter: float = r.position.x - 10.0
 	if gutter < 54.0:
 		return
-	var cw: float = minf(150.0, gutter - 12.0)
+	# Eighteen off rather than twelve: a board that has grown into its gutters
+	# would otherwise put the chips twelve units from the edge of the glass.
+	var cw: float = minf(150.0, gutter - 18.0)
 
 	_draw_rail(Rect2(r.position.x - 10.0 - cw, r.position.y, cw, r.size.y),
 		player.pending, "INCOMING", Color("#ff6b6b"), _typing_of(player), true)
@@ -1964,10 +2014,11 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 ## Where the board has to stop, so the typed line and the keyboard both fit.
 ## The band under the board carries the chain meter, the word being typed and the
 ## one line of commentary under it. 92 was cut for that line set at 12; the line
-## is 17 now, and without the extra it would be drawn over the top row of keys.
+## went to 17 and the band to 104, and now the word is 40 and the line 21 and it
+## is 112 — without the extra the commentary is drawn over the top row of keys.
 func _portrait_board_bottom() -> float:
 	var size := get_viewport_rect().size
-	return _keyboard_bottom() - _kb_height(size) - 104.0 * _kb_type_scale(size)
+	return _keyboard_bottom() - _kb_height(size) - 112.0 * _kb_type_scale(size)
 
 
 ## Where the board starts, below the status header and whatever the phone has
@@ -1978,6 +2029,11 @@ func _portrait_board_bottom() -> float:
 ## so the header ends after the life pips and the playfield starts where the
 ## cards used to, which is most of a hundred units earlier.
 const TABLET_BOARD_TOP := 132.0
+## The narrowest a phone's side rail is allowed to be squeezed to by a wider
+## board. The chips in it carry a stamp of up to four letters and a size pip, and
+## the label above is `INCOMING`; below this they stop being readable, which is
+## what the extra width on the board was supposed to buy.
+const PORTRAIT_RAIL_MIN := 126.0
 
 func _portrait_board_top() -> float:
 	return (TABLET_BOARD_TOP if tablet else PORTRAIT_BOARD_TOP) + safe_top
@@ -2000,8 +2056,8 @@ func _center_band() -> Vector2:
 	var size := get_viewport_rect().size
 	if portrait:
 		return Vector2(16.0, size.x - 16.0)
-	var left := BOARD_MARGIN_X + WWBoard.COLS * WWBoard.CELL + 16.0
-	var right := size.x - BOARD_MARGIN_X - WWBoard.COLS * WWBoard.CELL - 16.0
+	var left := BOARD_MARGIN_X + _board_w(player) + 16.0
+	var right := size.x - BOARD_MARGIN_X - _board_w(player) - 16.0
 	if slots_in_play > 2:
 		right = RIVAL_X[1] - 16.0
 	return Vector2(left, right)
@@ -2010,6 +2066,13 @@ func _center_band() -> Vector2:
 func _board_rect(s: SideState) -> Rect2:
 	var sz := s.board.board_size() * s.board.scale
 	return Rect2(s.board.position, sz)
+
+
+## A board's width in its own units, before the node scale: what the landscape
+## HUD hangs its furniture off. The columns can be wider than `CELL` says —
+## see `WWBoard.cell_w` — so this is asked of the board and not computed.
+func _board_w(s: SideState) -> float:
+	return s.board.board_size().x
 
 
 ## Everyone still standing, yourself included.
@@ -5423,9 +5486,7 @@ func _tracer_impact(tr: Tracer) -> void:
 	var side: SideState = tr.target as SideState
 	if side != null and side.in_match:
 		var force: float = clampf((tr.width - 3.0) / 6.0, 0.1, 1.0)
-		side.board.splash(
-			Vector2(WWBoard.COLS * WWBoard.CELL * 0.5, WWBoard.ROWS * WWBoard.CELL * 0.5),
-			tr.color, force)
+		side.board.splash(side.board.board_size() * 0.5, tr.color, force)
 	if tr.at_me:
 		shake = maxf(shake, 0.10 + tr.width * 0.02)
 		_bloom(tr.color, 0.10)
@@ -5544,7 +5605,7 @@ func _pop_power(name: String, bonus: int, tint: Color) -> void:
 
 ## A number where the eye already is: just under your own board, drifting up.
 func _pop_score(text: String, note: String, weight: int) -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
+	var bx: float = _board_rect(player).get_center().x
 	# Stepped up past whatever is still sitting near the board, rather than
 	# started in the same place as it.
 	#
@@ -5567,7 +5628,7 @@ func _pop_score(text: String, note: String, weight: int) -> void:
 	score_pops.append({
 		"text": text,
 		"note": note,
-		"at": Vector2(player.board.position.x + bw * 0.5 + randf_range(-40.0, 40.0),
+		"at": Vector2(bx + randf_range(-40.0, 40.0),
 			BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 4.0
 			- minf(lift, POP_STACK_MAX)),
 		"life": 1.0,
@@ -6335,6 +6396,17 @@ const LESSON_CHAIN_GRACE := 2.0
 ## hung, which is what players with an unanswerable block did: they stopped
 ## firing anything at all.
 const LESSON_STUCK_AFTER := 8.0
+## How long the full card holds the middle of the board before it docks anyway.
+##
+## It docks on the player's first letter, which is the moment they have stopped
+## reading and started playing. This is for the one who reads it, understands it
+## and then sits there: long enough for the longest body to be read through once
+## at an ordinary pace, short enough that a block arriving behind it is not being
+## hidden by a card nobody is looking at.
+const LESSON_CARD_HOLD := 7.0
+## How long it takes to get there and back. Quick, because the whole point is
+## that it gets out of the way of something that is moving.
+const LESSON_DOCK_TIME := 0.30
 ## How many common words a stamp the lesson deals itself has to open. A match
 ## asks for `STAMP_MIN_COMMON`, six. Somebody on their second word ever gets a
 ## stamp with a hundred and fifty everyday answers.
@@ -6362,6 +6434,10 @@ func _lesson_begin() -> void:
 	_lesson_stuck = false
 	_lesson_quiet = 0.0
 	_lesson_stamp = ""
+	# Every step opens on the full card, wherever the last one left it. It is a
+	# new thing being said, and a strip is not how a new rule gets introduced.
+	_lesson_dock = 0.0
+	_lesson_docked = false
 	var step: Dictionary = Tutorial.step(lesson)
 	if step.is_empty():
 		return
@@ -6454,6 +6530,14 @@ func _lesson_hint(step: Dictionary) -> String:
 	return _lesson_fill(String(step.get(key, "")))
 
 
+## The one line a docked card carries: the step's `dock` text, or its `stuck`
+## line once the player looks stuck, same as the full card's hint line.
+func _lesson_dock_line(step: Dictionary) -> String:
+	if _lesson_stuck and step.has("stuck"):
+		return _lesson_fill(String(step["stuck"]))
+	return _lesson_fill(String(step.get("dock", step.get("hint", ""))))
+
+
 ## Fill in the braces in a line of lesson copy. See the note on `Tutorial.STEPS`
 ## for what each one is.
 func _lesson_fill(text: String) -> String:
@@ -6522,6 +6606,20 @@ func _lesson_example_for(prefix: String) -> String:
 
 func _lesson_tick(delta: float) -> void:
 	lesson_age += delta
+	# Docked from the first letter, or once the card has had its turn. Never on
+	# the last step, which has no board to protect and a button on the card, and
+	# not once the step is done: that card is the one that says what the word
+	# just did, and the board is not what the player is looking at then.
+	#
+	# Latched, so backspacing the one letter does not throw the card back across
+	# the board; a step re-opens it, and so does finishing.
+	if typed != "" or player.words_played != _lesson_mark \
+			or lesson_age >= LESSON_CARD_HOLD:
+		_lesson_docked = true
+	var dock: bool = _lesson_docked and not lesson_done \
+		and String(Tutorial.step(lesson).get("id", "")) != "done"
+	_lesson_dock = move_toward(_lesson_dock, 1.0 if dock else 0.0,
+		delta / LESSON_DOCK_TIME)
 	if lesson_done:
 		return
 	if _lesson_check():
@@ -8831,7 +8929,7 @@ func _draw_tracer_styled(tr: Tracer, style: String, u: float, head: Vector2) -> 
 
 
 func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
+	var bw := _board_w(side)
 	var center_x := board_pos.x + bw * 0.5
 	_text_centered(_font_bold, Vector2(center_x, BOARD_TOP - 44.0), _show(side.label), 26,
 		side.accent)
@@ -8877,7 +8975,7 @@ func _draw_side_header(side: SideState, board_pos: Vector2) -> void:
 ## drains as the chain runs out, so you can see both how big your next hit will
 ## be and how long you have to keep it.
 func _draw_chain_meter(side: SideState) -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
+	var bw := _board_w(side)
 	var x := side.board.position.x
 	var y := BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 12.0
 	var n := TIERS.size()
@@ -8925,7 +9023,7 @@ func _draw_chain_meter(side: SideState) -> void:
 func _draw_pending(side: SideState, on_right: bool) -> void:
 	if side.pending.is_empty():
 		return
-	var bw := WWBoard.COLS * WWBoard.CELL
+	var bw := _board_w(side)
 	var x: float = (side.board.position.x + bw + 16.0) if on_right else (side.board.position.x - 16.0 - CHIP_W)
 	var y := BOARD_TOP
 	var aiming: String = _typing_of(side)
@@ -9012,7 +9110,7 @@ func _draw_center_hud(size: Vector2) -> void:
 
 
 func _draw_player_input(size: Vector2) -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
+	var bw := _board_w(player)
 	var cx := player.board.position.x + bw * 0.5
 	var base_y := BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 46.0
 
@@ -9088,8 +9186,7 @@ func _draw_player_input(size: Vector2) -> void:
 func _fleck(ch: String) -> void:
 	if Profile.worn("typing") == "plain":
 		return
-	var bw := WWBoard.COLS * WWBoard.CELL
-	var at := Vector2(player.board.position.x + bw * 0.5 + randf_range(-70.0, 70.0),
+	var at := Vector2(_board_rect(player).get_center().x + randf_range(-70.0, 70.0),
 		BOARD_TOP + WWBoard.ROWS * WWBoard.CELL + 46.0)
 	_key_flecks.append({
 		"at": at,
@@ -9106,7 +9203,10 @@ func _fleck(ch: String) -> void:
 ## The size the typed word starts from before it is fitted to the line. The
 ## caret measures from the same number, or it would stand off the word's end.
 func _typed_size() -> int:
-	return int(34.0 * _face_scale)
+	# Larger on a phone, where it is the word being held and is read at arm's
+	# length over a keyboard: 34 units is eighteen points on the device, which is
+	# the size of a headline and not of the thing the whole game is typed into.
+	return int((40.0 if portrait else 34.0) * _face_scale)
 
 
 func _draw_caret(at: Vector2, text: String, col: Color, max_width: float) -> void:
@@ -9447,8 +9547,9 @@ func _draw_score_pops() -> void:
 ## oversized and settle, which is the whole trick: the eye reads the word before
 ## it has finished arriving.
 func _draw_power_pops() -> void:
-	var bw := WWBoard.COLS * WWBoard.CELL
-	var cx := player.board.position.x + bw * 0.5
+	var pr := _board_rect(player)
+	var bw: float = pr.size.x
+	var cx: float = pr.get_center().x
 	const PUNCH := 1.3
 	for p: Dictionary in power_pops:
 		var life: float = p["life"]
@@ -10491,27 +10592,7 @@ func _draw_coaching(size: Vector2) -> void:
 		return
 
 	if mode == Mode.TRAINING:
-		# In portrait this is floating over the top of the board rather than in a
-		# centre column, which is a reason for it to be readable at a glance and
-		# not a reason for it to be small — a drill you cannot read your own
-		# figures on is not a drill.
-		var lab := _read_size(11)
-		var num := _read_size(16)
-		_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", num, Color("#7bdff2"))
-		var rows := [
-			["CLEARED", str(player.blocks_cleared)],
-			["BEST CHAIN", "x%d" % player.best_chain],
-			["WPM", str(int(round(_wpm())))],
-			["PACE", String(TRAINING_PACE[train_pace]["name"]).to_upper()],
-		]
-		var y: float = 332.0 if not portrait else 348.0
-		for r: Array in rows:
-			_otext_pair(_font, _font_bold, Vector2(cx, y), r[0], r[1], lab, num,
-				Color("#5d6a92"), Color("#e6ecff"), 30.0)
-			y += 28.0 if not portrait else 42.0
-		_otext(_font, Vector2(cx, y + 14.0),
-			"tap the corner to stop" if portrait else "ESC to stop", lab,
-			Color("#4d5878"))
+		_draw_training_readout(size, cx)
 		return
 
 	var step: Dictionary = Tutorial.step(lesson, portrait)
@@ -10582,21 +10663,32 @@ func _draw_coaching(size: Vector2) -> void:
 	if String(step.get("card", "")) == "low":
 		top = br.end.y - h
 	var r := Rect2(cx - wide * 0.5, top, wide, h)
-	_panel(r, Color("#111730"), Color("#90be6d", 0.4), 12.0, 2.0)
+
+	# On its way to the dock, or there: the card is not drawn at all once it has
+	# arrived, and the strip is drawn in its place. See `_draw_lesson_dock`.
+	var docked: float = clampf(_lesson_dock, 0.0, 1.0)
+	_lesson_restart = Rect2()
+	if docked > 0.01:
+		_draw_lesson_dock(size, step, docked)
+	if docked >= 0.99:
+		return
+	var fa: float = 1.0 - docked
+	_panel(r, Color("#111730", fa), Color("#90be6d", 0.4 * fa), 12.0, 2.0)
 	_otext(_font, Vector2(cx, top + step_off),
-		"STEP %d OF %d" % [lesson + 1, Tutorial.count()], s_size, Color("#5d6a92"))
+		"STEP %d OF %d" % [lesson + 1, Tutorial.count()], s_size,
+		Color("#5d6a92", fa))
 	_text_fit_overlay(_font_bold, Vector2(cx, top + title_off), String(step["title"]),
-		t_size, wide - 40.0, Color("#e6ecff"))
+		t_size, wide - 40.0, Color("#e6ecff", fa))
 
 	_overlay.draw_multiline_string(_font,
 		Vector2(cx - body_w * 0.5, top + body_off + _font.get_ascent(b_size)),
-		body, HORIZONTAL_ALIGNMENT_CENTER, body_w, b_size, -1, Color("#aab4d4"))
+		body, HORIZONTAL_ALIGNMENT_CENTER, body_w, b_size, -1, Color("#aab4d4", fa))
 
 	if lesson_done or String(step["id"]) == "done":
 		var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() / 200.0)
 		_otext(_font_bold, Vector2(cx, r.end.y - foot),
 			"TAP FIRE TO CONTINUE" if portrait else "SPACE TO CONTINUE", c_size,
-			Color("#90be6d") * Color(1, 1, 1, pulse))
+			Color("#90be6d") * Color(1, 1, 1, pulse * fa))
 	else:
 		# The stuck line in the warm colour and breathing, because it only
 		# appears once the hint has already gone unread or unused.
@@ -10605,16 +10697,10 @@ func _draw_coaching(size: Vector2) -> void:
 			hint_col = Color("#ffd166") * Color(1, 1, 1,
 				0.75 + 0.25 * sin(Time.get_ticks_msec() / 260.0))
 		_text_fit_overlay(_font, Vector2(cx, r.end.y - foot), _lesson_hint(step),
-			h_size, wide - 36.0, hint_col)
+			h_size, wide - 36.0, Color(hint_col, hint_col.a * fa))
 
 	# A row of pips, so five steps reads as a short thing with an end to it.
-	var pip: float = 16.0 if portrait else 10.0
-	var pgap: float = 8.0 if portrait else 6.0
-	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * pgap
-	for i in Tutorial.count():
-		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + pgap), r.end.y + 16.0,
-			pip, 6.0 if portrait else 4.0),
-			Color("#90be6d") if i <= lesson else Color("#2a3355"), true)
+	_draw_lesson_pips(cx, r.end.y + 16.0, fa)
 
 	# The way back to the start, on the last step only.
 	#
@@ -10628,7 +10714,6 @@ func _draw_coaching(size: Vector2) -> void:
 	# Stored rather than recomputed for the hit test. The rect depends on where
 	# the body happened to wrap, and the one thing worse than a button that is
 	# hard to find is a button whose target is not where it is drawn.
-	_lesson_restart = Rect2()
 	if String(step["id"]) != "done":
 		return
 	var bw: float = minf(wide * 0.62, 420.0)
@@ -10642,6 +10727,98 @@ func _draw_coaching(size: Vector2) -> void:
 	_text_fit_overlay(_font_bold, bar.get_center() + Vector2(0.0, 6.0),
 		"RUN IT AGAIN" if portrait else "RUN IT AGAIN  (R)",
 		_read_size(15), bw - 24.0, Color("#7bdff2"))
+
+
+## The live figures of a training run.
+##
+## Four numbers, and they are the whole of what a drill reports: "couldn't really
+## see what the score was" was the account of the one tester who got that far in
+## it. They used to be a stack of four small lines painted on the board itself,
+## at eleven and sixteen units, in a column the stack of blocks grows up through.
+##
+## On a phone they are a strip in the slot above the board — the same one the
+## lesson card docks into, empty here for the same reason — with the numbers set
+## as large as four across 720 units will take. Beside a board there is the whole
+## of the empty centre column, so there they are a list at a size that can be
+## read from where a keyboard is.
+func _draw_training_readout(size: Vector2, cx: float) -> void:
+	var rows := [
+		["CLEARED", str(player.blocks_cleared)],
+		["BEST CHAIN", "x%d" % player.best_chain],
+		["WPM", str(int(round(_wpm())))],
+		["PACE", String(TRAINING_PACE[train_pace]["name"]).to_upper()],
+	]
+	if portrait and not tablet:
+		var r := Rect2(16.0, safe_top + 110.0, size.x - 32.0, 72.0)
+		_panel(r, Color("#111730", 0.96), Color("#7bdff2", 0.4), 12.0, 2.0)
+		var colw := r.size.x / float(rows.size())
+		for i in rows.size():
+			var mx: float = r.position.x + colw * (float(i) + 0.5)
+			_otext(_font, Vector2(mx, r.position.y + 19.0), String(rows[i][0]), 18,
+				Color("#8d99bd"))
+			_text_fit_overlay(_font_bold, Vector2(mx, r.position.y + 49.0),
+				String(rows[i][1]), 36, colw - 14.0, Color("#e6ecff"), 20)
+		return
+
+	var lab := _read_size(15)
+	var num := _read_size(24)
+	_otext(_font_bold, Vector2(cx, 300.0), "TRAINING", num, Color("#7bdff2"))
+	var y: float = 340.0
+	for row: Array in rows:
+		_otext_pair(_font, _font_bold, Vector2(cx, y), String(row[0]), String(row[1]),
+			lab, num, Color("#8d99bd"), Color("#e6ecff"), 34.0)
+		y += 40.0
+	_otext(_font, Vector2(cx, y + 12.0), "ESC to stop", lab, Color("#6d7aa0"))
+
+
+## The card, once the player is playing: one line and the step pips, in a strip
+## that is not on the board.
+##
+## The full card is across the middle of the playfield on purpose — see the long
+## note in `_draw_coaching` — and that is right for the moment of reading it and
+## wrong for every moment after, when the playfield is the thing being looked at
+## and the card is a sheet of paper lying on it. "Couldn't see what letters were
+## popping up behind it" was the whole of one tester's account of the tutorial.
+##
+## So the strip sits where there is nothing to hide. On a phone that is the slot
+## the rival chips use, which in a lesson is a chip called LESSON with three lives
+## for a rival who does not exist; elsewhere it is the empty space beside the
+## board, where the rival's board would be.
+func _lesson_dock_rect(size: Vector2) -> Rect2:
+	if portrait and not tablet:
+		return Rect2(16.0, safe_top + 112.0, size.x - 32.0, 72.0)
+	var br := _board_rect(player)
+	var x := br.end.x + 28.0
+	var w: float = clampf(size.x - x - 28.0, 240.0, 460.0)
+	return Rect2(x, br.position.y + 8.0, w, 96.0 if portrait else 84.0)
+
+
+func _draw_lesson_dock(size: Vector2, step: Dictionary, a: float) -> void:
+	var r := _lesson_dock_rect(size)
+	var cx := r.get_center().x
+	_panel(r, Color("#111730", 0.96 * a), Color("#90be6d", 0.55 * a), 12.0, 2.0)
+
+	# The warm, breathing colour once the player looks stuck, as on the full card.
+	var col := Color("#e6ecff")
+	if _lesson_stuck and step.has("stuck"):
+		col = Color("#ffd166") * Color(1, 1, 1,
+			0.8 + 0.2 * sin(Time.get_ticks_msec() / 260.0))
+	var line := _lesson_dock_line(step)
+	var sz: int = 30 if portrait else 20
+	_text_fit_overlay(_font_bold, Vector2(cx, r.position.y + (28.0 if portrait else 28.0)),
+		line, sz, r.size.x - 28.0, Color(col, col.a * a))
+	_draw_lesson_pips(cx, r.end.y - (16.0 if portrait else 18.0), a)
+
+
+## Five short bars, filled up to the step you are on.
+func _draw_lesson_pips(cx: float, y: float, a: float) -> void:
+	var pip: float = 16.0 if portrait else 10.0
+	var pgap: float = 8.0 if portrait else 6.0
+	var span := Tutorial.count() * pip + (Tutorial.count() - 1) * pgap
+	for i in Tutorial.count():
+		_overlay.draw_rect(Rect2(cx - span * 0.5 + i * (pip + pgap), y,
+			pip, 6.0 if portrait else 4.0),
+			Color("#90be6d", a) if i <= lesson else Color("#2a3355", a), true)
 
 
 ## Who you are lining up against. Deliberately shaped like the versus lobby:
@@ -11087,7 +11264,7 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					step - 6.0, step - 6.0)
 				var bink := Cosmetics.draw_block_face(_overlay, br,
 					WWBoard.TIER_COLORS[i * 3], Profile.worn("blocks"), false,
-					float(i))
+					float(i), Cosmetics.is_bright(id))
 				_text_fit_overlay(face_p if face_p != null else _font_bold, br.get_center(),
 					["AL", "ENT"][i], 11, br.size.x - 4.0, bink)
 			_overlay.draw_rect(pan, Cosmetics.theme_tint(id, "frame",
@@ -11103,7 +11280,8 @@ func _draw_cosmetic_preview(box: Rect2, slot: String, id: String) -> void:
 					var tr := Rect2(sc - Vector2(tile * 1.05, tile * 0.5),
 						Vector2(tile * 2.1, tile))
 					var tink := Cosmetics.draw_block_face(_overlay, tr,
-						WWBoard.TIER_COLORS[3], Profile.worn("blocks"), false, 7.0)
+						WWBoard.TIER_COLORS[3], Profile.worn("blocks"), false, 7.0,
+						Cosmetics.is_bright(id))
 					var ts := _fitted_size(face_p, "SHIP",
 						int(tile * 0.62 * fsc_p), tr.size.x - 10.0, 10)
 					_otext(face_p, tr.get_center(), "SHIP", ts, tink)

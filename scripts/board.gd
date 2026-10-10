@@ -12,7 +12,17 @@ signal block_landed(tier: int, at: Vector2, impact: float)
 
 const COLS := 6
 const ROWS := 12
+## A row's height, and a column's width unless `cell_w` says otherwise.
 const CELL := 42.0
+## How much wider than tall a cell is allowed to get, which is a phone's board.
+##
+## A word is wider than it is tall, and a stamp is up to four letters on a block
+## one column wide: on a square 42 that is under 30 units of lettering, which on
+## a phone is a four-letter stamp at about seven points. The playfield is
+## height-limited there (twelve rows into what the keyboard leaves) with a hand's
+## width of nothing down each side, so the room is sideways. Rows stay as tall as
+## they were; only the columns open up.
+const CELL_ASPECT_MAX := 1.4
 const GRAVITY := 3000.0
 const SLIDE_SPEED := 700.0
 
@@ -82,7 +92,13 @@ var _frame_owned := false
 var _frame_col := Color("#7bdff2")
 var _frame_a := 0.28
 var _frame_pulse := 0.0
+## A column's width, in the board's own units. See `CELL_ASPECT_MAX`; `game.gd`
+## sets it from the layout and everything below that is horizontal reads it.
+var cell_w := CELL
 var style := "solid"
+## The board behind the playfield is light, so the see-through block faces need
+## a ground of their own; see `Cosmetics.is_bright`.
+var bright := false
 var blocks: Array = []
 var bits: Array = []
 var highlight_word := ""
@@ -141,9 +157,11 @@ func _ready() -> void:
 ## Repaint for the equipped board theme. Tier colours are deliberately left
 ## alone: those carry meaning — a 4x3 is always red — and recolouring them would
 ## be trading readability for decoration.
-func set_theme(panel: Color, grid: Color, grid_alpha: float, block_style: String) -> void:
+func set_theme(panel: Color, grid: Color, grid_alpha: float, block_style: String,
+		light_board := false) -> void:
 	grid_color = Color(grid, grid_alpha)
 	style = block_style
+	bright = light_board
 	if _panel_sb:
 		_panel_sb.bg_color = panel
 
@@ -192,7 +210,23 @@ func _next_art() -> int:
 
 
 func board_size() -> Vector2:
-	return Vector2(COLS * CELL, ROWS * CELL)
+	return Vector2(COLS * cell_w, ROWS * CELL)
+
+
+## Open the columns out to `w` (never narrower than a row is tall, never wider
+## than `CELL_ASPECT_MAX`). Blocks already on the board are carried across so a
+## relayout mid-match does not make every one of them slide to its new column.
+func set_cell_w(w: float) -> void:
+	var want: float = clampf(w, CELL, CELL * CELL_ASPECT_MAX)
+	if is_equal_approx(want, cell_w):
+		return
+	var k := want / cell_w
+	for b: Blk in blocks:
+		b.vis.x *= k
+	for p: Bit in bits:
+		p.pos.x *= k
+	cell_w = want
+	queue_redraw()
 
 
 func reset() -> void:
@@ -213,7 +247,7 @@ func reset() -> void:
 ## clock starts.
 func snap_to_grid() -> void:
 	for b: Blk in blocks:
-		b.vis = Vector2(b.gx * CELL, b.gy * CELL)
+		b.vis = Vector2(b.gx * cell_w, b.gy * CELL)
 		b.vel = 0.0
 		b.squash = 0.0
 	bits.clear()
@@ -307,7 +341,7 @@ func add_garbage(prefix: String, tier: int, w: int, h: int) -> bool:
 
 	b.gx = best_x
 	b.gy = best_y
-	b.vis = Vector2(b.gx * CELL, (b.gy - 3) * CELL)
+	b.vis = Vector2(b.gx * cell_w, (b.gy - 3) * CELL)
 	blocks.append(b)
 
 	if best_y < 0:
@@ -329,7 +363,7 @@ func place(prefix: String, tier: int, x: int, y: int, w: int, h: int) -> void:
 	b.prefix = prefix
 	b.gx = clampi(x, 0, COLS - b.w)
 	b.gy = y
-	b.vis = Vector2(b.gx * CELL, (b.gy - 3) * CELL)
+	b.vis = Vector2(b.gx * cell_w, (b.gy - 3) * CELL)
 	blocks.append(b)
 
 
@@ -438,7 +472,7 @@ func mirror_blocks(specs: Array) -> void:
 			found.prefix = String(spec[5])
 			found.gx = int(spec[0])
 			found.gy = int(spec[1])
-			found.vis = Vector2(found.gx * CELL, (found.gy - 3) * CELL)
+			found.vis = Vector2(found.gx * cell_w, (found.gy - 3) * CELL)
 		else:
 			found.gx = int(spec[0])
 			found.gy = int(spec[1])
@@ -491,7 +525,7 @@ func _spawn(kind: int, pos: Vector2, life: float) -> Bit:
 ## spray of sparks and its stamp drifting up as a ghost.
 func _shatter(b: Blk) -> void:
 	var col: Color = TIER_COLORS[b.tier]
-	var full := Vector2(b.w * CELL, b.h * CELL)
+	var full := Vector2(b.w * cell_w, b.h * CELL)
 	var mid := b.vis + full * 0.5
 	var nx := b.w * 2
 	var ny := b.h * 2
@@ -534,7 +568,7 @@ func _shatter(b: Blk) -> void:
 ## Dust, skittering sparks and a shockwave where a block hits the stack.
 func _impact(b: Blk, impact: float) -> void:
 	var col: Color = TIER_COLORS[b.tier]
-	var w := b.w * CELL
+	var w := b.w * cell_w
 	var cells := b.w * b.h
 	var floor_y := b.vis.y + b.h * CELL
 	var mid := Vector2(b.vis.x + w * 0.5, floor_y)
@@ -614,7 +648,7 @@ func _step_bits(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	for b: Blk in blocks:
-		var tx: float = b.gx * CELL
+		var tx: float = b.gx * cell_w
 		var ty: float = b.gy * CELL
 		b.vis.x = move_toward(b.vis.x, tx, SLIDE_SPEED * delta)
 		if b.vis.y < ty:
@@ -660,7 +694,7 @@ func _draw() -> void:
 	draw_style_box(_panel_sb, Rect2(Vector2(-9, -9), size + Vector2(18, 18)))
 
 	for x in range(1, COLS):
-		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, size.y), grid_color, 1.0)
+		draw_line(Vector2(x * cell_w, 0), Vector2(x * cell_w, size.y), grid_color, 1.0)
 	for y in range(1, ROWS):
 		draw_line(Vector2(0, y * CELL), Vector2(size.x, y * CELL), grid_color, 1.0)
 	if grid_nodes:
@@ -669,7 +703,7 @@ func _draw() -> void:
 		var node := Color(grid_color, minf(1.0, grid_color.a * 3.4))
 		for x in range(1, COLS):
 			for y in range(1, ROWS):
-				draw_circle(Vector2(x * CELL, y * CELL), 1.6, node)
+				draw_circle(Vector2(x * cell_w, y * CELL), 1.6, node)
 
 	_draw_danger_zone(size)
 
@@ -698,7 +732,7 @@ func _draw_danger_zone(size: Vector2) -> void:
 
 
 func _draw_block(b: Blk, hot: bool) -> void:
-	var w := b.w * CELL
+	var w := b.w * cell_w
 	var h := b.h * CELL
 	var squash := b.squash * 6.0
 	var rect := Rect2(b.vis.x + 3.0 - squash * 0.5, b.vis.y + 3.0 + squash, w - 6.0 + squash, h - 6.0 - squash)
@@ -722,26 +756,15 @@ func _draw_block(b: Blk, hot: bool) -> void:
 	var col: Color = TIER_COLORS[b.tier]
 	# The stamp has to stay legible against whatever the style does behind it,
 	# so its colour is decided per style rather than assumed dark-on-bright.
-	var ink := Color("#0b1020")
+	var ink := Cosmetics.plain_ink(col, hot)
 
 	match style:
+		# Written once, in `Cosmetics`, because each has a second version for a
+		# light board and two copies of that is where the next one goes missing.
 		"outline":
-			# Nothing but the frame. Reads as a hologram, and lets the board's
-			# own grid show through the stack.
-			draw_rect(rect, Color(col, 0.10), true)
-			draw_rect(rect, Color(col.lightened(0.2) if not hot else Color.WHITE, 0.95),
-				false, 2.0 if not hot else 3.0)
-			draw_rect(rect.grow(-5.0), Color(col, 0.35), false, 1.0)
-			ink = col.lightened(0.55)
+			ink = Cosmetics.outline_face(self, rect, col, hot, bright)
 		"glass":
-			draw_rect(rect, Color(col, 0.34), true)
-			# A highlight across the top half is most of what sells glass.
-			draw_rect(Rect2(rect.position + Vector2(3, 3),
-				Vector2(rect.size.x - 6.0, rect.size.y * 0.38)),
-				Color(1, 1, 1, 0.13), true)
-			draw_rect(rect, Color(col.lightened(0.4) if not hot else Color.WHITE, 0.9),
-				false, 2.0 if not hot else 3.0)
-			ink = Color.WHITE
+			ink = Cosmetics.glass_face(self, rect, col, hot, bright)
 		"circuit":
 			draw_style_box(_block_sb_hot[b.tier] if hot else _block_sb[b.tier], rect)
 			# Traces running out of a centre pad. Deterministic from the grid
@@ -775,11 +798,28 @@ func _draw_block(b: Blk, hot: bool) -> void:
 	# Half a block poking through the top edge has no room for its letters yet.
 	if rect.size.y < whole_h * 0.55:
 		return
-	# Stamps run up to five letters, so the type has to give way on small tiles.
+	# Stamps run up to four letters, so the type has to give way on small tiles.
 	# The compressed face is what lets a four-letter stamp stay large on a 1x1.
-	var font_size := int(float(22 + 6 * mini(b.h, 3)) * _stamp_scale)
-	_draw_fit(_font_bold, rect.get_center(), b.prefix.to_upper(), font_size,
-		rect.size.x - 8.0, ink)
+	#
+	# Six units of margin rather than eight: the rect is already three in from
+	# the cell on every side, and on a one-column block the two extra units were
+	# the difference between `MENT` at 11 and at 14.
+	var stamp := b.prefix.to_upper()
+	var font_size := stamp_size(_font_bold, stamp, b.h, rect.size.x - 6.0, _stamp_scale)
+	Cosmetics.draw_stamp(self, _font_bold, rect.get_center(), stamp, font_size, ink)
+
+
+## What size a stamp is set at: the block's height decides how big it would like
+## to be, and its width, `room`, decides how big it gets to be. Pulled out of
+## `_draw_block` so a test can ask it the question the feedback asked — how big
+## is a four-letter stamp on a one-column block — instead of drawing a board and
+## measuring the pixels.
+static func stamp_size(font: Font, text: String, rows: int, room: float,
+		scale := 1.0) -> int:
+	var s := int(float(24 + 6 * mini(rows, 3)) * scale)
+	while s > 9 and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > room:
+		s -= 1
+	return s
 
 
 func _draw_bits() -> void:
@@ -802,16 +842,6 @@ func _draw_bits() -> void:
 			GHOST:
 				_draw_centered(_font_bold, p.pos, p.text, int(p.size.x),
 					Color(p.color, t * 0.9))
-
-
-func _draw_fit(font: Font, center: Vector2, text: String, size: int, max_width: float,
-		color: Color) -> void:
-	if font == null or text == "":
-		return
-	var s := size
-	while s > 9 and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s).x > max_width:
-		s -= 1
-	_draw_centered(font, center, text, s, color)
 
 
 func _draw_centered(font: Font, center: Vector2, text: String, size: int, color: Color) -> void:
