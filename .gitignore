@@ -52,3 +52,7 @@ docs/presskit/submissions.md
 .github/swiftly
 .github/swiftly-*.tar.gz
 .github/LICENSE.txt
+
+# The iPhone Duo's hinge bridge is built from ios/plugins-src/HingeBridge by CI
+# (tools/build-hingebridge.sh) and its binaries are not the tree's to carry.
+ios/plugins/HingeBridge.*.xcframework/

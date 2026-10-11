@@ -29,49 +29,153 @@ extends RefCounted
 ## ## What is guessed here and what is not
 ##
 ## The viewport sizes are arithmetic and are as good as the published panel
-## dimensions. The **safe-area insets are invented**: the Dynamic Island sits
-## vertically on the *side* of both Duo panels, and the game has no `safe_left` /
-## `safe_right` to put that in yet, so these show zero at the top and a
-## home-indicator allowance at the bottom. The real thing will have furniture
-## down one edge that none of this accounts for. Treat the horizontal margins as
-## optimistic.
+## dimensions. The App Store pixel sizes are Apple's own: 1398x2034 for the outer
+## display and 2007x2853 for the inner one, each in both orientations. The inner
+## display's panel is 1878x2670 — the system renders at 2007x2853 and scales down
+## — and the two have the same aspect to the fourth decimal, so every viewport
+## below is the same either way.
+##
+## The **insets and the fold are invented**. Apple publishes neither as numbers:
+## they come from the system at run time (`safeAreaInsets` and the reserved
+## regions). What is known from the Duo design guide is the *shape* — the Dynamic
+## Island and status bar stand in a column down the trailing edge on the outer
+## display and in landscape on the inner one, the inner display in portrait keeps
+## horizontal bars, and a partly folded inner display is divided by a band across
+## its middle. The numbers here are plausible sizes for those shapes, chosen so a
+## layout that respects them respects the real ones with room to spare. They are
+## in design units, the unit the game measures them in.
 
 ## `units` is the design-space viewport the game is handed, `px` the panel behind
-## it, `safe` the (top, bottom) insets in design units.
+## it, `safe` the insets in design units as (top, bottom, left, right).
 ##
-## `cover-phone` and `cover-tablet` are the same device twice, and that pair is
-## the point of the tool: the question is which of them a 5.4-inch cover screen
-## should get, and the only honest way to answer it is to put them side by side.
+## `wide` is the window being wider than it is tall; `regular` is Apple's width
+## class; `fold` is whether the device is partly open — the crease itself is
+## `fold_band` in `game.gd`, and empty when the device is flat — so a pose is everything the layout reads and
+## nothing it does not.
 const POSES := {
+	# --- the five a player can actually be in -------------------------------
 	"iphone": {
 		"units": Vector2i(720, 1561), "px": Vector2i(1179, 2556),
-		"portrait": true, "tablet": false, "safe": Vector2(108.0, 62.0),
+		"portrait": true, "tablet": false, "regular": false, "wide": false,
+		"safe": Vector4(108.0, 62.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "iPhone 15 — 6.1in"},
+	"outer-portrait": {
+		"units": Vector2i(990, 1440), "px": Vector2i(1398, 2034),
+		"portrait": true, "tablet": true, "regular": false, "wide": false,
+		"safe": Vector4(0.0, 44.0, 0.0, 100.0), "fold": false,
+		"ppi": 460.0, "label": "Duo closed, outer display — 5.4in"},
+	"inner-portrait": {
+		"units": Vector2i(1013, 1440), "px": Vector2i(2007, 2853),
+		"portrait": true, "tablet": true, "regular": true, "wide": false,
+		"safe": Vector4(30.0, 44.0, 0.0, 0.0), "fold": false,
+		"ppi": 459.0, "label": "Duo open, portrait — 7.6in"},
+	"inner-landscape": {
+		"units": Vector2i(1280, 900), "px": Vector2i(2853, 2007),
+		"portrait": true, "tablet": true, "regular": true, "wide": true,
+		"safe": Vector4(0.0, 40.0, 0.0, 84.0), "fold": false,
+		"ppi": 459.0, "label": "Duo open, landscape — 7.6in"},
+	# --- partly folded: the same panel with a band down or across it --------
+	"inner-portrait-laptop": {
+		"units": Vector2i(1013, 1440), "px": Vector2i(2007, 2853),
+		"portrait": true, "tablet": true, "regular": true, "wide": false,
+		"safe": Vector4(30.0, 44.0, 0.0, 0.0),
+		# Across the middle of the long side, like a laptop's hinge: the top
+		# half stands up and the bottom half lies on the table.
+		"fold": true,
+		"ppi": 459.0, "label": "Duo as a laptop — portrait, folded"},
+	"inner-landscape-book": {
+		"units": Vector2i(1280, 900), "px": Vector2i(2853, 2007),
+		"portrait": true, "tablet": true, "regular": true, "wide": true,
+		"safe": Vector4(0.0, 40.0, 0.0, 84.0),
+		# Down the middle, like the spine of a book held open in two hands.
+		"fold": true,
+		"ppi": 459.0, "label": "Duo as a book — landscape, folded"},
+	# --- the shapes the first cut of this table compared ---------------------
+	# Kept so `duoshots.sh` and the sheets in docs/duo still mean what they did.
 	"cover-phone": {
 		"units": Vector2i(990, 1440), "px": Vector2i(1398, 2034),
-		"portrait": true, "tablet": false, "safe": Vector2(0.0, 44.0),
+		"portrait": true, "tablet": false, "regular": false, "wide": false,
+		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "Duo folded, phone layout — 5.4in"},
 	"cover-tablet": {
 		"units": Vector2i(990, 1440), "px": Vector2i(1398, 2034),
-		"portrait": true, "tablet": true, "safe": Vector2(0.0, 44.0),
+		"portrait": true, "tablet": true, "regular": false, "wide": false,
+		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "Duo folded, tablet layout — 5.4in"},
 	"open-tablet": {
 		"units": Vector2i(1013, 1440), "px": Vector2i(1878, 2670),
-		"portrait": true, "tablet": true, "safe": Vector2(0.0, 44.0),
+		"portrait": true, "tablet": true, "regular": true, "wide": false,
+		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 430.0, "label": "Duo open, tablet layout — 7.6in"},
 	"open-phone": {
 		"units": Vector2i(1013, 1440), "px": Vector2i(1878, 2670),
-		"portrait": true, "tablet": false, "safe": Vector2(0.0, 44.0),
+		"portrait": true, "tablet": false, "regular": false, "wide": false,
+		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 430.0, "label": "Duo open, phone layout — 7.6in"},
 	"open-land": {
 		"units": Vector2i(1280, 900), "px": Vector2i(2670, 1878),
-		"portrait": false, "tablet": true, "safe": Vector2(0.0, 44.0),
+		"portrait": false, "tablet": true, "regular": true, "wide": true,
+		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 430.0, "label": "Duo open, landscape — 7.6in"},
+	# --- the two the orientation policy is a statement about -----------------
+	# Never reached on a device — compact screens are held to portrait — and in
+	# the table so the claim "a wide layout is no better there" is a number that
+	# can be run rather than a sentence.
+	"iphone-landscape": {
+		"units": Vector2i(1558, 720), "px": Vector2i(2556, 1179),
+		"portrait": true, "tablet": true, "regular": false, "wide": true,
+		"safe": Vector4(0.0, 38.0, 0.0, 0.0), "fold": false,
+		"ppi": 460.0, "label": "iPhone 15, landscape — 6.1in"},
+	"outer-landscape": {
+		"units": Vector2i(1280, 880), "px": Vector2i(2034, 1398),
+		"portrait": true, "tablet": true, "regular": false, "wide": true,
+		"safe": Vector4(0.0, 40.0, 0.0, 84.0), "fold": false,
+		"ppi": 460.0, "label": "Duo closed, landscape — 5.4in"},
+	# --- the desktop, which is not a touch device -----------------------------
+	# The one pose with no fingers: it is here so that "nothing about the desktop
+	# changed" is a render rather than a belief.
+	"desktop": {
+		"units": Vector2i(1280, 720), "px": Vector2i(1280, 720),
+		"portrait": false, "tablet": true, "regular": true, "wide": false,
+		"touch": false,
+		"safe": Vector4(0.0, 0.0, 0.0, 0.0), "fold": false,
+		"ppi": 110.0, "label": "Desktop window — 1280x720"},
 	"ipad": {
 		"units": Vector2i(1001, 1440), "px": Vector2i(1640, 2360),
-		"portrait": true, "tablet": true, "safe": Vector2(0.0, 24.0),
+		"portrait": true, "tablet": true, "regular": true, "wide": false,
+		"safe": Vector4(0.0, 24.0, 0.0, 0.0), "fold": false,
 		"ppi": 264.0, "label": "iPad Air — 10.9in"},
+	"ipad-landscape": {
+		"units": Vector2i(1280, 959), "px": Vector2i(2360, 1640),
+		"portrait": true, "tablet": true, "regular": true, "wide": true,
+		"safe": Vector4(0.0, 24.0, 0.0, 0.0), "fold": false,
+		"ppi": 264.0, "label": "iPad Air, landscape — 10.9in"},
 }
+
+
+## Put a pose's whole device model onto a game node, the way `_apply_orientation`
+## and its two measuring functions would have on the real thing.
+##
+## One function for every tool that renders or probes a pose, so the renders and
+## the measurements cannot disagree about what a pose *is*: it used to be four
+## lines copied into each of them, and the day `wide` was added was the day the
+## copies stopped agreeing.
+static func apply(game: Node, spec: Dictionary) -> void:
+	var safe: Vector4 = spec["safe"]
+	game._wide_window = bool(spec["wide"])
+	game.touch = bool(spec.get("touch", true))
+	# `portrait` is the touch family of layouts, which is true for every pose here
+	# except the desktop one: every pose in this table has fingers on it.
+	game.portrait = bool(spec["portrait"])
+	game.tablet = bool(spec["tablet"])
+	game.regular = bool(spec["regular"])
+	game.safe_top = safe.x
+	game.safe_bottom = safe.y
+	game.safe_left = safe.z
+	game.safe_right = safe.w
+	# The crease comes from the game's own function, so a render and the running
+	# game agree about where it is.
+	game.fold = game.fold_band(Vector2(spec["units"])) if bool(spec["fold"]) else Rect2()
 
 
 ## One design unit, in inches: the panel pixels it is worth, over the panel's

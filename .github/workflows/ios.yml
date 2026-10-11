@@ -34,7 +34,23 @@ jobs:
           # and pinning a version would rot the moment the image is updated.
           sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iOS SDK: $sdk"
+
+          # The iPhone Duo runs an app built with any SDK, but what it does with
+          # the screen depends on which: below 27 the app stays to one side of
+          # the status bar and the camera; at 27 it reaches past the status bar
+          # on the inner display; from 27.1 it goes to the edge of the glass and
+          # the system's own bars stand down the side. The game reads its insets
+          # from the system at run time, so every one of those works — this is
+          # only so a build that is not edge to edge says so, rather than being
+          # discovered on somebody's desk.
+          #
+          # A warning rather than a failure: a runner image that has not caught
+          # up yet is a reason to know, not a reason to stop shipping.
+          if [ "$(printf '%s\n27.1\n' "$sdk" | sort -V | head -1)" != "27.1" ]; then
+            echo "::warning::iOS SDK $sdk is older than 27.1 — the iPhone Duo will letterbox this build against its status bar instead of drawing to the screen edge"
+          fi
 
       - name: Install Godot and its export templates
         env:
@@ -70,6 +86,19 @@ jobs:
           # missing resources rather than failing loudly.
           "$GODOT" --headless --import . || true
           "$GODOT" --headless --import .
+
+      - name: Build the hinge bridge for the iPhone Duo
+        run: |
+          # A few lines of Objective-C that tell the game how far a Duo is open,
+          # so it can keep the board and the keys off the crease. It is an
+          # enhancement to a game that plays fine without it, so a failure here
+          # is a warning and the build goes on without it — never the reverse.
+          if tools/build-hingebridge.sh; then
+            sed -i '' 's|^plugins/HingeBridge=false|plugins/HingeBridge=true|' export_presets.cfg
+            grep -n '^plugins/HingeBridge' export_presets.cfg
+          else
+            echo "::warning::the hinge bridge did not build — this build will not lay out around a Duo's crease"
+          fi
 
       - name: Export the Xcode project
         run: |
@@ -322,6 +351,29 @@ jobs:
           /usr/libexec/PlistBuddy \
             -c 'Print :UIDeviceFamily' \
             "$app/Info.plist"
+
+          # The Duo's inner display and iPad turn; every iPhone is held to
+          # portrait at run time by the game itself. So the app has to *declare*
+          # all four, or a regular-class screen could never rotate.
+          echo "=== Supported orientations ==="
+          /usr/libexec/PlistBuddy \
+            -c 'Print :UISupportedInterfaceOrientations' \
+            "$app/Info.plist"
+          if ! /usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations' \
+              "$app/Info.plist" | grep -q Landscape; then
+            echo "::error::the app declares no landscape orientation — the Duo's inner display and iPad could not turn"
+            exit 1
+          fi
+
+          # Whether the hinge bridge made it into the binary. Only a warning:
+          # without it the game plays and lays out unfolded.
+          echo "=== Hinge bridge ==="
+          exe="$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"
+          if nm -a "$exe" 2>/dev/null | grep -q hinge_bridge_init; then
+            echo "present"
+          else
+            echo "::warning::the hinge bridge is not in this build — it will not lay out around a Duo's crease"
+          fi
 
           echo "=== Code Signature ==="
           codesign -dvv "$app" 2>&1 | head -30

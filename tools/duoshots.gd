@@ -69,14 +69,7 @@ func _init() -> void:
 	# See the long note in `demoreel.gd` for what each one is fighting.
 	if get_root().size_changed.is_connected(game._apply_orientation):
 		get_root().size_changed.disconnect(game._apply_orientation)
-	game.portrait = bool(spec["portrait"])
-	# `_measure_device` and `_measure_safe_area` both read the real window, which
-	# here is a desktop one, so what they would have worked out is set directly —
-	# exactly what `--ipad` and `--safe=` do inside the game.
-	game.tablet = bool(spec["tablet"])
-	var safe: Vector2 = spec["safe"]
-	game.safe_top = safe.x
-	game.safe_bottom = safe.y
+	Poses.apply(game, spec)
 	get_root().get_node("Profile").prefs["split_keys"] = split
 
 	game.start_match("Magpie", 1)

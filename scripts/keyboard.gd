@@ -24,7 +24,30 @@ const DIGITS := "23456789"
 ## width is a foot of glass and the middle of it is not reachable by either
 ## thumb — the halves hang off the two edges where the hands already are, and
 ## the space between them goes to the game instead.
-enum Form { FULL, SPLIT }
+##
+## WINGS is for a regular-class screen held *wide* — the open Duo, an iPad on its
+## side — and it is SPLIT's halves lifted out of a bottom bar and put in the two
+## lower corners, with FIRE standing between them. The reason is arithmetic about
+## the one dimension that is scarce there: a 1.42:1 panel is 900 design units
+## tall, and a keyboard across the bottom takes 400 of them, which leaves a
+## board of about 430 — cells of 36 units, against 50 for the same board with its
+## keys out at the sides. Thumbs on a wide device are at the left and right edges
+## in any case; the middle of the glass is not where they are.
+enum Form { FULL, SPLIT, WINGS }
+
+## How much of the width each wing takes. Less than SPLIT's 0.42 because the
+## board stands in the lake between them, and a board is six columns wide.
+const WING_HALF := 0.31
+## The narrowest a wing is allowed to be squeezed to when a fold takes room out of
+## the middle. 0.25 of a 1280-wide glass is a key 0.27in across: smaller than a
+## phone's, and the floor — below it the keys stop being keys.
+const WING_HALF_MIN := 0.25
+## A wing's key height as a fraction of the viewport's height, and the bounds on
+## it. The keyboard in landscape is a corner, not a floor, so its keys are what a
+## thumb needs and nothing more: about 0.9cm on the open Duo.
+const WING_KEY_H_FRAC := 0.087
+const WING_KEY_H_MIN := 58.0
+const WING_KEY_H_MAX := 86.0
 
 ## SPLIT's rows, as [left half, right half]. The same division iOS uses, which
 ## is worth copying not because it is optimal but because it is the split every
@@ -108,7 +131,9 @@ static func ui_scale(size: Vector2) -> float:
 ## divide the screen differently — see `SPLIT_HALF`. Everything else, including
 ## the height, is shared: SPLIT is narrower than FULL, not shorter.
 static func _metrics(size: Vector2, bottom: float,
-		form := Form.FULL) -> Dictionary:
+		form := Form.FULL, half := WING_HALF) -> Dictionary:
+	if form == Form.WINGS:
+		return _wing_metrics(size, bottom, half)
 	var s := ui_scale(size)
 	var gap: float = GAP * s
 	var key_h: float = KEY_H * s
@@ -166,7 +191,9 @@ static func _key_w(wide: float, gap: float, form: int) -> float:
 ## `_key_at` is the one: in SPLIT it refuses taps more than a key's width from
 ## any key, so the lake between the halves stops typing letters, and it has to
 ## ask for that distance in the same units the rectangles came back in.
-static func key_width(size: Vector2, form := Form.FULL) -> float:
+static func key_width(size: Vector2, form := Form.FULL, half := WING_HALF) -> float:
+	if form == Form.WINGS:
+		return float(_wing_metrics(size, 0.0, half)["kw"])
 	return _key_w(size.x - SIDE * 2.0, GAP * ui_scale(size), form)
 
 
@@ -186,8 +213,13 @@ static func key_width(size: Vector2, form := Form.FULL) -> float:
 ## DEL where backspace is — and FIRE, freed of sharing, takes the whole action
 ## row. Every one of those is a bigger target than it was before.
 static func keys(size: Vector2, bottom: float, form := Form.FULL,
-		digits := false) -> Array:
-	var m := _metrics(size, bottom, form)
+		digits := false, half := WING_HALF) -> Array:
+	var m := _metrics(size, bottom, form, half)
+	if form == Form.WINGS:
+		var wings := _wing_keys(size, m, half)
+		if digits:
+			wings.append_array(_wing_digit_keys(size, m))
+		return wings
 	if form == Form.SPLIT:
 		var split := _split_keys(size, m)
 		if digits:
@@ -284,6 +316,19 @@ static func _digit_keys(size: Vector2, m: Dictionary) -> Array:
 ## side, is where FIRE already is on the phone so the habit transfers intact,
 ## and cannot be pressed twice.
 static func _split_keys(size: Vector2, m: Dictionary) -> Array:
+	var out: Array = _split_letters(size, m)
+	var y2: float = float(m["top"]) + float(SPLIT_ROWS.size()) \
+		* (float(m["key_h"]) + float(m["gap"]))
+	out.append({
+		"id": "fire", "label": "FIRE",
+		"rect": Rect2(SIDE, y2, m["wide"], m["action_h"]),
+	})
+	return out
+
+
+## The letters and the two action keys of a split keyboard, without FIRE — which
+## is the only thing SPLIT and WINGS disagree about.
+static func _split_letters(size: Vector2, m: Dictionary) -> Array:
 	var out: Array = []
 	var gap: float = m["gap"]
 	var key_h: float = m["key_h"]
@@ -335,11 +380,6 @@ static func _split_keys(size: Vector2, m: Dictionary) -> Array:
 				"rect": Rect2(x, y, act_w, key_h),
 			})
 
-	var y2: float = top + float(SPLIT_ROWS.size()) * (key_h + gap)
-	out.append({
-		"id": "fire", "label": "FIRE",
-		"rect": Rect2(SIDE, y2, m["wide"], m["action_h"]),
-	})
 	return out
 
 
@@ -356,8 +396,13 @@ static func _split_keys(size: Vector2, m: Dictionary) -> Array:
 ## either way — SPLIT is narrower, not shorter, which is why `form` does not
 ## appear. It is still taken, so that a caller cannot be written that asks about
 ## the height of one form and is silently answered about the other.
-static func height(size: Vector2, _form := Form.FULL, digits := false) -> float:
+static func height(size: Vector2, form := Form.FULL, digits := false,
+		half := WING_HALF) -> float:
 	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
+	if form == Form.WINGS:
+		# FIRE shares the bottom row with the letters, so there is no fourth row.
+		var m := _wing_metrics(size, 0.0, half)
+		return rows * (float(m["key_h"]) + float(m["gap"]))
 	return (rows * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
 
 
@@ -368,7 +413,11 @@ static func height(size: Vector2, _form := Form.FULL, digits := false) -> float:
 ## construction — a cap is a fixed fraction of the key it is printed on, whatever
 ## decides how big that key is — and so the ten callers that want "as big as the
 ## keys got" do not have to know which that is.
-static func type_scale(size: Vector2, _form := Form.FULL) -> float:
+static func type_scale(size: Vector2, form := Form.FULL, half := WING_HALF) -> float:
+	if form == Form.WINGS:
+		# A cap is a fixed fraction of its key, and these keys are not the
+		# phone's, so the type follows the key rather than the viewport.
+		return float(_wing_metrics(size, 0.0, half)["key_h"]) / KEY_H
 	return ui_scale(size)
 
 
@@ -392,9 +441,9 @@ const EMOTE_RISE := 10.0
 ## itself, and the rule that put this key in the corner on a phone puts it in
 ## the same corner on a tablet without being told about halves at all.
 static func emote_rect(size: Vector2, bottom: float,
-		form := Form.FULL) -> Rect2:
-	var m := _metrics(size, bottom, form)
-	var s := type_scale(size, form)
+		form := Form.FULL, half := WING_HALF) -> Rect2:
+	var m := _metrics(size, bottom, form, half)
+	var s := type_scale(size, form, half)
 	var kw: float = m["kw"]
 	var w: float = kw * 0.86
 	# Right-aligned to P rather than centred on it, so the key and the letter
@@ -406,3 +455,91 @@ static func emote_rect(size: Vector2, bottom: float,
 		var block_x: float = (size.x - (kw * 10.0 + gap * 9.0)) * 0.5
 		x = block_x + 9.0 * (kw + gap) + (kw - w)
 	return Rect2(x, float(m["top"]) - (EMOTE_H + EMOTE_RISE) * s, w, EMOTE_H * s)
+
+
+## WINGS' measurements. Its own function because every one of them is derived
+## from different things than the bottom-bar forms: the key width from the width
+## of a wing rather than of the glass, and the key height from the *height* of the
+## viewport rather than from a fixed 92.
+static func _wing_metrics(size: Vector2, bottom: float,
+		half := WING_HALF) -> Dictionary:
+	var gap: float = GAP
+	var key_h: float = clampf(size.y * WING_KEY_H_FRAC, WING_KEY_H_MIN, WING_KEY_H_MAX)
+	var kw: float = (size.x * half - SIDE - gap * 4.0) / 5.0
+	var rows := float(ROWS.size())
+	return {
+		"gap": gap, "key_h": key_h, "action_h": key_h, "wide": size.x - SIDE * 2.0,
+		"kw": kw,
+		"act_w": (kw * 3.0 + gap) * 0.5,
+		"cluster_w": kw * 5.0 + gap * 4.0,
+		"top": bottom - rows * key_h - (rows - 1.0) * gap,
+	}
+
+
+## One wing key's height, for a caller that wants the FIRE bar's thickness — the
+## board's bottom edge is measured from the top of it, not from the top of the
+## letter rows, because the lake runs down to FIRE and the wings are beside it.
+static func wing_key_h(size: Vector2) -> float:
+	return float(_wing_metrics(size, 0.0)["key_h"])
+
+
+## The clear space between the two wings, as (left edge, right edge): where the
+## board stands, and where FIRE is.
+##
+## The intersection of every row, not the bottom one. The two halves are aligned
+## to the screen's edges and ragged inward, so the right half's top row (five
+## keys, YUIOP) reaches further toward the middle than its bottom row (BNM and
+## DEL), and the left half's bottom row (CLR and ZXCV) reaches further than its
+## top. A board sized against one row stands on the keys of another — the first
+## render of this layout had the board's right edge sitting on the Y.
+static func lake(size: Vector2, half := WING_HALF) -> Vector2:
+	var m := _wing_metrics(size, 0.0, half)
+	var gap: float = m["gap"]
+	var kw: float = m["kw"]
+	var act_w: float = m["act_w"]
+	# Left rows: QWERT, ASDFG, CLR+ZXCV — each from the left margin.
+	var five: float = SIDE + 5.0 * kw + 4.0 * gap
+	var bottom_left: float = SIDE + act_w + gap + 4.0 * kw + 3.0 * gap
+	var left_end: float = maxf(five, bottom_left)
+	# Right rows: YUIOP, HJKL, BNM+DEL — each from the right margin.
+	var r_top: float = size.x - SIDE - (5.0 * kw + 4.0 * gap)
+	var r_mid: float = size.x - SIDE - (4.0 * kw + 3.0 * gap)
+	var r_bot: float = size.x - SIDE - (act_w + gap + 3.0 * kw + 2.0 * gap)
+	var right_start: float = minf(r_top, minf(r_mid, r_bot))
+	return Vector2(left_end + gap * 2.0, right_start - gap * 2.0)
+
+
+## WINGS' keys: SPLIT's two halves, and a FIRE bar between them.
+static func _wing_keys(size: Vector2, m: Dictionary, half := WING_HALF) -> Array:
+	var out: Array = _split_letters(size, m)
+	var lk := lake(size, half)
+	var key_h: float = m["key_h"]
+	var top: float = m["top"]
+	var y: float = top + float(ROWS.size() - 1) * (key_h + float(m["gap"]))
+	out.append({
+		"id": "fire", "label": "FIRE",
+		"rect": Rect2(lk.x, y, lk.y - lk.x, key_h),
+	})
+	return out
+
+
+## The number row for a wide screen: two fours, one above each wing's top row.
+static func _wing_digit_keys(size: Vector2, m: Dictionary) -> Array:
+	var out: Array = []
+	var gap: float = m["gap"]
+	var key_h: float = m["key_h"]
+	var kw: float = m["kw"]
+	var y: float = float(m["top"]) - key_h - gap
+	var half: int = DIGITS.length() / 2
+	for i in DIGITS.length():
+		var x: float
+		if i < half:
+			x = SIDE + float(i) * (kw + gap)
+		else:
+			var j: int = i - half
+			x = size.x - SIDE - float(half - j) * kw - float(half - 1 - j) * gap
+		out.append({
+			"id": DIGITS[i], "label": DIGITS[i],
+			"rect": Rect2(x, y, kw, key_h),
+		})
+	return out

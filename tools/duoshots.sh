@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Every Duo pose, rendered and then composed into comparison sheets.
+# Every Duo pose, rendered and then composed into one comparison sheet.
 #
-#     tools/duoshots.sh            # renders + both sheets, into build/duo/
+#     tools/duoshots.sh            # renders + the sheet, into build/duo/
 #     tools/duoshots.sh --probe    # the geometry table instead, to stdout
 #
 # The sheets are the point. Looking at one pose at a time proves nothing: the
@@ -15,33 +15,33 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-POSES=(iphone cover-phone cover-tablet open-phone open-tablet open-land ipad)
+POSES=(iphone outer-portrait inner-portrait inner-landscape inner-portrait-laptop inner-landscape-book ipad)
 OUT=build/duo
-# Sheet pixels per inch of real glass. 150 keeps the tallest sheet (the iPad, at
-# 8.9 inches) under 1400px while leaving the keyboard legible.
-SHEET_PPI=150
+# Sheet pixels per inch of real glass. 110 keeps the iPad (8.9 inches tall) under
+# a thousand pixels while leaving the keyboard legible.
+SHEET_PPI=110
 
-# Physical size of each panel, in inches: panel pixels over panel density.
-# Kept in step with tools/duo_poses.gd by hand — there are seven numbers here
-# and a GDScript-to-shell bridge is not worth writing for seven numbers.
+# Physical size of each panel, in inches: render pixels over density. Kept in
+# step with tools/duo_poses.gd by hand — there are seven numbers here and a
+# GDScript-to-shell bridge is not worth writing for seven numbers.
 declare -A INCHES=(
-	[iphone]="2.563x5.557"      # 1179x2556 @ 460ppi
-	[cover-phone]="3.039x4.422" # 1398x2034 @ 460ppi
-	[cover-tablet]="3.039x4.422"
-	[open-phone]="4.367x6.209"  # 1878x2670 @ 430ppi
-	[open-tablet]="4.367x6.209"
-	[open-land]="6.209x4.367"   # 2670x1878, the same panel turned over
-	[ipad]="6.212x8.939"        # 1640x2360 @ 264ppi
+	[iphone]="2.563x5.557"                # 1179x2556 @ 460ppi
+	[outer-portrait]="3.039x4.422"        # 1398x2034 @ 460ppi
+	[inner-portrait]="4.373x6.216"        # 2007x2853 @ 459ppi
+	[inner-landscape]="6.216x4.373"       # the same panel turned over
+	[inner-portrait-laptop]="4.373x6.216"
+	[inner-landscape-book]="6.216x4.373"
+	[ipad]="6.212x8.939"                  # 1640x2360 @ 264ppi
 )
 
 declare -A LABEL=(
-	[iphone]="iPhone 15 · 6.1in\nphone layout"
-	[cover-phone]="Duo FOLDED · 5.4in\nphone layout"
-	[cover-tablet]="Duo FOLDED · 5.4in\ntablet layout"
-	[open-phone]="Duo OPEN · 7.6in\nphone layout"
-	[open-tablet]="Duo OPEN · 7.6in\ntablet layout"
-	[open-land]="Duo OPEN · 7.6in\nlandscape"
-	[ipad]="iPad Air · 10.9in\ntablet layout"
+	[iphone]="iPhone 15 · 6.1in\nupright"
+	[outer-portrait]="Duo CLOSED · 5.4in\nouter display"
+	[inner-portrait]="Duo OPEN · 7.6in\nheld tall"
+	[inner-landscape]="Duo OPEN · 7.6in\nheld wide"
+	[inner-portrait-laptop]="Duo as a laptop\nheld tall, partly folded"
+	[inner-landscape-book]="Duo as a book\nheld wide, partly folded"
+	[ipad]="iPad Air · 10.9in\nupright"
 )
 
 if [[ "${1:-}" == "--probe" ]]; then
@@ -77,28 +77,26 @@ plate() {
 	# anything.
 	magick "$OUT/$pose.png" -resize "${w}x${h}!" \
 		-bordercolor '#2a3550' -border 2 \
-		-background '#0b1020' -fill '#cfd8f0' -pointsize 22 \
+		-background '#0b1020' -fill '#cfd8f0' -pointsize 17 \
 		-gravity center label:"$(printf "${LABEL[$pose]}")" -append \
 		-bordercolor '#0b1020' -border 14 \
 		"$OUT/.plate-$pose.png"
 }
 
-# Sheet one: the cover-screen question. An iPhone 15 for reference and the same
-# folded Duo under both layouts — which is the decision, and nothing else.
-for p in iphone cover-phone cover-tablet; do plate "$p"; done
-magick "$OUT/.plate-iphone.png" "$OUT/.plate-cover-phone.png" \
-	"$OUT/.plate-cover-tablet.png" \
-	-background '#0b1020' -gravity south +append \
-	-bordercolor '#0b1020' -border 20 "$OUT/sheet-cover.png"
-
-# Sheet two: every pose the device has, plus an iPad for the far end of the
-# range. The one that shows how much ground a single layout has to cover.
-for p in cover-tablet open-tablet open-land ipad; do plate "$p"; done
-magick "$OUT/.plate-cover-tablet.png" "$OUT/.plate-open-tablet.png" \
-	"$OUT/.plate-open-land.png" "$OUT/.plate-ipad.png" \
-	-background '#0b1020' -gravity south +append \
+# One sheet, at true physical size: the tall poses in a row and the wide ones
+# under it. Each pose is scaled so a pixel is 1/110th of an inch of real glass,
+# everywhere — which is the only way "is this big enough to play on" can be seen,
+# because every render is roughly a thousand design units across.
+for p in "${POSES[@]}"; do plate "$p"; done
+magick "$OUT/.plate-iphone.png" "$OUT/.plate-outer-portrait.png" \
+	"$OUT/.plate-inner-portrait.png" "$OUT/.plate-inner-portrait-laptop.png" \
+	"$OUT/.plate-ipad.png" \
+	-background '#0b1020' -gravity south +append "$OUT/.row-tall.png"
+magick "$OUT/.plate-inner-landscape.png" "$OUT/.plate-inner-landscape-book.png" \
+	-background '#0b1020' -gravity north +append "$OUT/.row-wide.png"
+magick "$OUT/.row-tall.png" "$OUT/.row-wide.png" \
+	-background '#0b1020' -gravity west -append \
 	-bordercolor '#0b1020' -border 20 "$OUT/sheet-poses.png"
 
-rm -f "$OUT"/.plate-*.png
-echo "[duo] $OUT/sheet-cover.png"
+rm -f "$OUT"/.plate-*.png "$OUT"/.row-*.png
 echo "[duo] $OUT/sheet-poses.png"

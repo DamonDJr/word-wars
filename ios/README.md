@@ -265,3 +265,23 @@ The information was real and the distraction was worse. Removed.
 
 None of that is speculative work that might be thrown away — it is the port.
 The build pipeline above is perhaps a day; this is the rest of it.
+
+## 3. The iPhone Duo's hinge
+
+`ios/plugins-src/HingeBridge/HingeBridge.m` is the only native code in this
+repository, and it is a few dozen lines. It adds a `UIHingeInteraction` to the
+game's view and writes how far the device is open — `<status> <angle>` — to
+`hinge.txt` in the app's caches, which `_poll_hinge` in `scripts/game.gd` reads
+back a few times a second and turns into a crease the layout stays off.
+
+It is not in the committed preset (`plugins/HingeBridge=false`) and its binaries
+are not in the tree. `.github/workflows/ios.yml` builds it with
+`tools/build-hingebridge.sh` on the macOS runner and turns the flag on only if
+that worked; if it did not, the build goes on without it and lays out unfolded.
+It looks the iOS 27.1 class up by name at run time, so it compiles on a runner
+whose Xcode is older and does nothing on a device that has no hinge.
+
+A Linux export prints "Invalid plugin config file HingeBridge.gdip" and goes on:
+the file names a binary that only exists on the runner, and the flag is off.
+
+What it is for and what has and has not been checked: `docs/iphone-duo.md`.

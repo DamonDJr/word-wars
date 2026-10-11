@@ -58,6 +58,9 @@ const THINK := 0.30
 ## `tools/ad_words.gd` for why it is a frequency-rank cap and a list rather than
 ## a list alone.
 const AdWords = preload("res://tools/ad_words.gd")
+## The device poses — see `tools/duo_poses.gd`. `--pose inner-landscape` renders
+## any shot on the open Duo held wide, at the pixel size App Store Connect takes.
+const Poses = preload("res://tools/duo_poses.gd")
 
 var game: Node
 var board := ""
@@ -91,6 +94,17 @@ func _init() -> void:
 	# `--appstore` renders at the sizes App Store Connect will accept rather
 	# than at the design space. See STORE_PHONE / STORE_TABLET.
 	appstore = args.has("--appstore")
+	# `--pose NAME` puts the whole device model of that pose on the game — the
+	# viewport, the size class, the insets, the fold — and renders at its own
+	# pixel size, which for the Duo poses *is* the App Store size.
+	var pi := args.find("--pose")
+	if pi >= 0 and pi + 1 < args.size():
+		pose_name = String(args[pi + 1])
+		if not Poses.POSES.has(pose_name):
+			push_error("unknown pose: %s (have %s)" % [pose_name,
+				", ".join(Poses.POSES.keys())])
+			quit(1)
+			return
 
 	_wb = get_root().get_node("WordBank")
 	_boards = get_root().get_node("Boards")
@@ -133,6 +147,11 @@ func _init() -> void:
 		"versus": await _shot_versus()
 		"cosmetics": await _shot_cosmetics()
 		"unlock": await _shot_unlock()
+		"over": await _shot_over()
+		"pause": await _shot_pause()
+		"lesson": await _shot_lesson()
+		"lobby": await _shot_lobby()
+		"practice": await _shot_practice()
 		_:
 			push_error("unknown shot: %s" % shot)
 			quit(1)
@@ -150,6 +169,12 @@ func _init() -> void:
 func _force_portrait() -> void:
 	if get_root().size_changed.is_connected(game._apply_orientation):
 		get_root().size_changed.disconnect(game._apply_orientation)
+	if pose_name != "":
+		_size_stage()
+		Poses.apply(game, Poses.POSES[pose_name])
+		game._layout_boards()
+		game.queue_redraw()
+		return
 	game.portrait = true
 	_size_stage()
 	game._measure_safe_area(_stage_size())
@@ -207,10 +232,14 @@ const STORE_TABLET := {
 var ipad := false
 var full_keys := false
 var appstore := false
+## The named device pose being rendered, or "" for the original phone/iPad stills.
+var pose_name := ""
 
 
 ## The pixel size to render at, or zero for "same as the design size".
 func _render_px() -> Vector2i:
+	if pose_name != "":
+		return Vector2i(Poses.POSES[pose_name]["px"])
 	if not appstore:
 		return Vector2i.ZERO
 	return Vector2i(STORE_TABLET["px"] if ipad else STORE_PHONE["px"])
@@ -218,6 +247,8 @@ func _render_px() -> Vector2i:
 
 ## The size the game is told it has, in design units.
 func _stage_size() -> Vector2i:
+	if pose_name != "":
+		return Vector2i(Poses.POSES[pose_name]["units"])
 	if appstore:
 		return Vector2i(STORE_TABLET["units"] if ipad else STORE_PHONE["units"])
 	return IPAD_SIZE if ipad else SHOT_SIZE
@@ -242,6 +273,10 @@ func _save(shot: String) -> void:
 	# the stills, because it is uploaded as a set and picking six files out of
 	# eighteen by suffix is how the wrong one gets sent.
 	var dir := "%s/appstore" % OUT_DIR if appstore else OUT_DIR
+	# A pose is its own submission set: the Duo's four sizes are uploaded as
+	# their own device class, separately from the iPhone and iPad sets.
+	if pose_name != "":
+		dir = "%s/duo/%s" % [OUT_DIR, pose_name]
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 	var img := stage.get_texture().get_image()
 	var tag := ""
@@ -256,7 +291,7 @@ func _save(shot: String) -> void:
 	# anything transparent", which is a different question — and still arrives
 	# at App Store Connect with the channel on it. Dropped to RGB8 here, which
 	# is the only thing that actually removes it.
-	if appstore:
+	if appstore or pose_name != "":
 		img.convert(Image.FORMAT_RGB8)
 	img.save_png(path)
 	print("[shots] %s  %dx%d" % [path, img.get_width(), img.get_height()])
@@ -323,6 +358,50 @@ func _shot_versus() -> void:
 	game._emote_in = {"i": game.EMOTES.find("angry"), "left": game.EMOTE_SHOW}
 	game._emote_out = {"i": game.EMOTES.find("hype"), "left": game.EMOTE_SHOW}
 	await _hold(0.4)
+
+
+## The summary after a match, posed the way the game itself reaches it: through
+## `_end_match`, so what is on screen is what a player would see.
+func _shot_over() -> void:
+	_pose_profile()
+	game.start_match("Magpie", 1)
+	game.phase = game.Phase.PLAY
+	game.match_time = 95.0
+	await _stage()
+	game._end_match(game.ai_side)
+	game.over_age = 5.0
+	await _hold(0.6)
+
+
+## The pause menu over a live board.
+func _shot_pause() -> void:
+	game.start_match("Magpie", 1)
+	game.phase = game.Phase.PLAY
+	game.match_time = 95.0
+	await _stage()
+	game.paused = true
+	await _hold(0.4)
+
+
+## The first lesson, through the real door the Practice screen opens.
+func _shot_lesson() -> void:
+	_pose_profile()
+	game._activate("tutorial")
+	# Past the three-two-one: the coaching card is drawn from PLAY, not before.
+	await _hold(4.6)
+
+
+## The room-code screen, with the drawn keyboard up for the digits.
+func _shot_lobby() -> void:
+	_pose_profile()
+	game.phase = game.Phase.LOBBY
+	await _hold(0.6)
+
+
+func _shot_practice() -> void:
+	_pose_profile()
+	game.phase = game.Phase.PRACTICE
+	await _hold(0.6)
 
 
 ## The wardrobe on its Board category, with the board on show filling the big

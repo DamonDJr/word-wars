@@ -695,7 +695,35 @@ var net_status := ""
 ## Screen furniture to keep clear of, in design units. See `_measure_safe_area`.
 var safe_top := 0.0
 var safe_bottom := 0.0
-## Whether the glass is big enough to be a tablet. Measured in `_measure_device`
+## The two sides. Zero on every phone that has ever shipped, and not zero on the
+## iPhone Duo, whose Dynamic Island and status bar stand in a column down one
+## edge. Kept apart on purpose: Apple's own worked example for the Duo is the
+## mistake of writing `width - inset * 2`, because the other side is not the
+## same size. Nothing in here may assume the two match.
+var safe_left := 0.0
+var safe_right := 0.0
+## The fold, as a band across the glass in design units, or an empty rectangle
+## when the device is flat or has no hinge. Apple calls it the *division*
+## reserved region: when a Duo is partly open the inner display curves through
+## its middle, and anything that is meant to be read or tapped has to stand off
+## it. Empty is the answer on every device that has ever shipped, so none of the
+## layout below changes unless this is non-empty.
+var fold := Rect2()
+## Whether this glass is in Apple's *regular* width class — a short side of at
+## least `REGULAR_POINTS` — as opposed to compact. Measured in points rather than
+## by shape, because shape stopped separating the devices: a folded Duo's 5.4-inch
+## cover panel and an iPad both come out near 0.69. See `_measure_device`.
+##
+## It is the answer to "is there room to be generous with controls" — the split
+## keyboard, rotating at all — where `tablet` stays the answer to "is the
+## composition wide enough to draw rival boards".
+var regular := false
+## Whether there are fingers on this device and no keyboard to assume. Drives the
+## on-screen keyboard and the back button in *landscape*, where `portrait` used
+## to be standing in for it: that worked while a landscape window only ever meant
+## a desktop, and stopped being true the moment a Duo could be held wide.
+var touch := false
+## Whether this glass is big enough to be a tablet. Measured in `_measure_device`
 ## and false on a desktop and on anything that will not say.
 ##
 ## Nothing here asks what platform it is on, in keeping with the rest of the
@@ -776,10 +804,35 @@ var flash_color := Color.WHITE
 var show_rules := false
 ## Which cosmetic category the mastery screen is showing.
 var mastery_slot := 0
-## True while the window is taller than it is wide. Every layout branches on
-## this rather than on a platform, so the phone screen is testable by dragging a
-## desktop window narrow — which is the only reason it got built at all.
+## Whether the *touch* family of layouts is in use: thumb-sized rows, scrolling
+## menus, a back chevron, "tap" where a desktop says "click". Every layout
+## branches on this rather than on a platform, so the phone screen is testable by
+## dragging a desktop window narrow — which is the only reason it got built at
+## all.
+##
+## True whenever the window is taller than it is wide, and — new with the Duo —
+## whenever there are fingers on a window that is wider than it is tall. The
+## second half is the point: the name is the shape the family was first built
+## for, and for two years the shape and the family were the same thing because
+## nothing with fingers was ever held wide. A Duo opened on its side is, and this
+## is what makes every menu in the game come up thumb-sized on it instead of
+## mouse-sized. Where the *geometry* matters — which design space, where the
+## boards go — ask `wide_touch`.
 var portrait := false
+## True while the window is wider than it is tall, whatever is holding it.
+var _wide_window := false
+## A wide window with fingers on it, which is the one shape that gets its keys at
+## the sides: it picks the design space's board layout and, in a match, whether
+## the keyboard goes under the board or beside it.
+##
+## Derived rather than stored, and from `portrait` among others, so that every
+## tool and test that has always forced a layout by setting `portrait` still
+## gets exactly the layout it asked for — a render script that says "phone" on
+## a desktop window that happens to be wider than tall must not be answered
+## with the Duo's.
+var wide_touch: bool:
+	get:
+		return _wide_window and portrait and touch
 
 var mode := Mode.NORMAL
 ## Where the tutorial has got to, and how long the current step has been up.
@@ -1124,19 +1177,71 @@ func _on_net_status(text: String) -> void:
 ## Measure the window and pick a design space to match it. Called on boot and on
 ## every resize, so rotating a phone — or dragging a desktop window narrow — lands
 ## in the other layout immediately.
+##
+## It used to return early whenever the design space and the orientation both
+## came out the same. That was right while the only way to change the window was
+## to turn it, and wrong the moment a Duo could be folded: 1398x2034 to
+## 1878x2670 is a bigger glass in the *same* orientation, so nothing here
+## changed, nothing re-measured, and a folded-out game kept laying itself out
+## for the cover screen. The window size itself is the thing to compare.
 func _apply_orientation() -> void:
 	var win := DisplayServer.window_get_size()
-	var want_portrait: bool = win.y > win.x
-	var want: Vector2i = PORTRAIT_SIZE if want_portrait else LANDSCAPE_SIZE
-	if get_window().content_scale_size == want and portrait == want_portrait:
+	var want_tall: bool = win.y > win.x
+	var want: Vector2i = PORTRAIT_SIZE if want_tall else LANDSCAPE_SIZE
+	_detect_touch()
+	var want_portrait: bool = want_tall or touch
+	if get_window().content_scale_size == want and portrait == want_portrait \
+			and _wide_window == not want_tall and win == _measured_win:
 		return
+	_measured_win = win
+	_wide_window = not want_tall
 	portrait = want_portrait
 	get_window().content_scale_size = want
 	_measure_safe_area(want)
 	_measure_device(want)
+	_apply_orientation_policy()
+	# The crease is a band across a particular glass; a different glass has a
+	# different one. Recomputed, not carried over — which also means a hinge
+	# state read while the cover display was up never leaks onto the inner one.
+	#
+	# Against the viewport the game will actually draw into, which `expand` has
+	# made bigger than the design space on one axis, and not against the design
+	# space: a crease that stops at 720 units on a glass that is 1013 across does
+	# not reach the keys on the right.
+	fold = Rect2()
+	if (_hinge_partial or OS.get_cmdline_user_args().has("--fold")) \
+			and bool(Profile.pref("fold_layout")):
+		fold = fold_band(get_viewport_rect().size)
 	_layout_boards()
 	queue_redraw()
 	_overlay.queue_redraw()
+
+
+## The window size the layout was last measured against.
+var _measured_win := Vector2i.ZERO
+
+
+## Which way the game is willing to be held.
+##
+## A policy about the glass, not about the model: Apple's guidance for a game is
+## that locking to one orientation is fine so long as the screen is filled, and
+## the cover display of a Duo, like every iPhone, is a place where a keyboard
+## across the bottom of a landscape frame leaves a board too small to read. A
+## *regular* class screen — the open Duo, an iPad — is the opposite: held wide it
+## has the room to put the keys at the sides and keep the board tall, and the
+## inner display does not honour an orientation lock anyway. So compact stays in
+## portrait and regular turns freely.
+##
+## Re-asked on every measure rather than once at boot, because a folding phone
+## changes class without relaunching: it is compact when closed and regular when
+## open, and the lock has to follow it across the hinge.
+func _apply_orientation_policy() -> void:
+	if not touch:
+		return
+	var want := DisplayServer.SCREEN_SENSOR if regular \
+		else DisplayServer.SCREEN_PORTRAIT
+	if DisplayServer.screen_get_orientation() != want:
+		DisplayServer.screen_set_orientation(want)
 
 
 ## How much of the screen the phone's own furniture is sitting on, in the design
@@ -1144,15 +1249,24 @@ func _apply_orientation() -> void:
 ## under the Dynamic Island and the keyboard's bottom row is under the home
 ## indicator, so everything that touches an edge is inset by these instead.
 ##
+## Four sides, each read on its own. On the iPhone Duo the Dynamic Island and the
+## status bar stand in a column down one edge — the right-hand one on the cover
+## display — so `safe_right` is the large one there and `safe_top` is close to
+## nothing. A layout that took the top inset and mirrored it would have drawn
+## under the island and left a gap on the opposite side.
+##
 ## Zero on desktop, where the safe area is the whole screen — so the same code
 ## runs everywhere and there is no platform branch to get wrong.
 func _measure_safe_area(base: Vector2i) -> void:
 	safe_top = 0.0
 	safe_bottom = 0.0
+	safe_left = 0.0
+	safe_right = 0.0
 	var win := DisplayServer.window_get_size()
 	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
 		return
-	var screen := DisplayServer.screen_get_size(DisplayServer.window_get_current_screen())
+	var current := DisplayServer.window_get_current_screen()
+	var screen := DisplayServer.screen_get_size(current)
 	var safe := DisplayServer.get_display_safe_area()
 	if screen.y <= 0:
 		return
@@ -1161,19 +1275,63 @@ func _measure_safe_area(base: Vector2i) -> void:
 	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
 	if k <= 0.0:
 		return
-	safe_top = maxf(0.0, float(safe.position.y)) / k
-	safe_bottom = maxf(0.0, float(screen.y - safe.end.y)) / k
+	# Measured from the screen's own origin, not from zero: on a desktop with a
+	# second monitor to the right, `safe.position.x` is the width of the first
+	# one and would have read as a very large inset.
+	var origin := DisplayServer.screen_get_position(current)
+	safe_top = maxf(0.0, float(safe.position.y - origin.y)) / k
+	safe_bottom = maxf(0.0, float(origin.y + screen.y - safe.end.y)) / k
+	# Only where there are fingers. A desktop work area can be narrower than its
+	# screen — a taskbar down one side — and that is not furniture on the game's
+	# window, which is not full-screen.
+	if touch:
+		safe_left = maxf(0.0, float(safe.position.x - origin.x)) / k
+		safe_right = maxf(0.0, float(origin.x + screen.x - safe.end.x)) / k
 
 	# `godot -- --safe=104,40` forces the insets, so a notch can be laid out from
 	# a desktop window. Same reasoning as deciding the orientation by measuring
 	# the window: the only way any of this got built without a phone in the room
 	# is that none of it asks what platform it is on.
+	#
+	# `--safe=top,bottom` as it always was, or `--safe=top,bottom,left,right`
+	# for the Duo's side furniture.
 	for a: String in OS.get_cmdline_user_args():
 		if a.begins_with("--safe="):
 			var parts := a.substr(7).split(",")
-			if parts.size() == 2:
+			if parts.size() == 2 or parts.size() == 4:
 				safe_top = maxf(0.0, parts[0].to_float())
 				safe_bottom = maxf(0.0, parts[1].to_float())
+			if parts.size() == 4:
+				safe_left = maxf(0.0, parts[2].to_float())
+				safe_right = maxf(0.0, parts[3].to_float())
+
+
+## The short side of a *regular* width class, in UI points.
+##
+## Apple's size classes are about room, and on the Duo they land where the two
+## panels do: the cover display is 466pt across and compact, the open inner one
+## is 669pt and regular, and the smallest iPad is 744. Anything between 466 and
+## 669 will do for a threshold, and 560 is the middle of the gap rather than
+## either edge — the point sizes in circulation for the inner display differ by
+## a few percent between sources, and a threshold that sits on one of them is a
+## threshold that flips with a rounding.
+const REGULAR_POINTS := 560.0
+
+## Whether this is a touch device, and then which class of glass it is.
+##
+## Two separate questions with two separate answers, and the second used to be
+## answered by the first's cousin. `tablet` below is still *shape* — wide enough
+## to draw rival boards — and it still cannot tell a cover display from an iPad.
+## `regular` is the one Apple's own guidance for the Duo says to branch on, and
+## it is measured the way Apple measures it: in points, from the window and the
+## scale, not from the aspect ratio and not from a model name.
+func _detect_touch() -> void:
+	touch = DisplayServer.is_touchscreen_available() and OS.has_feature("mobile")
+	var args := OS.get_cmdline_user_args()
+	# `--touch` brings the finger layout up in a desktop window, the way `--ipad`
+	# and `--safe=` bring up the tablet and the notch.
+	if args.has("--touch") or args.has("--ipad"):
+		touch = true
 
 
 ## Whether this is a tablet.
@@ -1182,26 +1340,20 @@ func _measure_safe_area(base: Vector2i) -> void:
 ## asking iOS what it is running on. With `expand` stretching, a phone pins its
 ## width and overflows vertically — the viewport comes out 720x1561, a ratio of
 ## 0.46. A tablet is the other way round: 4:3 glass pins the height and the
-## viewport widens to about 1000x1440, a ratio of 0.70. Nothing else lands
-## between those, so one threshold separates them, and the same rule that names
-## an iPad also names a desktop window dragged to roughly that shape — which is
-## the only reason any of this could be built and looked at without one.
+## viewport widens to about 1000x1440, a ratio of 0.70. A folded Duo lands at
+## 0.69 alongside them, which is why this only decides *composition* — whether
+## there is width to draw a rival's board — and why the size class is its own
+## measurement below.
 const TABLET_RATIO := 0.58
 
 func _measure_device(base: Vector2i) -> void:
-	tablet = false
-	var win := DisplayServer.window_get_size()
-	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
-		return
-	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
-	if k <= 0.0:
-		return
-
-	# Measured off the viewport the game will actually draw into, which is the
-	# window divided by that same factor — not off the window, whose pixel
-	# dimensions say nothing about shape once the scale factor is in play.
-	var vp := Vector2(float(win.x) / k, float(win.y) / k)
-	tablet = vp.y > 0.0 and (vp.x / vp.y) > TABLET_RATIO
+	_detect_touch()
+	var scale: float = DisplayServer.screen_get_scale(DisplayServer.window_get_current_screen())
+	if scale < 1.0:
+		scale = float(DisplayServer.screen_get_dpi()) / 163.0
+	var c := classify_device(DisplayServer.window_get_size(), base, scale, touch)
+	tablet = bool(c["tablet"])
+	regular = bool(c["regular"])
 
 	# `godot -- --ipad` brings the whole tablet layout up in a desktop window,
 	# the way `--safe=` brings up a notch. Without it none of this could be seen
@@ -1209,19 +1361,209 @@ func _measure_device(base: Vector2i) -> void:
 	# nobody can fix.
 	if OS.get_cmdline_user_args().has("--ipad"):
 		tablet = true
+		regular = true
+
+
+## The two measurements that say what kind of glass this is, as a function of
+## nothing but numbers — so a test can hand it a Duo's and an iPad's and check
+## the answers without a Duo or an iPad.
+##
+## `win` is the window in pixels, `base` the design space it is being drawn in,
+## `scale` the display scale (pixels per point), `touch` whether there are fingers
+## on it. Returns `tablet` (the composition is wide enough to draw a rival's
+## board) and `regular` (Apple's regular width class).
+static func classify_device(win: Vector2i, base: Vector2i, scale: float,
+		touch_device: bool) -> Dictionary:
+	var out := {"tablet": false, "regular": false}
+	if win.x <= 0 or win.y <= 0 or base.x <= 0 or base.y <= 0:
+		return out
+	var k: float = minf(float(win.x) / float(base.x), float(win.y) / float(base.y))
+	if k <= 0.0:
+		return out
+
+	# Measured off the viewport the game will actually draw into, which is the
+	# window divided by that same factor — not off the window, whose pixel
+	# dimensions say nothing about shape once the scale factor is in play.
+	var vp := Vector2(float(win.x) / k, float(win.y) / k)
+	out["tablet"] = vp.y > 0.0 and (vp.x / vp.y) > TABLET_RATIO
+
+	# The size class, in points: the short side of the window over the display
+	# scale. Asked of the window rather than of any screen, because a two-display
+	# device makes "the screen" an ambiguous thing to ask about.
+	if touch_device and scale >= 1.0:
+		out["regular"] = float(mini(win.x, win.y)) / scale >= REGULAR_POINTS
+	else:
+		# A desktop window has no points to speak of. It is as roomy as it looks.
+		out["regular"] = out["tablet"]
+	return out
+
+
+# ------------------------------------------------------------------- the hinge
+#
+# The iPhone Duo reports how far it is open through `UIHingeInteraction`, and a
+# small native piece (`ios/plugins-src/HingeBridge`) writes what it hears to a
+# one-line file where this can read it. There is no engine binding in between:
+# the only thing that crosses is "closed, partly open, or fully open" and the
+# angle, as text, and everything the game does with it is in this file.
+#
+# Partly open is the only state that matters here. Closed is the other display
+# and fully open is a flat glass; only a bent one has a crease to stay off.
+
+## The file the native bridge writes: `status angle`, e.g. `2 1.96`. The angle is
+## in radians; the status is whatever the system's enum is numbered as, kept for
+## the log and not relied on.
+const HINGE_FILE := "hinge.txt"
+const HINGE_POLL := 0.25
+## Between these two angles, in radians, the glass is bent enough to have a
+## crease: 25 degrees to 160. Below the first it is shut and the other display is
+## in use; above the second it is flat to within what the eye can see.
+const HINGE_MIN_RAD := 0.44
+const HINGE_MAX_RAD := 2.79
+
+var _hinge_age := 0.0
+var _hinge_stamp := -1
+var _hinge_partial := false
+## Whether the system has ever reported a hinge. False on every device that has
+## ever shipped except a Duo, and what keeps the setting off other devices.
+var _hinge_seen := false
+
+
+## How thick the crease is, as a fraction of the long side of the glass. The
+## inner panel is hinged across the middle of its long side, so the band is
+## centred there and runs the width of the short side; 5.5% is about a third of
+## an inch on the open Duo, which is how much of a bent panel is not a surface.
+## Apple publishes no number — the system reports the real region — so this is
+## the estimate the layout uses when all it has is "bent".
+const FOLD_FRACTION := 0.055
+
+
+## The crease for a glass of `size`, as the band the layout stays off.
+##
+## Across the middle of the long side: a window taller than it is wide is held
+## like a laptop, with the crease running across it, and a wider one like a
+## book, with the crease running down. A pure function of the size so the tools
+## that render a pose and the game that lives in one agree on what it looks like.
+static func fold_band(size: Vector2) -> Rect2:
+	var long_side: float = maxf(size.x, size.y)
+	var t: float = long_side * FOLD_FRACTION
+	if size.x >= size.y:
+		return Rect2(size.x * 0.5 - t * 0.5, 0.0, t, size.y)
+	return Rect2(0.0, size.y * 0.5 - t * 0.5, size.x, t)
+
+
+## Read the bridge's file, a few times a second, and re-lay-out when the answer
+## changes. Nothing to read on a desktop or an iPad, and then nothing is done.
+func _poll_hinge(delta: float) -> void:
+	if not touch:
+		return
+	_hinge_age += delta
+	if _hinge_age < HINGE_POLL:
+		return
+	_hinge_age = 0.0
+	# Where the bridge writes, and the one other place it might have meant.
+	var path := OS.get_cache_dir().path_join(HINGE_FILE)
+	if not FileAccess.file_exists(path):
+		path = "user://" + HINGE_FILE
+		if not FileAccess.file_exists(path):
+			return
+	var stamp := FileAccess.get_modified_time(path)
+	if stamp == _hinge_stamp:
+		return
+	_hinge_stamp = stamp
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return
+	var parts := f.get_as_text().strip_edges().split(" ")
+	_hinge_seen = true
+	var angle := float(parts[1]) if parts.size() > 1 else 0.0
+	# Decided on the angle alone, which Apple documents in radians, and not on
+	# the status. The status is an enum whose numbering is not published —
+	# `unknown` is a case and may well be zero — so reading "1" as "partly open"
+	# is a guess that is wrong in exactly the way that puts a crease on a glass
+	# that is shut. A bend that is neither nearly shut nor nearly flat, between
+	# about 25 and 160 degrees, is a fold whichever way the enum is numbered;
+	# and if the angle is never reported the answer is no crease, which is the
+	# layout that was shipped before any of this existed.
+	_hinge_partial = angle > HINGE_MIN_RAD and angle < HINGE_MAX_RAD
+	_apply_hinge()
+
+
+## Turn "partly open" into `fold`, honouring the setting and the dev flag.
+func _apply_hinge() -> void:
+	var want := _hinge_partial and bool(Profile.pref("fold_layout"))
+	# `-- --fold` bends the glass from a desktop window, the way `--ipad` and
+	# `--safe=` bring up a tablet and a notch.
+	if OS.get_cmdline_user_args().has("--fold"):
+		want = bool(Profile.pref("fold_layout"))
+	var next := fold_band(get_viewport_rect().size) if want else Rect2()
+	if next == fold:
+		return
+	fold = next
+	_layout_boards()
+	queue_redraw()
+	_overlay.queue_redraw()
+
+
+## What the display measured as, for the line at the foot of Settings.
+##
+## There is no Duo in the room and no simulator on this machine, so the first
+## time these numbers meet the real thing is a TestFlight build on somebody's
+## desk. This is the one line that says what the game thought it was looking at.
+func _display_report() -> String:
+	var win := DisplayServer.window_get_size()
+	var scale := DisplayServer.screen_get_scale(DisplayServer.window_get_current_screen())
+	return "%dx%d px · %.2fx · %dpt · %s%s · safe %d %d %d %d" % [
+		win.x, win.y, scale, int(float(mini(win.x, win.y)) / maxf(scale, 1.0)),
+		"regular" if regular else "compact", " · tablet" if tablet else "",
+		int(safe_top), int(safe_bottom), int(safe_left), int(safe_right)]
 
 
 ## Which keyboard this screen gets.
 ##
-## Split is a tablet-only shape — the whole point of it is that the two halves
+## Split is a regular-class shape — the whole point of it is that the two halves
 ## are further apart than one hand can span, which on a phone describes a
 ## keyboard nobody can reach the middle of. So a phone is never offered it and
 ## never asked about it, and the preference below only does anything on glass
 ## where both answers are usable.
+##
+## And a screen held wide with fingers on it gets neither: its keys go out to the
+## two corners and the board stands between them. See `Keyboard.Form.WINGS`.
+##
+## Decided by the size *class* and not by `tablet`, which is shape. A folded
+## Duo's cover display is tablet-shaped and five inches across, and "split" on
+## three inches of glass is a setting whose only effect is a worse keyboard.
 func _kb_form() -> int:
-	if tablet and bool(Profile.pref("split_keys")):
+	if wide_touch:
+		return Keyboard.Form.WINGS
+	if regular and touch and bool(Profile.pref("split_keys")):
 		return Keyboard.Form.SPLIT
 	return Keyboard.Form.FULL
+
+
+## The part of the viewport that is the game's to put things in: the whole of it
+## less whatever the device has stood in a column down either edge. Everything
+## that is laid out *relative to the width* — centred, right-aligned, divided
+## into columns — is laid out against this, never against the viewport, because
+## the two are different rectangles on exactly the devices this exists for.
+func _usable() -> Rect2:
+	return _usable_in(get_viewport_rect().size)
+
+
+## The same, for a size handed in. The cards and the typed line are asked about
+## a phone from headless runs, where the real viewport is the desktop's, so they
+## are given the size they are being asked about and must not look past it.
+func _usable_in(size: Vector2) -> Rect2:
+	return Rect2(safe_left, 0.0, maxf(120.0, size.x - safe_left - safe_right), size.y)
+
+
+## The area the keys have to themselves: the full width less whatever the device
+## has stood in a column down either edge. Every `Keyboard` call is made against
+## this rather than against the viewport, and the rectangles that come back are
+## moved right by `safe_left` — so with no insets this is the viewport and the
+## shift is zero, and with a Duo's island on one side the keys stop short of it
+## instead of running underneath.
+func _kb_size(size: Vector2) -> Vector2:
+	return Vector2(maxf(120.0, size.x - safe_left - safe_right), size.y)
 
 
 # `Keyboard`'s statics all want the same extra argument, and every caller in
@@ -1230,7 +1572,7 @@ func _kb_form() -> int:
 # shape — and so a new one cannot be added that forgets to ask.
 
 func _kb_height(size: Vector2) -> float:
-	return Keyboard.height(size, _kb_form(), _kb_digits())
+	return Keyboard.height(_kb_size(size), _kb_form(), _kb_digits(), _wing_half)
 
 
 ## Whether the keyboard is carrying its number row — only while a room code is
@@ -1244,11 +1586,88 @@ func _kb_digits() -> bool:
 ## those are sized to the keys rather than to the screen, so that a cap stays the
 ## same fraction of the key it is printed on wherever this is being played.
 func _kb_type_scale(size: Vector2) -> float:
-	return Keyboard.type_scale(size, _kb_form())
+	return Keyboard.type_scale(_kb_size(size), _kb_form(), _wing_half)
 
 
 func _kb_emote_rect(size: Vector2, bottom: float) -> Rect2:
-	return Keyboard.emote_rect(size, bottom, _kb_form())
+	var r := Keyboard.emote_rect(_kb_size(size), bottom, _kb_form(), _wing_half)
+	r.position.x += safe_left
+	return r
+
+
+## Whether a fold divides the glass at all, and which way its band runs.
+func _fold_active() -> bool:
+	return fold.size.x > 1.0 and fold.size.y > 1.0
+
+
+## A band running top to bottom: the inner display held wide, partly open like a
+## book, with two pages.
+func _fold_vertical() -> bool:
+	return _fold_active() and fold.size.y >= fold.size.x
+
+
+## A band running across: held tall and partly open like a laptop, with the upper
+## half standing and the lower half lying down.
+func _fold_horizontal() -> bool:
+	return _fold_active() and fold.size.x > fold.size.y
+
+
+## How much of the width each key wing takes. The full figure when the glass is
+## whole; narrowed, down to a floor, when a fold takes room out of the middle and
+## the board still has to be as wide as a board.
+var _wing_half := Keyboard.WING_HALF
+
+
+## What a board needs to stand on, in units: six columns at their narrowest, and
+## a little air either side so it is not touching the keys or the fold.
+const BOARD_MIN_LAKE := WWBoard.COLS * WWBoard.CELL + 36.0
+
+
+## The gap between the wings that is the board's to use, as (left, right).
+##
+## The whole lake when the glass is whole. With a fold down the middle it is the
+## bigger of the two pages — the board does not straddle the curve, and neither
+## do FIRE or the word being typed. That is Apple's own rule of thumb for
+## anything that has to be read or tapped: move it to the side of the fold that
+## has room, as one piece, and do not split it.
+func _wide_lake() -> Vector2:
+	return _lake_part(_wing_half)
+
+
+func _lake_part(half: float) -> Vector2:
+	var lk := Keyboard.lake(_kb_size(get_viewport_rect().size), half)
+	lk = Vector2(lk.x + safe_left, lk.y + safe_left)
+	if not _fold_vertical():
+		return lk
+	var f0: float = fold.position.x - 14.0
+	var f1: float = fold.end.x + 14.0
+	if f1 <= lk.x or f0 >= lk.y:
+		return lk
+	var left := Vector2(lk.x, minf(lk.y, f0))
+	var right := Vector2(maxf(lk.x, f1), lk.y)
+	return left if (left.y - left.x) >= (right.y - right.x) else right
+
+
+## Narrow the wings, if a fold needs them narrower, until a board fits in the page
+## it is going to stand on — or they hit the floor.
+func _fit_wings() -> void:
+	_wing_half = Keyboard.WING_HALF
+	if not wide_touch or not _fold_vertical():
+		return
+	var h := Keyboard.WING_HALF
+	while h > Keyboard.WING_HALF_MIN:
+		var part := _lake_part(h)
+		if part.y - part.x >= BOARD_MIN_LAKE:
+			break
+		h -= 0.01
+	_wing_half = maxf(h, Keyboard.WING_HALF_MIN)
+
+
+## The whole lake, ignoring any fold: where the key wings stop. The wings above
+## the keys are measured from this, not from the board's page.
+func _wide_lake_full() -> Vector2:
+	var lk := Keyboard.lake(_kb_size(get_viewport_rect().size), _wing_half)
+	return Vector2(lk.x + safe_left, lk.y + safe_left)
 
 
 ## Push the equipped board theme and block style out to everything that paints.
@@ -1452,6 +1871,7 @@ func _theme_art(id: String) -> Texture2D:
 ## by the node transform, which keeps every effect and label working on them.
 func _layout_boards() -> void:
 	var size := get_viewport_rect().size
+	_fit_wings()
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var duel := slots_in_play <= 2
 
@@ -1459,6 +1879,12 @@ func _layout_boards() -> void:
 	# that opens them out; the branches below set it themselves.
 	for s0: SideState in sides:
 		s0.board.set_cell_w(WWBoard.CELL)
+
+	# Fingers on a wide window: the keys are out at the sides and the board has
+	# the whole height of the glass. See `_layout_wide_boards`.
+	if wide_touch:
+		_layout_wide_boards(size)
+		return
 
 	if portrait and tablet:
 		_layout_tablet_boards(size)
@@ -1472,19 +1898,20 @@ func _layout_boards() -> void:
 		var bh := WWBoard.ROWS * WWBoard.CELL
 		var top := _portrait_board_top()
 		var room := _portrait_board_bottom() - top
-		var scale: float = clampf(minf(room / bh, (size.x - 72.0) / bw), 0.7, 1.6)
+		var area := _usable()
+		var scale: float = clampf(minf(room / bh, (area.size.x - 72.0) / bw), 0.7, 1.6)
 		# Height is what limits a phone board, so the width it is left over is
 		# spent on the columns rather than on margin: see `WWBoard.CELL_ASPECT_MAX`
 		# for why a stamp wants it. How far they open is whatever leaves the two
 		# rails the width their chips need.
-		var wide_w: float = size.x - 2.0 * (PORTRAIT_RAIL_MIN + 10.0)
+		var wide_w: float = area.size.x - 2.0 * (PORTRAIT_RAIL_MIN + 10.0)
 		var cw: float = clampf(wide_w / (WWBoard.COLS * scale), WWBoard.CELL,
 			WWBoard.CELL * WWBoard.CELL_ASPECT_MAX)
 		var w := WWBoard.COLS * cw * scale
 		for s2: SideState in sides:
 			s2.board.set_cell_w(cw)
 			s2.board.scale = Vector2(scale, scale)
-			s2.board.position = Vector2((size.x - w) * 0.5, top)
+			s2.board.position = Vector2(area.position.x + (area.size.x - w) * 0.5, top)
 		return
 
 	_layout_landscape_boards(size, bw, duel)
@@ -1537,7 +1964,12 @@ const TABLET_MIN_RAIL := 130.0
 ## right-hand side, rather than pinned to the left margin, so its two rails come
 ## out the same width as each other — `_draw_portrait_rails` measures the left
 ## gutter and assumes the right one matches.
-func _layout_tablet_boards(size: Vector2) -> void:
+func _layout_tablet_boards(full: Vector2) -> void:
+	# Laid out in the area the device leaves, against its own width and from its
+	# own left edge: on a Duo's cover display that is the glass less the column
+	# the Dynamic Island stands in, and the rival board must not be under it.
+	var area := _usable()
+	var size := Vector2(area.size.x, full.y)
 	var bw := WWBoard.COLS * WWBoard.CELL
 	var bh := WWBoard.ROWS * WWBoard.CELL
 	var top := _portrait_board_top()
@@ -1600,7 +2032,7 @@ func _layout_tablet_boards(size: Vector2) -> void:
 	# the two constraints disagree — the daily, where width is no object and the
 	# board is as tall as it can be — this changes nothing, and where width wins
 	# it puts the slack above and below the board instead of all of it below.
-	player.board.position = Vector2((mine - bw * scale) * 0.5,
+	player.board.position = Vector2(area.position.x + (mine - bw * scale) * 0.5,
 		top + (room - bh * scale) * 0.5)
 
 	# Rivals share the right-hand column top to bottom. One rival — which is
@@ -1609,7 +2041,7 @@ func _layout_tablet_boards(size: Vector2) -> void:
 	# and shrink together so they stay comparable with each other.
 	if rivals.is_empty():
 		return
-	var rx: float = size.x - TABLET_MARGIN - rw
+	var rx: float = area.end.x - TABLET_MARGIN - rw
 	# Room for the name and lives above each board and the chain meter below —
 	# `_draw_rival_panel` hangs those off the board rect at fixed offsets, and
 	# stacked boards have to leave space for them between one and the next.
@@ -1619,7 +2051,7 @@ func _layout_tablet_boards(size: Vector2) -> void:
 	if rivals.size() > 1:
 		rscale = fit
 		rw = bw * rscale
-		rx = size.x - TABLET_MARGIN - rw
+		rx = area.end.x - TABLET_MARGIN - rw
 
 	for i in rivals.size():
 		var s3: SideState = rivals[i]
@@ -1632,6 +2064,96 @@ func _layout_tablet_boards(size: Vector2) -> void:
 		if rivals.size() == 1:
 			y = top + (room - bh * rscale) * 0.5
 		s3.board.position = Vector2(rx, y)
+
+
+## The wide wings above the keys: where the rival's board and the attack chips go.
+##
+## Returns [left, right]. Each runs from the board's top to just above the keys
+## (and, on the right, above the emote key that stands over P), and from the
+## screen's safe edge to the lake.
+func _wide_wings() -> Array:
+	var size := get_viewport_rect().size
+	var lk := _wide_lake_full()
+	var top := _portrait_board_top()
+	var keys_top: float = _keyboard_bottom() - _kb_height(size) \
+		- (Keyboard.EMOTE_H + Keyboard.EMOTE_RISE) * _kb_type_scale(size) - 16.0
+	var h: float = maxf(120.0, keys_top - top)
+	var left := Rect2(safe_left + 14.0, top, lk.x - (safe_left + 14.0) - 24.0, h)
+	var right := Rect2(lk.y + 28.0, top,
+		size.x - safe_right - 14.0 - (lk.y + 28.0), h)
+	return [left, right]
+
+
+## Whether the rivals are drawn as chips rather than as boards. A tablet draws
+## their boards; held wide there is room for one rival's board in the right wing
+## and not for three, so a match with more than one rival falls back to the
+## phone's cards.
+func _rivals_as_cards() -> bool:
+	if not tablet:
+		return true
+	return wide_touch and _live_rival_count() > 1
+
+
+func _live_rival_count() -> int:
+	var n := 0
+	for s: SideState in sides:
+		if s.slot > 0 and s.in_match:
+			n += 1
+	return n
+
+
+## A match held wide, with fingers on it: your board in the lake between the two
+## halves of the keyboard, running down to FIRE, with the rival's board and the
+## incoming chips in the wings above the keys.
+##
+## The arithmetic that makes this the layout rather than a bottom keyboard: a
+## 1.42:1 panel is 900 design units tall. Three rows of keys and the band for the
+## word being typed take 650 of them and leave a board 250 high; with the keys in
+## the corners the board is 590. Same glass, same thumbs, 2.4 times the playfield.
+func _layout_wide_boards(size: Vector2) -> void:
+	var lk := _wide_lake()
+	var top := _portrait_board_top()
+	var room := _portrait_board_bottom() - top
+	var bh := WWBoard.ROWS * WWBoard.CELL
+	var lake_w: float = lk.y - lk.x - 8.0
+
+	var scale: float = clampf(room / bh, 0.6, 1.9)
+	var cw: float = clampf(lake_w / (WWBoard.COLS * scale), WWBoard.CELL,
+		WWBoard.CELL * WWBoard.CELL_ASPECT_MAX)
+	# If the columns hit their cap and the lake is still wider than the board,
+	# nothing more to spend it on: the board is centred in it.
+	for s0: SideState in sides:
+		s0.board.set_cell_w(cw)
+	var w: float = WWBoard.COLS * cw * scale
+	# And where width, not height, is what runs out, the whole board comes down.
+	if w > lake_w:
+		scale = lake_w / (WWBoard.COLS * cw)
+		w = lake_w
+	var bh_px: float = bh * scale
+	player.board.scale = Vector2(scale, scale)
+	player.board.position = Vector2(lk.x + 4.0 + (lake_w - w) * 0.5,
+		top + (room - bh_px) * 0.5)
+
+	var wings := _wide_wings()
+	var rw_box: Rect2 = wings[1]
+	for s: SideState in sides:
+		if s.slot == 0 or not s.in_match:
+			continue
+		if _rivals_as_cards():
+			# Parked out of sight; the cards stand for it.
+			s.board.scale = Vector2(0.01, 0.01)
+			s.board.position = Vector2(-4000.0, -4000.0)
+			continue
+		# One rival, as a board. The room left over beside it is the SENT rail.
+		var rail_w: float = WIDE_SENT_RAIL_W
+		var furniture := 96.0
+		var rscale: float = minf(
+			(rw_box.size.x - rail_w - 12.0) / (WWBoard.COLS * cw),
+			(rw_box.size.y - furniture) / bh)
+		rscale = clampf(rscale, 0.3, scale * 0.8)
+		s.board.scale = Vector2(rscale, rscale)
+		s.board.position = Vector2(rw_box.position.x,
+			rw_box.position.y + furniture * 0.5)
 
 
 func _layout_landscape_boards(size: Vector2, _bw: float, duel: bool) -> void:
@@ -1683,7 +2205,7 @@ func _portrait_rival_cards(size: Vector2) -> Array:
 	# time-ish fact: the emote anchors below check for empty and take the other
 	# path, and anything new that asks for a card gets nothing rather than a
 	# plausible rectangle over the middle of somebody's playfield.
-	if tablet:
+	if not _rivals_as_cards():
 		return out
 	# And none in a lesson or a drill. There is nobody there: the chip said
 	# LESSON, or PRACTICE, over three lives that belong to no one, and the slot is
@@ -1696,11 +2218,21 @@ func _portrait_rival_cards(size: Vector2) -> Array:
 			rivals.append(s)
 	if rivals.is_empty():
 		return out
-	var cw: float = minf(196.0, (size.x - 24.0) / float(rivals.size()) - 8.0)
+	# Held wide, the cards stand in a column in the right wing instead of a row
+	# under the clock: there is no strip under the clock to put them in.
+	if wide_touch:
+		var rw: Rect2 = _wide_wings()[1]
+		var cw2: float = minf(220.0, rw.size.x)
+		for i in rivals.size():
+			out.append({"side": rivals[i], "rect": Rect2(
+				rw.position.x, rw.position.y + float(i) * 92.0, cw2, 84.0)})
+		return out
+	var area := _usable_in(size)
+	var cw: float = minf(196.0, (area.size.x - 24.0) / float(rivals.size()) - 8.0)
 	var span: float = float(rivals.size()) * cw + float(rivals.size() - 1) * 8.0
 	for i in rivals.size():
 		out.append({"side": rivals[i], "rect": Rect2(
-			size.x * 0.5 - span * 0.5 + float(i) * (cw + 8.0),
+			area.get_center().x - span * 0.5 + float(i) * (cw + 8.0),
 			safe_top + 112.0, cw, 84.0)})
 	return out
 
@@ -1750,6 +2282,14 @@ func _portrait_emote_anchors(size: Vector2) -> Array:
 			return []
 		var them := _board_rect(rivals[0])
 		var you := _board_rect(player)
+		# Held wide, the rival's board is a few units from yours rather than a
+		# gutter away, and a bubble hung off its left edge lands on *your*
+		# playfield. Theirs goes over the top of their own board instead: it is
+		# the part of a board that is empty until the match is nearly lost, and
+		# a bubble that stands for two and a half seconds there hides nothing.
+		if wide_touch:
+			return [Vector2(them.get_center().x, them.position.y + 70.0),
+				Vector2(you.position.x - 58.0, you.get_center().y)]
 		return [Vector2(them.position.x - 58.0, them.get_center().y),
 			Vector2(you.position.x - 58.0, you.get_center().y)]
 	if cards.is_empty():
@@ -1772,7 +2312,7 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# counts of their own hung off theirs. Anchoring it here makes your side of
 	# the screen read as one column: clock, score, lives, board, the word you
 	# are typing.
-	var cx: float = size.x * 0.5
+	var cx: float = _usable_in(size).get_center().x
 	if tablet:
 		cx = _board_rect(player).get_center().x
 	# The header hangs off the top of the safe area rather than the top of the
@@ -1836,12 +2376,12 @@ func _draw_portrait_hud(size: Vector2) -> void:
 	# rather than a row of cards under the clock. Same panel the landscape
 	# layout draws, because it is the same thing: a board with a name, a life
 	# count and a chain meter arranged around it.
-	if tablet:
+	if not _rivals_as_cards():
 		for s3: SideState in sides:
 			if s3.slot > 0 and s3.in_match:
 				_draw_rival_panel(s3)
 
-	var below := _portrait_board_bottom()
+	var below := _portrait_band_top()
 	# The band under the board is `104 * band` tall — see
 	# `_portrait_board_bottom` — so the three things stacked in it are placed as
 	# fractions of that height rather than at fixed offsets. They were fixed,
@@ -1915,11 +2455,16 @@ func _draw_portrait_hud(size: Vector2) -> void:
 ## word set at 34 would run straight across them, so it is held to your own
 ## side of the screen — which is where it belongs anyway, being your word.
 func _input_width(size: Vector2) -> float:
+	# Held wide, the word sits under the board in the lake, between the wings.
+	if wide_touch:
+		var lk := _wide_lake()
+		return maxf(240.0, lk.y - lk.x - 16.0)
+	var room: float = _usable_in(size).size.x - 40.0
 	if not tablet:
-		return size.x - 40.0
+		return room
 	var rivals := _living_rivals()
 	if rivals.is_empty():
-		return size.x - 40.0
+		return room
 	var mine: float = _board_rect(rivals[0]).position.x - TABLET_GUTTER
 	return maxf(240.0, mine - 40.0)
 
@@ -1939,6 +2484,9 @@ func _input_width(size: Vector2) -> float:
 ## seeing your own salvo still in flight is what makes sending one feel like a
 ## thing you did rather than a number that went up.
 func _draw_portrait_rails() -> void:
+	if wide_touch:
+		_draw_wide_rails()
+		return
 	var r := _board_rect(player)
 	var gutter: float = r.position.x - 10.0
 	if gutter < 54.0:
@@ -1955,6 +2503,28 @@ func _draw_portrait_rails() -> void:
 	var mark := _target_side()
 	if mark != null and mark != player:
 		_draw_rail(Rect2(r.end.x + 10.0, r.position.y, cw, r.size.y),
+			mark.pending, "SENT", mark.accent, "", false)
+
+
+## The same two rails for a wide screen. What is falling on you stands in the
+## left wing against the lake, where the board's own edge is; what you have sent
+## stands in the right wing beside the rival's board. Neither has anything to do
+## with how wide the board turned out, which is why this is not the gutter
+## calculation above.
+func _draw_wide_rails() -> void:
+	var wings := _wide_wings()
+	var lw: Rect2 = wings[0]
+	var cw: float = minf(WIDE_INCOMING_RAIL_W, lw.size.x)
+	var top: float = lw.position.y
+	var h: float = _board_rect(player).size.y
+	_draw_rail(Rect2(lw.end.x - cw, top, cw, h), player.pending, "INCOMING",
+		Color("#ff6b6b"), _typing_of(player), true)
+
+	var mark := _target_side()
+	if mark != null and mark != player:
+		var rw: Rect2 = wings[1]
+		var rail_w: float = minf(WIDE_SENT_RAIL_W, rw.size.x * 0.4)
+		_draw_rail(Rect2(rw.end.x - rail_w, rw.position.y + 48.0, rail_w, h * 0.6),
 			mark.pending, "SENT", mark.accent, "", false)
 
 
@@ -2023,7 +2593,37 @@ func _draw_rail(box: Rect2, queue: Array, label: String, tint: Color,
 ## went to 17 and the band to 104, and now the word is 40 and the line 21 and it
 ## is 112 — without the extra the commentary is drawn over the top row of keys.
 func _portrait_board_bottom() -> float:
+	var b := _unfolded_board_bottom()
+	# A band across the glass: the board stops above it. Half a board straddling a
+	# crease reads as two boards, and the lower rows are the ones with the blocks
+	# in them.
+	if _fold_horizontal() and b > fold.position.y:
+		return minf(b, fold.position.y - 14.0)
+	return b
+
+
+## Where the strip under the board — chain meter, the word you are typing, the
+## line of commentary — starts. The same place as the board's bottom edge until
+## a fold is in the way, and then below it: that strip is read, and it wants to
+## be on the half of the glass your thumbs are on, with the keys.
+func _portrait_band_top() -> float:
+	var b := _unfolded_board_bottom()
+	if _fold_horizontal():
+		var size := get_viewport_rect().size
+		var band_h: float = 112.0 * _kb_type_scale(size)
+		if b < fold.end.y and b + band_h > fold.position.y:
+			return fold.end.y + 8.0
+	return b
+
+
+func _unfolded_board_bottom() -> float:
 	var size := get_viewport_rect().size
+	# Held wide, the keys are in the corners and the lake runs down to FIRE, so
+	# the board is measured from the top of that bar rather than from the top of
+	# three rows of letters that are not underneath it.
+	if wide_touch:
+		return _keyboard_bottom() - Keyboard.wing_key_h(_kb_size(size)) \
+			- 124.0 * _kb_type_scale(size)
 	return _keyboard_bottom() - _kb_height(size) - 112.0 * _kb_type_scale(size)
 
 
@@ -2041,7 +2641,20 @@ const TABLET_BOARD_TOP := 132.0
 ## what the extra width on the board was supposed to buy.
 const PORTRAIT_RAIL_MIN := 126.0
 
+## Where the board starts when the glass is wide: the header is still there
+## — clock, score, pressure, lives — but there is no rival strip under it and
+## height is the one thing a wide screen is short of, so it is tighter than a
+## tablet's by what the lives row and the rail labels can spare.
+const WIDE_BOARD_TOP := 116.0
+## The two attack-chip columns when held wide. What is falling on you is the
+## thing you read mid-word, so it gets a wide column in the roomy left wing; what
+## you have sent is a glance, and shares the right wing with the rival's board.
+const WIDE_INCOMING_RAIL_W := 230.0
+const WIDE_SENT_RAIL_W := 112.0
+
 func _portrait_board_top() -> float:
+	if wide_touch:
+		return WIDE_BOARD_TOP + safe_top
 	return (TABLET_BOARD_TOP if tablet else PORTRAIT_BOARD_TOP) + safe_top
 
 
@@ -5922,6 +6535,7 @@ func _preview_matches(side: SideState, word: String) -> int:
 # --------------------------------------------------------------------- runtime
 
 func _process(delta: float) -> void:
+	_poll_hinge(delta)
 	# First, ahead of every early return below: the ad curtain is exactly when a
 	# release goes missing, and the bubble should not wait for it to lift.
 	_tick_keys_held()
@@ -6082,7 +6696,7 @@ func _process(delta: float) -> void:
 		# occupied by a board with `visible` still false.
 		s.board.visible = showing_boards and s.in_match \
 			and (mode == Mode.NORMAL or s.slot == 0) \
-			and (not portrait or tablet or s.slot == 0)
+			and (not portrait or not _rivals_as_cards() or s.slot == 0)
 	if phase != Phase.PLAY:
 		_step_decor(delta)
 
@@ -8117,7 +8731,7 @@ func _back_action() -> String:
 ## Top-left, below the notch, and 64 across — Apple's own floor for a touch
 ## target is 44 and this one is pressed in a hurry.
 func _back_rect() -> Rect2:
-	return Rect2(16.0, safe_top + 14.0, 64.0, 64.0)
+	return Rect2(16.0 + safe_left, safe_top + 14.0, 64.0, 64.0)
 
 
 ## The pitch and height of one stacked title door, and where the stack starts.
@@ -8324,8 +8938,18 @@ func _press_back() -> void:
 ## The keys, positioned against the current screen. One source for drawing and
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
-	return Keyboard.keys(get_viewport_rect().size, _keyboard_bottom(),
-		_kb_form(), _kb_digits())
+	var keys: Array = Keyboard.keys(_kb_size(get_viewport_rect().size),
+		_keyboard_bottom(), _kb_form(), _kb_digits(), _wing_half)
+	var lk := _wide_lake() if wide_touch else Vector2.ZERO
+	for k: Dictionary in keys:
+		var r: Rect2 = k["rect"]
+		r.position.x += safe_left
+		# FIRE stands under the board, on whichever page the board is on.
+		if wide_touch and k["id"] == "fire":
+			r.position.x = lk.x
+			r.size.x = lk.y - lk.x
+		k["rect"] = r
+	return keys
 
 
 ## The letters on the keycaps, and the words on the three action keys.
@@ -8664,7 +9288,7 @@ func _key_at(p: Vector2) -> String:
 	# This player's own thumbs, learnt from words they got right — see "learning
 	# your aim". Touch only, and only in a match: a mouse lands where it points.
 	if _touch_input and phase == Phase.PLAY:
-		at -= _aim_offset(p, Vector2(Keyboard.key_width(size, _kb_form()),
+		at -= _aim_offset(p, Vector2(Keyboard.key_width(_kb_size(size), _kb_form(), _wing_half),
 			Keyboard.KEY_H * _kb_type_scale(size)))
 	if at.y < _key_band_top(size):
 		return ""
@@ -8693,8 +9317,8 @@ func _key_at(p: Vector2) -> String:
 	# FIRE is unaffected: it still spans the whole width along the bottom, and a
 	# tap inside any action key returns from the loop before this is consulted.
 	var limit := INF
-	if _kb_form() == Keyboard.Form.SPLIT:
-		limit = Keyboard.key_width(size, Keyboard.Form.SPLIT)
+	if _kb_form() != Keyboard.Form.FULL:
+		limit = Keyboard.key_width(_kb_size(size), _kb_form(), _wing_half)
 
 	var best := ""
 	var best_score := INF
@@ -10034,7 +10658,7 @@ func _draw_settings(size: Vector2) -> void:
 		# Sized for a thumb in portrait and a cursor otherwise. The row has always
 		# been the hit area, so this is about the control looking like something
 		# worth aiming at rather than about whether it can be hit.
-		var touch := portrait
+		var finger := portrait
 
 		match String(row["kind"]):
 			"slider":
@@ -10047,7 +10671,7 @@ func _draw_settings(size: Vector2) -> void:
 					Color(PLAYER_ACCENT), true)
 				_overlay.draw_circle(
 					Vector2(track.position.x + 2.0 + (track.size.x - 4.0) * v,
-						track.get_center().y), (13.0 * ts) if touch else 7.0,
+						track.get_center().y), (13.0 * ts) if finger else 7.0,
 					Color("#e6ecff"))
 				_otext(_font_bold, Vector2(r.end.x - 44.0, r.get_center().y),
 					"%d%%" % int(round(v * 100.0)), int(round(14.0 * ts)),
@@ -10057,8 +10681,8 @@ func _draw_settings(size: Vector2) -> void:
 				# Scaled with the row for the same reason the type is: a switch at
 				# its natural size looks stranded in a row two and a half times
 				# taller than the one it was drawn for.
-				var sh: float = (40.0 * ts) if touch else 28.0
-				var swid: float = (104.0 * ts) if touch else 92.0
+				var sh: float = (40.0 * ts) if finger else 28.0
+				var swid: float = (104.0 * ts) if finger else 92.0
 				var sw := Rect2(r.end.x - swid - 40.0, r.get_center().y - sh * 0.5,
 					swid, sh)
 				_panel(sw, Color("#1f8a70") if on else Color("#2a3355"),
@@ -10120,6 +10744,12 @@ func _draw_settings(size: Vector2) -> void:
 		_text_fit_overlay(_font, Vector2(cx, sfoot + 20.0),
 			ProjectSettings.globalize_path(Profile.save_path), 11, size.x - 80.0,
 			Color("#3d4666"), 9)
+	# What this display measured as, for anyone who has a Duo and a screenshot.
+	# Dim and small: it is not a setting, it is the one line that says what the
+	# game thought it was looking at when somebody reports a layout that is wrong.
+	if touch:
+		_text_fit_overlay(_font, Vector2(cx, sfoot + 42.0), _display_report(), 12,
+			size.x - GRID_MARGIN * 2.0, Color("#3d4666"), 9)
 
 func _settings_defs() -> Array:
 	var defs := [
@@ -10146,10 +10776,22 @@ func _settings_defs() -> Array:
 	# thumbs at the edges if you are holding it, ten fingers if you have set it
 	# down — and which one a player wants is a fact about their hands that the
 	# game has no way to measure.
-	if tablet:
+	#
+	# "A tablet" is now the *size class*, not the shape: the folded Duo's cover
+	# display is tablet-shaped and five inches across, and a split keyboard there
+	# is a setting whose only effect is a worse keyboard. And it is fingers, not
+	# a landscape window — which on a desktop was reading as a tablet and hiding
+	# the Fullscreen switch that comment above says it should have.
+	if regular and touch:
 		defs.append(["split_keys", "toggle", "Split keyboard",
 			"split in two, one half per thumb",
 			bool(Profile.pref("split_keys"))])
+		# Only on a device that can fold. `_hinge_seen` goes true the first time
+		# the system reports a hinge at all, so an iPad never sees this row.
+		if _hinge_seen:
+			defs.append(["fold_layout", "toggle", "Work around the fold",
+				"keeps the board and keys off the crease",
+				bool(Profile.pref("fold_layout"))])
 	else:
 		defs.append(["fullscreen", "toggle", "Fullscreen", "",
 			bool(Profile.pref("fullscreen"))])
@@ -10346,9 +10988,11 @@ func _change_setting(key: String) -> void:
 		Sfx.play("count", 1.3 if Notify.enabled() else 0.9)
 		return
 	if key == "texture" or key == "hitstop" or key == "fullscreen" or key == "censor" \
-			or key == "haptics" or key == "split_keys":
+			or key == "haptics" or key == "split_keys" or key == "fold_layout":
 		Profile.set_pref(key, not bool(Profile.pref(key)))
 		_apply_prefs()
+		if key == "fold_layout":
+			_apply_hinge()
 		Sfx.play("count", 1.3 if bool(Profile.pref(key)) else 0.9)
 		# Switching it on demonstrates itself. There is no other way to find out
 		# what the setting does than to feel it.
@@ -10715,6 +11359,11 @@ func _draw_coaching(size: Vector2) -> void:
 	# Wider than the board, because a board is six cells across and a sentence is
 	# not. Held inside the screen with a margin either side.
 	wide = clampf(wide, br.size.x, size.x - GRID_MARGIN * 2.0)
+	# Held wide, "the screen's width" is a great deal more than a sentence wants:
+	# a line across 1200 units is a line nobody reads to the end. The card stays
+	# about as wide as it is on a tablet held upright.
+	if wide_touch:
+		wide = minf(wide, 720.0)
 	var top: float = mid.y - h * 0.5
 	# Except where the blocks to answer are at the top of the board, which is
 	# the middle of the card's usual spot. Sat on the bottom edge instead, it

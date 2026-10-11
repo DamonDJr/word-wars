@@ -1,0 +1,31 @@
+;
+; HingeBridge — Word Wars' own. Tells the game how far an iPhone Duo is open by
+; writing one line to a file; see ios/plugins-src/HingeBridge/HingeBridge.m.
+;
+; The binary is not committed. It is built from the source beside it by
+; tools/build-hingebridge.sh on the macOS runner, which then turns the preset's
+; `plugins/HingeBridge` on — see .github/workflows/ios.yml. With the preset flag
+; off, which is how it is committed, this file is inert.
+;
+
+[config]
+name="HingeBridge"
+binary="HingeBridge.xcframework"
+
+initialization="hinge_bridge_init"
+deinitialization="hinge_bridge_deinit"
+
+use_swift_runtime=false
+
+[dependencies]
+linked=[]
+embedded=[]
+system=[]
+
+capabilities=[]
+
+files=[]
+
+linker_flags=[]
+
+[plist]

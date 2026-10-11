@@ -43,11 +43,7 @@ func _init() -> void:
 	await process_frame
 	if get_root().size_changed.is_connected(game._apply_orientation):
 		get_root().size_changed.disconnect(game._apply_orientation)
-	game.portrait = bool(spec["portrait"])
-	game.tablet = bool(spec["tablet"])
-	var safe: Vector2 = spec["safe"]
-	game.safe_top = safe.x
-	game.safe_bottom = safe.y
+	Poses.apply(game, spec)
 	game.start_match("Magpie", 1)
 	game.phase = game.Phase.PLAY
 	game._layout_boards()

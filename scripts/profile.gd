@@ -240,6 +240,13 @@ const PREF_DEFAULTS := {
 	## the thing on a table and use more fingers are the ones who will go
 	## looking for the switch.
 	"split_keys": true,
+	## Keep the board, the keys and the word being typed off the crease when an
+	## iPhone Duo is partly open. On by default: the crease is a place nothing
+	## can be read or tapped, and the layout that avoids it only ever does
+	## anything while the hinge says the device is bent. Off is for the case the
+	## hinge reading is wrong, which nobody can rule out before the hardware has
+	## been in somebody's hands. See `_poll_hinge` in `game.gd`.
+	"fold_layout": true,
 	## Set once the tutorial has been finished, so the game only nags once.
 	"taught": false,
 	## Set the first time the game opens the tutorial by itself. Separate from
