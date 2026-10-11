@@ -1,6 +1,6 @@
 ;
 ; HingeBridge — Word Wars' own. Tells the game how far an iPhone Duo is open by
-; writing one line to a file; see ios/plugins-src/HingeBridge/HingeBridge.m.
+; writing one line to a file; see ios/plugins-src/HingeBridge/HingeBridge.mm.
 ;
 ; The binary is not committed. It is built from the source beside it by
 ; tools/build-hingebridge.sh on the macOS runner, which then turns the preset's

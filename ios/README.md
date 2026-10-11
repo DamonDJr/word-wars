@@ -268,7 +268,7 @@ The build pipeline above is perhaps a day; this is the rest of it.
 
 ## 3. The iPhone Duo's hinge
 
-`ios/plugins-src/HingeBridge/HingeBridge.m` is the only native code in this
+`ios/plugins-src/HingeBridge/HingeBridge.mm` is the only native code in this
 repository, and it is a few dozen lines. It adds a `UIHingeInteraction` to the
 game's view and writes how far the device is open — `<status> <angle>` — to
 `hinge.txt` in the app's caches, which `_poll_hinge` in `scripts/game.gd` reads

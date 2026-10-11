@@ -1,4 +1,4 @@
-// HingeBridge.m — tells Word Wars how far an iPhone Duo is open.
+// HingeBridge.mm — tells Word Wars how far an iPhone Duo is open.
 //
 // The whole of it: add a UIHingeInteraction to the game's view and, whenever the
 // hinge moves, write one line — `<status> <angle>` — to a file in the app's
@@ -14,6 +14,15 @@
 // Looked up by name at run time it compiles anywhere, and on a device or an OS
 // that does not have the class it does nothing at all, which is exactly what a
 // non-folding iPhone should get.
+//
+// ## Why it is Objective-C++ and not Objective-C
+//
+// The two functions at the bottom are called by code Godot generates into the
+// exported project, and that code is C++: it declares `void hinge_bridge_init();`
+// and the linker looks for the C++-mangled name. Compiled as plain Objective-C
+// they come out with C names and the link fails with "declaration possibly
+// missing extern \"C\"" — which is what the first CI run of this file did. As a
+// .mm they get the mangling Godot asked for, and nothing else here changes.
 //
 // ## What it must never do
 //
@@ -131,12 +140,13 @@ static void TryAttach(void) {
 }
 
 // Called by the engine at startup, through the plugin's `initialization` entry.
-void hinge_bridge_init(void) {
+// C++ linkage on purpose: see the note at the top.
+void hinge_bridge_init() {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		TryAttach();
 	});
 }
 
-void hinge_bridge_deinit(void) {
+void hinge_bridge_deinit() {
 	sInteraction = nil;
 }
