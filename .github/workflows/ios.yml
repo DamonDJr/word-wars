@@ -369,7 +369,11 @@ jobs:
           # without it the game plays and lays out unfolded.
           echo "=== Hinge bridge ==="
           exe="$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"
-          if nm -a "$exe" 2>/dev/null | grep -q hinge_bridge_init; then
+          # Looked for as a string, not as a symbol: the Release archive is
+          # stripped, and a symbol check said "absent" about a build that had
+          # the bridge in it (run 38157502947). The class name is a literal that
+          # only the bridge contains.
+          if grep -aq UIHingeInteraction "$exe"; then
             echo "present"
           else
             echo "::warning::the hinge bridge is not in this build — it will not lay out around a Duo's crease"
