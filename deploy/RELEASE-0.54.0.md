@@ -37,7 +37,6 @@ of this table as different kinds of claim.
 | The island's real insets | they are invented in the pose table; the game reads the real ones at run time |
 | Whether the hinge interaction attaches and reports radians | the crease layout only happens if it does; if it does not, the layout is the unfolded one |
 | The real width of the crease | estimated at 5.5% of the long side |
-| That the runner's Xcode has the 27.1 SDK | without it the game still runs, to one side of the status bar |
 
 **The first thing to do with a build on a Duo or in Device Hub** is open
 Settings and read the last line. It says what the game thought it was looking at:
@@ -212,9 +211,18 @@ rejection costs a resubmission. Counting back from Friday 23 October:
 
 Two things that could move this, both outside the repository:
 
-- **Whether the runner's Xcode is a release.** If the newest Xcode on `macos-latest`
-  is a beta, App Store Connect will not accept the upload, and the build for the
-  listing has to come from a runner with the release Xcode 27.1. The CI step now
-  prints which SDK it got and warns below 27.1.
+- **Which runner.** `macos-latest` has Xcode 26.6 only. The iOS 27.1 SDK is on
+  GitHub's preview image, `xcode-27`, which also carries a 27.2 *beta* that App
+  Store Connect would refuse; the workflow takes the runner and the Xcode as
+  inputs and never picks a beta on its own:
+
+  ```bash
+  gh workflow run ios.yml --ref crossplay -f runner=xcode-27 -f xcode=27.1
+  ```
+
+  Build 2 was made this way (Xcode 27.1, build 27A9269, `iphoneos27.1`) and App
+  Store Connect accepted it. That image is a preview with no support promises, so
+  the plain `gh workflow run ios.yml --ref crossplay` still builds on
+  `macos-latest` and is the fallback.
 - **Whether the hinge bridge builds.** It is a warning and not a failure if it
   does not: the build goes on without it and lays out unfolded.
