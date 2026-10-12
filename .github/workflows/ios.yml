@@ -21,18 +21,44 @@ on:
       godot:
         description: Godot version
         default: "4.7"
+      runner:
+        description: >-
+          Runner label. macos-latest is the stable image; xcode-27 is GitHub's
+          preview image, which carries the iOS 27 SDKs the iPhone Duo needs to
+          be drawn to the edge of its screen.
+        default: "macos-latest"
+      xcode:
+        description: >-
+          Xcode to build with, as installed under /Applications (27.1 selects
+          Xcode_27.1.app). Empty takes the newest release on the image, never a
+          beta: App Store Connect refuses an upload built with one.
+        default: ""
 
 jobs:
   ipa:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use the newest Xcode on the runner
+      - name: Select Xcode
+        env:
+          XCODE: ${{ inputs.xcode }}
         run: |
-          # The templates want a recent SDK; whatever is newest here will do,
-          # and pinning a version would rot the moment the image is updated.
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          # The templates want a recent SDK, so by default the newest Xcode on
+          # the image will do, and pinning a version would rot the moment the
+          # image is updated.
+          #
+          # *Release* Xcodes only. The xcode-27 image carries a 27.2 beta beside
+          # 27.1, which `sort -V | tail -1` would pick, and a build made with a
+          # beta Xcode is refused on upload. A beta's path says so.
+          if [ -n "$XCODE" ]; then
+            app="/Applications/Xcode_${XCODE}.app"
+          else
+            app="$(ls -d /Applications/Xcode*.app | grep -vi beta | sort -V | tail -1)"
+          fi
+          test -d "$app" || { echo "::error::no Xcode at $app"; ls -d /Applications/Xcode*; exit 1; }
+          echo "Selecting $app (resolves to $(readlink -f "$app"))"
+          sudo xcode-select -s "$app"
           xcodebuild -version
           sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
           echo "iOS SDK: $sdk"
