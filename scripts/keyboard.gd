@@ -27,7 +27,7 @@ const DIGITS := "23456789"
 ##
 ## WINGS is for a regular-class screen held *wide* — the open Duo, an iPad on its
 ## side — and it is SPLIT's halves lifted out of a bottom bar and put in the two
-## lower corners, with FIRE standing between them. The reason is arithmetic about
+## lower corners, each with a FIRE bar of its own under it. The reason is arithmetic about
 ## the one dimension that is scarce there: a 1.42:1 panel is 900 design units
 ## tall, and a keyboard across the bottom takes 400 of them, which leaves a
 ## board of about 430 — cells of 36 units, against 50 for the same board with its
@@ -400,9 +400,9 @@ static func height(size: Vector2, form := Form.FULL, digits := false,
 		half := WING_HALF) -> float:
 	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
 	if form == Form.WINGS:
-		# FIRE shares the bottom row with the letters, so there is no fourth row.
+		# The letter rows, and the row of FIRE bars under them.
 		var m := _wing_metrics(size, 0.0, half)
-		return rows * (float(m["key_h"]) + float(m["gap"]))
+		return (rows + 1.0) * (float(m["key_h"]) + float(m["gap"]))
 	return (rows * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
 
 
@@ -466,7 +466,9 @@ static func _wing_metrics(size: Vector2, bottom: float,
 	var gap: float = GAP
 	var key_h: float = clampf(size.y * WING_KEY_H_FRAC, WING_KEY_H_MIN, WING_KEY_H_MAX)
 	var kw: float = (size.x * half - SIDE - gap * 4.0) / 5.0
-	var rows := float(ROWS.size())
+	# Three rows of letters and the FIRE row under them: four rows tall, and `top`
+	# is the top of the first letter row.
+	var rows := float(ROWS.size()) + 1.0
 	return {
 		"gap": gap, "key_h": key_h, "action_h": key_h, "wide": size.x - SIDE * 2.0,
 		"kw": kw,
@@ -509,16 +511,30 @@ static func lake(size: Vector2, half := WING_HALF) -> Vector2:
 	return Vector2(left_end + gap * 2.0, right_start - gap * 2.0)
 
 
-## WINGS' keys: SPLIT's two halves, and a FIRE bar between them.
-static func _wing_keys(size: Vector2, m: Dictionary, half := WING_HALF) -> Array:
+## WINGS' keys: SPLIT's two halves, and a FIRE bar under each.
+##
+## One per thumb. The first cut of this layout stood a single FIRE bar between the
+## halves, under the board, on the reasoning that two keys that do the same thing
+## can be pressed at once and a lone bar cannot. It was the wrong trade: FIRE is
+## the press made most often and in the most hurry, and in the middle of a glass
+## held in two hands it is further from both thumbs than any letter is. Each bar
+## is as wide as the five keys above it and ends where they do, so it sits
+## exactly under the thumb that is already there. Two thumbs landing together is
+## handled by the game (`_press_key_input`), which takes the second as the same
+## press.
+static func _wing_keys(size: Vector2, m: Dictionary, _half := WING_HALF) -> Array:
 	var out: Array = _split_letters(size, m)
-	var lk := lake(size, half)
 	var key_h: float = m["key_h"]
-	var top: float = m["top"]
-	var y: float = top + float(ROWS.size() - 1) * (key_h + float(m["gap"]))
+	var gap: float = m["gap"]
+	var w: float = m["cluster_w"]
+	var y: float = float(m["top"]) + float(ROWS.size()) * (key_h + gap)
 	out.append({
 		"id": "fire", "label": "FIRE",
-		"rect": Rect2(lk.x, y, lk.y - lk.x, key_h),
+		"rect": Rect2(SIDE, y, w, key_h),
+	})
+	out.append({
+		"id": "fire", "label": "FIRE",
+		"rect": Rect2(size.x - SIDE - w, y, w, key_h),
 	})
 	return out
 

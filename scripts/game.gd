@@ -639,7 +639,17 @@ func _screen_laid() -> float:
 			# scroll limit that is wrong for whichever half of the players is not
 			# the half it was written for.
 			var rows := float(_title_modes().size() + 1)
-			return float(m["top"]) + rows * (float(m["h"]) + float(m["gap"])) \
+			# How tall the screen is is a fact about its content, not about where
+			# it has been dragged to. `top` already has the scroll taken off it
+			# once the list overflows, so it is put back — otherwise the limit
+			# was measured from a list that had moved, shrank by exactly as much
+			# as it was scrolled, and the last door was never reachable. Phones
+			# never saw it because the whole list fits; a landscape iPad, or an
+			# upright one, is where it does not.
+			var top: float = float(m["top"])
+			if portrait and _scroll_max > 1.0:
+				top += _scroll
+			return top + rows * (float(m["h"]) + float(m["gap"])) \
 				+ 3.0 * float(m["band_gap"]) + 80.0
 		Phase.PRACTICE:
 			return 214.0 + _practice_laid()
@@ -2078,7 +2088,10 @@ func _wide_wings() -> Array:
 	var keys_top: float = _keyboard_bottom() - _kb_height(size) \
 		- (Keyboard.EMOTE_H + Keyboard.EMOTE_RISE) * _kb_type_scale(size) - 16.0
 	var h: float = maxf(120.0, keys_top - top)
-	var left := Rect2(safe_left + 14.0, top, lk.x - (safe_left + 14.0) - 24.0, h)
+	# Nothing stands over the left half's keys, so its wing runs right down to
+	# them. The right half has the emote key over P, and keeps clear of it.
+	var left_h: float = maxf(120.0, _keyboard_bottom() - _kb_height(size) - 16.0 - top)
+	var left := Rect2(safe_left + 14.0, top, lk.x - (safe_left + 14.0) - 24.0, left_h)
 	var right := Rect2(lk.y + 28.0, top,
 		size.x - safe_right - 14.0 - (lk.y + 28.0), h)
 	return [left, right]
@@ -2516,15 +2529,17 @@ func _draw_wide_rails() -> void:
 	var lw: Rect2 = wings[0]
 	var cw: float = minf(WIDE_INCOMING_RAIL_W, lw.size.x)
 	var top: float = lw.position.y
-	var h: float = _board_rect(player).size.y
-	_draw_rail(Rect2(lw.end.x - cw, top, cw, h), player.pending, "INCOMING",
+	# As tall as the wing and no taller: the board is taller than the room above
+	# the keys now, and a queue measured against it would run into them.
+	_draw_rail(Rect2(lw.end.x - cw, top, cw, lw.size.y), player.pending, "INCOMING",
 		Color("#ff6b6b"), _typing_of(player), true)
 
 	var mark := _target_side()
 	if mark != null and mark != player:
 		var rw: Rect2 = wings[1]
 		var rail_w: float = minf(WIDE_SENT_RAIL_W, rw.size.x * 0.4)
-		_draw_rail(Rect2(rw.end.x - rail_w, rw.position.y + 48.0, rail_w, h * 0.6),
+		_draw_rail(Rect2(rw.end.x - rail_w, rw.position.y + 48.0, rail_w,
+				maxf(80.0, rw.size.y - 48.0)),
 			mark.pending, "SENT", mark.accent, "", false)
 
 
@@ -2618,12 +2633,10 @@ func _portrait_band_top() -> float:
 
 func _unfolded_board_bottom() -> float:
 	var size := get_viewport_rect().size
-	# Held wide, the keys are in the corners and the lake runs down to FIRE, so
-	# the board is measured from the top of that bar rather than from the top of
-	# three rows of letters that are not underneath it.
 	if wide_touch:
-		return _keyboard_bottom() - Keyboard.wing_key_h(_kb_size(size)) \
-			- 124.0 * _kb_type_scale(size)
+		# FIRE is under each half now, so the lake runs to the bottom of the
+		# glass and only the strip for the word being typed is under the board.
+		return _keyboard_bottom() - 124.0 * _kb_type_scale(size)
 	return _keyboard_bottom() - _kb_height(size) - 112.0 * _kb_type_scale(size)
 
 
@@ -8940,15 +8953,11 @@ func _press_back() -> void:
 func _keyboard() -> Array:
 	var keys: Array = Keyboard.keys(_kb_size(get_viewport_rect().size),
 		_keyboard_bottom(), _kb_form(), _kb_digits(), _wing_half)
-	var lk := _wide_lake() if wide_touch else Vector2.ZERO
-	for k: Dictionary in keys:
-		var r: Rect2 = k["rect"]
-		r.position.x += safe_left
-		# FIRE stands under the board, on whichever page the board is on.
-		if wide_touch and k["id"] == "fire":
-			r.position.x = lk.x
-			r.size.x = lk.y - lk.x
-		k["rect"] = r
+	if safe_left > 0.0:
+		for k: Dictionary in keys:
+			var r: Rect2 = k["rect"]
+			r.position.x += safe_left
+			k["rect"] = r
 	return keys
 
 
@@ -9481,6 +9490,28 @@ func _letter_lives(ch: String) -> bool:
 ## A tap on a key does exactly what the matching physical key does, so there is
 ## one set of rules about what typing means and the keyboard is only an input
 ## device rather than a second implementation of the game.
+## When a FIRE key was last pressed by a finger or a mouse, and how close a
+## second one has to be to count as the same press.
+var _last_fire_key_ms := -1000
+const FIRE_KEY_DEBOUNCE_MS := 180
+
+
+## A press that came from the glass, as against one the game made itself.
+##
+## There are two FIRE keys now, one under each thumb in the wide layout, and two
+## thumbs can land on them in the same few milliseconds. The second press found
+## an empty line — harmless in a match, and in the lesson it is FIRE's "go on"
+## on the card that follows a word, so a double press would skip it unread. A word
+## cannot be typed in under 180ms, so a second FIRE inside it is the same press.
+func _press_key_input(id: String) -> void:
+	if id == "fire":
+		var now := Time.get_ticks_msec()
+		if now - _last_fire_key_ms < FIRE_KEY_DEBOUNCE_MS:
+			return
+		_last_fire_key_ms = now
+	_press_key(id)
+
+
 func _press_key(id: String) -> void:
 	if id == "":
 		return
@@ -16901,7 +16932,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					_key_hold(st.index, key)
 					_note_tap(key, st.position)
 					_pop_key(key)
-					_press_key(key)
+					_press_key_input(key)
 					return
 		elif _keys_down.has(st.index):
 			_key_let_go(st.index)
@@ -16993,7 +17024,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if mb.pressed:
 					if hit != "":
 						_key_hold(-1, hit)
-						_press_key(hit)
+						_press_key_input(hit)
 						return
 				elif _keys_down.has(-1):
 					_key_let_go(-1)

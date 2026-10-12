@@ -201,6 +201,11 @@ func _check_layout(name: String) -> void:
 	_expect("a board cell is at least %.2f in tall (is %.2f)" % [MIN_CELL_H_IN, cell_h_in],
 		cell_h_in >= MIN_CELL_H_IN)
 
+	# The title menu scrolls on a short glass, and has to scroll all the way: the
+	# last door (Settings) was unreachable on an iPad held wide, because the
+	# scroll limit was measured from a list that had already been scrolled.
+	_check_title_scroll(name, size)
+
 	# The home indicator and the like: nothing below the safe bottom.
 	var lowest := 0.0
 	for k5: Dictionary in keys:
@@ -216,6 +221,73 @@ func _check_layout(name: String) -> void:
 			fire = k6["rect"]
 	_expect("FIRE exists and is at least 1.0 in wide", fire.size.x * unit >= 1.0,
 		"%.2f" % (fire.size.x * unit))
+
+	# Held wide there is a FIRE under each thumb and none in the middle; every
+	# other shape has the one bar. Counted from the keys the game draws and hits.
+	var fires: Array = []
+	for k7: Dictionary in keys:
+		if k7["id"] == "fire":
+			fires.append(k7["rect"])
+	if game.wide_touch:
+		var left := false
+		var right := false
+		var middle := false
+		for fr: Rect2 in fires:
+			var cx: float = fr.get_center().x
+			left = left or cx < size.x * 0.35
+			right = right or cx > size.x * 0.65
+			middle = middle or (cx >= size.x * 0.35 and cx <= size.x * 0.65)
+		_expect("held wide there is a FIRE under each thumb and none between",
+			fires.size() == 2 and left and right and not middle,
+			"%d keys, left=%s right=%s middle=%s" % [fires.size(), left, right, middle])
+	else:
+		_expect("held tall there is one FIRE bar", fires.size() == 1,
+			"%d keys" % fires.size())
+
+
+## Scroll the title to the end and ask where its last door is. Run in every pose
+## because the bug it guards against only shows where the list is taller than the
+## glass, which is a question about the pose.
+func _check_title_scroll(name: String, size: Vector2) -> void:
+	var was: int = game.phase
+	game.phase = game.Phase.TITLE
+	game._scroll = 0.0
+	game._tick_scroll()
+	var reach: float = game._scroll_max
+	# Scrolled to the end, and the limit asked again: it must not have moved.
+	game._scroll = reach
+	game._tick_scroll()
+	var again: float = game._scroll_max
+	var last := Rect2()
+	for plate: Dictionary in game._title_plates():
+		if String(plate["action"]) == "settings":
+			last = plate["rect"]
+	var bottom: float = size.y - game.safe_bottom
+	_expect("the title's scroll limit does not shrink as it is scrolled",
+		absf(again - reach) < 0.5, "%.0f then %.0f" % [reach, again])
+	_expect("scrolled to the end, the last door is on the glass",
+		last.has_area() and last.end.y <= bottom + 1.0,
+		"ends at %.0f of %.0f" % [last.end.y, bottom])
+
+	# And every other screen that scrolls, for the same circularity: a limit
+	# computed from positions that the scroll itself moves.
+	var unstable: Array = []
+	for ph in [game.Phase.PRACTICE, game.Phase.SOLO, game.Phase.MASTERY,
+			game.Phase.COSMETICS, game.Phase.SETTINGS, game.Phase.LOBBY,
+			game.Phase.BOARDS, game.Phase.WEEKLY]:
+		game.phase = ph
+		game._scroll = 0.0
+		game._tick_scroll()
+		var m0: float = game._scroll_max
+		game._scroll = m0
+		game._tick_scroll()
+		if absf(float(game._scroll_max) - m0) > 0.5:
+			unstable.append("%d: %.0f then %.0f" % [ph, m0, game._scroll_max])
+	_expect("no other scrolling screen's limit moves as it is scrolled",
+		unstable.is_empty(), ", ".join(unstable))
+	game._scroll = 0.0
+	game.phase = was
+	game._tick_scroll()
 
 
 # --- resize ---------------------------------------------------------------

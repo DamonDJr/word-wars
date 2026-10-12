@@ -108,8 +108,8 @@ Layout for iPhone Duo. On the outer display the game keeps its
 controls clear of the status bar and Dynamic Island column. On the
 inner display it can be held either way up; held wide, the keyboard is
 split into two halves at the lower corners with the playfield between
-them. When the device is partly folded, the playfield, the FIRE key and
-the word being typed move off the crease. There is a switch for that,
+them, with a FIRE key under each half. When the device is partly folded, the
+playfield and the word being typed move off the crease. There is a switch for that,
 "Work around the fold", in SETTINGS on a device that can fold.
 
 iPhones are unchanged. An iPad now turns to landscape, where it gets the
