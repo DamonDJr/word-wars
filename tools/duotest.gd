@@ -205,6 +205,7 @@ func _check_layout(name: String) -> void:
 	# last door (Settings) was unreachable on an iPad held wide, because the
 	# scroll limit was measured from a list that had already been scrolled.
 	_check_title_scroll(name, size)
+	_check_summary(name, size)
 
 	# The home indicator and the like: nothing below the safe bottom.
 	var lowest := 0.0
@@ -287,6 +288,99 @@ func _check_title_scroll(name: String, size: Vector2) -> void:
 		unstable.is_empty(), ", ".join(unstable))
 	game._scroll = 0.0
 	game.phase = was
+	game._tick_scroll()
+
+
+## The end-of-match summary has to be reachable to its last button on every
+## glass, whichever way it is held. It was drawn at phone height regardless of
+## the window, and scrolled nowhere: on an iPad held wide the table and the
+## buttons were simply past the bottom.
+##
+## Run for the endings that change how tall it is — a loss with a margin line and
+## a level-up under the buttons, a plain win, the daily with its board, a
+## survival run — because each adds a different amount below the table.
+func _check_summary(name: String, size: Vector2) -> void:
+	var was_phase: int = game.phase
+	var was_mode: int = game.mode
+	var was_winner: String = game.winner
+	var was_earned: Dictionary = game.earned
+	var was_age: float = game.over_age
+	var variants := [
+		{"name": "loss", "mode": game.Mode.NORMAL, "winner": "Magpie",
+			"earned": {"xp": 340, "from": 4, "to": 5, "new": ["Neon board", "Pulse stamp"]}},
+		{"name": "win", "mode": game.Mode.NORMAL, "winner": "YOU", "earned": {}},
+		{"name": "daily", "mode": game.Mode.DAILY, "winner": "YOU",
+			"earned": {"xp": 90, "from": 4, "to": 4, "new": []}},
+		{"name": "survival", "mode": game.Mode.SURVIVAL, "winner": "Magpie", "earned": {}},
+	]
+	var bottom: float = size.y - game.safe_bottom
+	for v: Dictionary in variants:
+		var tag := "%s summary" % v["name"]
+		game.phase = game.Phase.OVER
+		game.mode = int(v["mode"])
+		game.winner = String(v["winner"])
+		game.earned = v["earned"]
+		game.over_age = 5.0
+		game._scroll = 0.0
+		game._tick_scroll()
+		var reach: float = game._scroll_max
+
+		# The limit is a fact about the content: asking again from the end of the
+		# scroll must give the same answer.
+		game._scroll = reach
+		game._tick_scroll()
+		_expect("the %s's scroll limit does not move as it is scrolled" % tag,
+			absf(float(game._scroll_max) - reach) < 0.5,
+			"%.0f then %.0f" % [reach, game._scroll_max])
+
+		# At the end of the scroll every button is on the glass.
+		var off: Array = []
+		var lowest := 0.0
+		for b: Dictionary in game._menu_buttons():
+			var br: Rect2 = b["rect"]
+			if String(b["action"]).begins_with("dtab:"):
+				continue
+			lowest = maxf(lowest, br.end.y)
+			if br.end.y > bottom + 1.0 or br.position.x < -0.5 \
+					or br.end.x > size.x + 0.5:
+				off.append("%s %.0f-%.0f of %.0f" % [b["action"], br.position.y,
+					br.end.y, bottom])
+		_expect("scrolled to the end, every button of the %s is on the glass" % tag,
+			off.is_empty(), ", ".join(off))
+		_expect("...and the last of them is within the screen's lower half (%.0f)" % lowest,
+			lowest > size.y * 0.35)
+
+		# At rest the headline is on the glass: the top of the page is the top.
+		game._scroll = 0.0
+		game._tick_scroll()
+		var top: float = game._scoreboard_top()
+		_expect("at rest the %s's table starts on the glass (%.0f)" % [v["name"], top],
+			top > 0.0 and top < size.y)
+		# And it only scrolls when it has to: if it fits, there is nothing to drag.
+		var fit_lowest := 0.0
+		for b2: Dictionary in game._menu_buttons():
+			if not String(b2["action"]).begins_with("dtab:"):
+				fit_lowest = maxf(fit_lowest, (b2["rect"] as Rect2).end.y)
+		if reach <= 1.0:
+			_expect("a %s that does not scroll fits on the glass" % tag,
+				fit_lowest <= bottom + 1.0, "%.0f of %.0f" % [fit_lowest, bottom])
+		else:
+			# And where it does, the page answers a drag. The wheel goes through
+			# the same gate as a finger, `_scrollable() and _scroll_max > 1`.
+			var wheel := InputEventMouseButton.new()
+			wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+			wheel.pressed = true
+			game._unhandled_input(wheel)
+			_expect("the wheel scrolls the %s" % tag, float(game._scroll) > 0.0,
+				"scroll %.0f of %.0f" % [game._scroll, reach])
+			game._scroll = 0.0
+
+	game._scroll = 0.0
+	game.phase = was_phase
+	game.mode = was_mode
+	game.winner = was_winner
+	game.earned = was_earned
+	game.over_age = was_age
 	game._tick_scroll()
 
 

@@ -150,6 +150,15 @@ const POSES := {
 		"portrait": true, "tablet": true, "regular": true, "wide": true,
 		"safe": Vector4(0.0, 24.0, 0.0, 0.0), "fold": false,
 		"ppi": 264.0, "label": "iPad Air, landscape — 10.9in"},
+	# A window dragged wide and short: iPad Stage Manager, or Split View given the
+	# larger half. 16:9 is the design space itself, so this is the shortest glass
+	# the wide layout is ever asked to fill — 720 tall, with every summary and
+	# menu that is laid out for 960 having to scroll rather than shrink.
+	"ipad-window-wide": {
+		"units": Vector2i(1280, 716), "px": Vector2i(2388, 1336),
+		"portrait": true, "tablet": true, "regular": true, "wide": true,
+		"safe": Vector4(0.0, 0.0, 0.0, 0.0), "fold": false,
+		"ppi": 264.0, "label": "iPad window, 16:9 — 10.9in"},
 }
 
 

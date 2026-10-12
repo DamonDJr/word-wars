@@ -623,7 +623,7 @@ func _scrollable() -> bool:
 		return false
 	match phase:
 		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
-				Phase.SETTINGS, Phase.LOBBY, Phase.BOARDS, Phase.WEEKLY:
+				Phase.SETTINGS, Phase.LOBBY, Phase.BOARDS, Phase.WEEKLY, Phase.OVER:
 			return true
 	return false
 
@@ -670,6 +670,8 @@ func _screen_laid() -> float:
 			return _boards_laid()
 		Phase.WEEKLY:
 			return _weekly_laid()
+		Phase.OVER:
+			return _over_laid()
 	return 0.0
 
 
@@ -8475,23 +8477,39 @@ const EMOTE_SUMMARY_MIN := 44.0
 
 func _summary_emote_rects(size: Vector2) -> Array:
 	var n := EMOTE_MENU.size()
+	# Worked out in the space the summary is laid out in, and shifted by the drag
+	# at the end, so the row is a part of the page and does not slide down the
+	# glass as it is scrolled.
+	var shift := _over_shift()
 	var floor_y := 0.0
 	for b: Dictionary in _menu_buttons():
-		floor_y = maxf(floor_y, (b["rect"] as Rect2).end.y)
+		floor_y = maxf(floor_y, (b["rect"] as Rect2).end.y + shift)
 	var top: float = floor_y + 16.0
 	var bottom: float = size.y - safe_bottom - 14.0
 	var usable: float = size.x - GRID_MARGIN * 2.0
 	var tile: float = minf(EMOTE_SUMMARY_TILE,
 		(usable - EMOTE_SUMMARY_GAP * float(n - 1)) / float(n))
-	tile = minf(tile, bottom - top)
+	# Squeezed into what is left under the buttons, as it always was, and left
+	# out where that is too little to hit. On a screen that scrolls, though, "too
+	# little" is not "none": the row goes under the buttons at its own size and
+	# is a drag away, which is the same place a thumb would have looked for it.
+	var room: float = bottom - top
+	var y: float
+	if room >= EMOTE_SUMMARY_MIN:
+		tile = minf(tile, room)
+		# Sat on the floor of whatever room is left rather than floating in the
+		# middle of it, so the row reads as the bottom edge of the screen on every
+		# shape it is drawn at.
+		y = bottom - tile
+	elif _scrollable():
+		y = top
+	else:
+		return []
 	if tile < EMOTE_SUMMARY_MIN:
 		return []
 	var span: float = tile * float(n) + EMOTE_SUMMARY_GAP * float(n - 1)
 	var x: float = (size.x - span) * 0.5
-	# Sat on the floor of whatever room is left rather than floating in the
-	# middle of it, so the row reads as the bottom edge of the screen on every
-	# shape it is drawn at.
-	var y: float = bottom - tile
+	y -= shift
 	var out: Array = []
 	for i in n:
 		out.append(Rect2(x + float(i) * (tile + EMOTE_SUMMARY_GAP), y, tile, tile))
@@ -13378,7 +13396,7 @@ func _draw_gameover(size: Vector2) -> void:
 		# Centred on the headline, which has moved a long way down on a phone —
 		# the two effects that take a point were pinned at 150 and fired off the
 		# top of the screen above it.
-		var burst := Vector2(cx, 150.0 * _over_lead())
+		var burst := Vector2(cx, 150.0 * _over_lead() - _over_shift())
 		match Profile.worn("victory"):
 			"confetti":
 				Cosmetics.victory_confetti(_overlay, size, t, tint)
@@ -13388,7 +13406,7 @@ func _draw_gameover(size: Vector2) -> void:
 				Cosmetics.victory_shatter(_overlay, burst, t, tint)
 			"supernova":
 				Cosmetics.victory_supernova(_overlay, size,
-					Vector2(cx, 200.0 * _over_lead()), t, tint)
+					Vector2(cx, 200.0 * _over_lead() - _over_shift()), t, tint)
 			_:
 				# Nothing equipped, which is every new player and was therefore
 				# the default experience of winning: a gold word on the same dark
@@ -13417,21 +13435,25 @@ func _draw_gameover(size: Vector2) -> void:
 	# of them is no wider on screen than the shortest — 68 was measured against
 	# "YOU LOSE" and a phone has no margin to spare.
 	var lead := _over_lead()
+	# Everything on this screen is a literal Y in the space it was written in, and
+	# the summary scrolls now, so each of them has the drag taken off it. The table
+	# and everything under it get it from `_scoreboard_top`.
+	var dy := -_over_shift()
 	# Fitted rather than stepped between two sizes. The headline is the biggest
 	# thing on the screen and a phone is 720 wide, so "TOPPED OUT" at a fixed 68
 	# ran into both margins; this lets the long ones shrink and leaves the short
 	# ones — the ones worth shouting — as large as the width allows.
 	var hsize := _fitted_size(_font_bold, headline, _over_size(68),
 		size.x - GRID_MARGIN * 2.0, 34)
-	_otext(_font_bold, Vector2(cx, 132.0 * lead), headline, hsize, tint)
+	_otext(_font_bold, Vector2(cx, 132.0 * lead + dy), headline, hsize, tint)
 	var wm := _font_bold.get_string_size(headline, HORIZONTAL_ALIGNMENT_LEFT, -1, hsize)
-	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170.0 * lead, wm.x,
+	_overlay.draw_rect(Rect2(cx - wm.x * 0.5, 170.0 * lead + dy, wm.x,
 		3.0 * _over_fill()), Color(tint, 0.45), true)
 
 	# The score is the headline, above the tiles rather than inside one. Winning
 	# is binary and says nothing about how well you played; this is the number
 	# worth arguing over afterwards.
-	_otext(_font, Vector2(cx, 204.0 * lead), "SCORE", _over_size(15),
+	_otext(_font, Vector2(cx, 204.0 * lead + dy), "SCORE", _over_size(15),
 		Color("#7c88ad"))
 	# Counted up rather than printed. The number is the same either way and the
 	# difference is entirely in how it lands: a total that arrives already
@@ -13442,9 +13464,9 @@ func _draw_gameover(size: Vector2) -> void:
 	if over_age < SCORE_TALLY:
 		var e: float = over_age / SCORE_TALLY
 		tally = int(round(float(player.score) * (1.0 - pow(1.0 - e, 3.0))))
-	_otext(_font_bold, Vector2(cx, 248.0 * lead), _commas(tally),
+	_otext(_font_bold, Vector2(cx, 248.0 * lead + dy), _commas(tally),
 		_over_size(62), Color("#ffd166"))
-	var line_y := 288.0 * lead
+	var line_y := 288.0 * lead + dy + _over_gap()
 
 	# A challenge is the only thing on this screen that somebody else is waiting
 	# on, so it is said first and said in bold. Everything below it is a comment
@@ -13563,6 +13585,14 @@ func _draw_gameover(size: Vector2) -> void:
 
 	var strip_bottom := _draw_mastery_strip(cx)
 
+	# Dragged up, the headline is under the clock and the island. A plate the
+	# colour of the screen across that band keeps the status bar legible; it is
+	# drawn only once there is something to hide, so a summary at rest is exactly
+	# what it was.
+	if _over_shift() > 1.0 and safe_top > 0.0:
+		_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+			size.x + SHAKE_MARGIN * 2.0, safe_top + SHAKE_MARGIN), bg_top, true)
+
 	# Two keys, because there are now two. This used to advertise 1 – 7 for a new
 	# opponent and P for mastery, which were exactly the shortcuts that made the
 	# summary impossible to read — and it was pinned at 674, which the buttons
@@ -13619,7 +13649,63 @@ func _over_size(base: int) -> int:
 ## Chosen so the stack lands the buttons in the bottom third, which is where a
 ## thumb already is. Landscape is 1.0 and is not touched.
 func _over_lead() -> float:
-	return 1.9 if portrait else 1.0
+	if not portrait:
+		return 1.0
+	# 1.9 is what puts the buttons in the bottom third of a phone that is 1440 or
+	# more design units tall, and it is wrong for any glass that is shorter: an
+	# iPad, an iPhone Duo held either way, a window dragged to a size. There the
+	# same multiplier carried the table and the buttons past the bottom edge with
+	# nothing to say they were there. So it comes down with the height, to 1.0 —
+	# the desktop's own spacing, which is known to fit a 720-tall window — and
+	# whatever still does not fit is reached by scrolling.
+	var h: float = get_viewport_rect().size.y
+	return clampf(lerpf(1.0, 1.9, (h - 960.0) / 480.0), 1.0, 1.9)
+
+
+## Extra room under the score for the lines about it, which is what the shorter
+## spacing above takes away: the headline numbers are set 1.25 times as large in
+## the touch family, and at the desktop's own Y positions the comma of the score
+## lands on the sentence beneath it. Nothing at full spacing, so a phone is as it
+## was.
+func _over_gap() -> float:
+	if not portrait:
+		return 0.0
+	return 18.0 * clampf((1.9 - _over_lead()) / 0.9, 0.0, 1.0)
+
+
+## How far the summary has been dragged up, in design units, and zero on every
+## other screen.
+##
+## A phase check and not just `_scroll`, because `_scroll` is left over from
+## whichever menu was open last and the functions this is subtracted in are read
+## from the daily board and from tests on screens where it means nothing.
+func _over_shift() -> float:
+	return _scroll if phase == Phase.OVER else 0.0
+
+
+## Where the summary ends, in the space it is laid out in rather than the space
+## it has been dragged to — the same discipline as the title screen's: the limit
+## is a fact about the content, so the drag is added back before measuring.
+func _over_laid() -> float:
+	var shift := _over_shift()
+	var foot := 570.0
+	for b: Dictionary in _menu_buttons():
+		foot = maxf(foot, (b["rect"] as Rect2).end.y + shift)
+	# The mastery strip is under the buttons by 32 and carries at most one line
+	# of its own under that; a line too many is a little more room at the end of
+	# the scroll and not a clipped one.
+	var bottom := foot
+	if not earned.is_empty():
+		bottom = maxf(570.0, foot + 32.0) + 34.0
+	# The emote row sits on the floor of the screen when there is room for it
+	# there, and that is not a reason to scroll. It is counted only when it has
+	# been pushed under the buttons, past where the floor is.
+	if _summary_emotes_live():
+		var floor_edge: float = get_viewport_rect().size.y - safe_bottom - 14.0
+		for r: Rect2 in _summary_emote_rects(get_viewport_rect().size):
+			if r.end.y + shift > floor_edge + 1.0:
+				bottom = maxf(bottom, r.end.y + shift)
+	return bottom + 28.0
 
 
 ## How the match was actually decided, in points. Only on a loss, and only in a
@@ -13676,7 +13762,8 @@ func _scoreboard_top() -> float:
 		rows += 1
 	if _challenge_line() != "":
 		rows += 1
-	return 342.0 * _over_lead() + safe_top + 26.0 * _over_fill() * float(rows)
+	return 342.0 * _over_lead() + _over_gap() + safe_top \
+		+ 26.0 * _over_fill() * float(rows) - _over_shift()
 
 
 ## Which columns the table carries. Powers and salvos are the first to go on a
@@ -13822,7 +13909,12 @@ func _over_foot() -> float:
 ## it.
 func _over_button_rects(count: int) -> Array:
 	var top := _over_foot() + 54.0
-	if not portrait:
+	# By the shape of the glass and not by `portrait`, which is the touch family
+	# and is true of a tablet held wide. Stacked, three doors are 310 tall and a
+	# wide window has no height to spare; side by side they are 96, and a wide
+	# window has the width for them.
+	var vp := get_viewport_rect().size
+	if not portrait or vp.x > vp.y:
 		if count < 2:
 			return _grid_rects(1, top, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
 		# Counted, not fixed at two. The summary grew a Share door, and a
@@ -14534,9 +14626,11 @@ const DAILY_ROW_H := 26.0
 const DAILY_HEAD_H := 30.0
 
 ## What the board must leave below itself: the buttons, the mastery strip and
-## the key hints. The summary does not scroll — `_scrollable` deliberately
-## excludes `Phase.OVER`, because it is a composition rather than a list — so
-## anything this block takes is taken from something that has nowhere to go.
+## the key hints. On a desktop window the summary does not scroll — `_scrollable`
+## is the touch family's alone — so anything this block takes there is taken from
+## something that has nowhere to go. Where it does scroll, this is the room it
+## tries to leave before it stops asking for more, and `DAILY_SCROLL_ROWS` is
+## what it keeps when there is none.
 ##
 ## Not scaled by `_over_fill`, unlike everything else down here, because none of
 ## what it is reserving for is either: the buttons under the summary are laid out
@@ -14545,6 +14639,10 @@ const DAILY_HEAD_H := 30.0
 ## 720-tall desktop window it was meant to protect is the one that actually needs
 ## every pixel of this.
 const DAILY_BOARD_RESERVE := 180.0
+
+## The fewest rows the daily board keeps where the summary scrolls. The top
+## three and your own.
+const DAILY_SCROLL_ROWS := 4
 
 
 ## Which half of the board the summary is showing: 0 is today's leaderboard,
@@ -14675,11 +14773,18 @@ func _daily_head_h() -> float:
 func _daily_fit_for(with_foot: bool) -> int:
 	var fill := _over_fill()
 	var avail: float = get_viewport_rect().size.y - safe_bottom \
-		- DAILY_BOARD_RESERVE - _over_table_foot() \
+		- DAILY_BOARD_RESERVE - (_over_table_foot() + _over_shift()) \
 		- _daily_head_h() - 16.0 * fill
 	if with_foot:
 		avail -= DAILY_ROW_H * fill
-	return maxi(0, int(floor(avail / ((DAILY_ROW_H + 4.0) * fill))))
+	var fit: int = maxi(0, int(floor(avail / ((DAILY_ROW_H + 4.0) * fill))))
+	# Where the summary scrolls, "what fits" is not a limit: a short window
+	# used to drop the board altogether, because it counted only what was on the
+	# glass, and the rest is a drag away. A few rows — the top of the board and
+	# your own place under it — are always kept.
+	if _scrollable():
+		fit = maxi(fit, DAILY_SCROLL_ROWS)
+	return fit
 
 
 ## Whether the footnote gets a row of its own, which it only does once there is
@@ -15445,7 +15550,10 @@ func _draw_board_tab(b: Dictionary) -> void:
 ## guess. When there is nothing earned — practice, or a match that banked
 ## nothing — that is just the bottom of the buttons.
 func _draw_mastery_strip(cx: float) -> float:
-	var buttons_foot := 570.0
+	# 570 is a place on the screen as it was drawn, so it goes up with the drag
+	# like everything else on it.
+	var floor_y := 570.0 - _over_shift()
+	var buttons_foot := floor_y
 	for b: Dictionary in _menu_buttons():
 		buttons_foot = maxf(buttons_foot, (b["rect"] as Rect2).end.y)
 	if earned.is_empty():
@@ -15462,7 +15570,7 @@ func _draw_mastery_strip(cx: float) -> float:
 	# and their shadows are not already using.
 	# Under the buttons, which are one row on a desktop and two on a phone. The
 	# bar narrows to leave room for the labels either side of it.
-	var strip_y: float = maxf(570.0, buttons_foot + 32.0)
+	var strip_y: float = maxf(floor_y, buttons_foot + 32.0)
 	var bw: float = minf(352.0, get_viewport_rect().size.x - 240.0)
 	var bar := Rect2(cx - bw * 0.5, strip_y, bw, 9.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.22), 5.0, 1.0)

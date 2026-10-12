@@ -157,6 +157,14 @@ func _init() -> void:
 			quit(1)
 			return
 
+	# `--scroll max` (or a number of units) drags a scrolling screen before the
+	# frame is taken: the end of a list is the part nobody would otherwise look at.
+	var si := args.find("--scroll")
+	if si >= 0 and si + 1 < args.size():
+		game._tick_scroll()
+		var want := String(args[si + 1])
+		game._scroll = game._scroll_max if want == "max" else float(want)
+		scroll_tag = "-scrolled"
 	for i in SETTLE:
 		await process_frame
 	_save(shot)
@@ -268,6 +276,9 @@ func _size_stage() -> void:
 	stage.size_2d_override_stretch = true
 
 
+var scroll_tag := ""
+
+
 func _save(shot: String) -> void:
 	# The submission set lands in its own directory rather than mixed in with
 	# the stills, because it is uploaded as a set and picking six files out of
@@ -284,7 +295,7 @@ func _save(shot: String) -> void:
 		tag = "-ipad-full" if full_keys else "-ipad"
 	if board != "":
 		tag = "-" + board + tag
-	var path := "%s/%s%s.png" % [dir, shot, tag]
+	var path := "%s/%s%s%s.png" % [dir, shot, tag, scroll_tag]
 	# Apple refuses a screenshot that carries an alpha channel, and refuses it
 	# for *having* one rather than for using it. A viewport grab is RGBA8 with
 	# every pixel opaque, which passes `detect_alpha()` — that answers "is
@@ -364,11 +375,38 @@ func _shot_versus() -> void:
 ## `_end_match`, so what is on screen is what a player would see.
 func _shot_over() -> void:
 	_pose_profile()
+	# `--daily` poses the daily's summary instead — the tallest one, with a
+	# leaderboard between the table and the buttons.
+	if OS.get_cmdline_user_args().has("--daily"):
+		await _shot_over_daily()
+		return
 	game.start_match("Magpie", 1)
 	game.phase = game.Phase.PLAY
 	game.match_time = 95.0
 	await _stage()
 	game._end_match(game.ai_side)
+	game.over_age = 5.0
+	await _hold(0.6)
+
+
+func _shot_over_daily() -> void:
+	var names := ["quickfinger", "Adaeze", "typo_dynamo", "M. Okonkwo",
+		"stampcollector", "wordsmith_99", "Priya R", "eleven letters"]
+	var rows: Array = []
+	for i in names.size():
+		rows.append({"rank": i + 1, "name": names[i],
+			"score": 48210 - i * 1180 - i * i * 40, "me": false})
+	_boards.view_rows = rows
+	_boards.view_me = {"rank": 118, "name": "you", "score": 24630, "me": true}
+	_boards.view_total = 9120
+	_boards.view_board = _boards.DAILY_ID
+	_boards.view_scope = _boards.GLOBAL
+	_boards.view_state = _boards.ViewState.READY
+	game.start_match("Daily", 0, [], game.Mode.DAILY)
+	game.phase = game.Phase.PLAY
+	game.match_time = 60.0
+	await _stage()
+	game._end_match(game.player)
 	game.over_age = 5.0
 	await _hold(0.6)
 
