@@ -220,9 +220,15 @@ Two things that could move this, both outside the repository:
   gh workflow run ios.yml --ref crossplay -f runner=xcode-27 -f xcode=27.1
   ```
 
-  Build 2 was made this way (Xcode 27.1, build 27A9269, `iphoneos27.1`) and App
-  Store Connect accepted it. That image is a preview with no support promises, so
-  the plain `gh workflow run ios.yml --ref crossplay` still builds on
-  `macos-latest` and is the fallback.
+  Builds 2 and 3 were made this way (Xcode 27.1, build 27A9269, `iphoneos27.1`).
+  **TestFlight takes them; App Review does not.** That 27.1 is a pre-release
+  (Xcode build `27A9269`, SDK build `24A94403`; a release has a three-digit
+  number like `17F113`) and submission refuses it as a beta toolchain. Build 4 is
+  the plain `gh workflow run ios.yml --ref crossplay` on `macos-latest` (Xcode
+  26.6, `17F113`, SDK 26.5) and is the one to submit.
+
+  What that costs: the Duo to-the-edge layout needs the 27.1 SDK, so a submitted
+  build runs in the inset frame the system gives it, which the game lays out
+  against. When Apple releases Xcode 27.1 and it is on a runner, rebuild with it.
 - **Whether the hinge bridge builds.** It is a warning and not a failure if it
   does not: the build goes on without it and lays out unfolded.
