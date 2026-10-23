@@ -1544,9 +1544,17 @@ func _display_report() -> String:
 ## Decided by the size *class* and not by `tablet`, which is shape. A folded
 ## Duo's cover display is tablet-shaped and five inches across, and "split" on
 ## three inches of glass is a setting whose only effect is a worse keyboard.
+##
+## The Duo held as a laptop gets FULL whatever the setting says. Its lower half
+## lies on the table and is the keyboard's alone, so the keys run across all of
+## it: the split's lake would be the one empty stretch of that half, and the
+## hands are over a table, not round the edges of something held. Held as a book
+## it is wide, so it gets the wings, one half on each page.
 func _kb_form() -> int:
 	if wide_touch:
 		return Keyboard.Form.WINGS
+	if _fold_horizontal():
+		return Keyboard.Form.FULL
 	if regular and touch and bool(Profile.pref("split_keys")):
 		return Keyboard.Form.SPLIT
 	return Keyboard.Form.FULL
@@ -1584,7 +1592,29 @@ func _kb_size(size: Vector2) -> Vector2:
 # shape — and so a new one cannot be added that forgets to ask.
 
 func _kb_height(size: Vector2) -> float:
-	return Keyboard.height(_kb_size(size), _kb_form(), _kb_digits(), _wing_half)
+	return Keyboard.height(_kb_size(size), _kb_form(), _kb_digits(), _wing_half,
+		_kb_stretch(size))
+
+
+## How far the keys may grow to fill the half of the glass they are given. The
+## real crease is only an estimate here (see `FOLD_FRACTION`), and this is what
+## keeps the keys filling the lower half whatever it turns out to measure, without
+## letting an odd one make them silly.
+const KB_STRETCH_MAX := 1.5
+
+
+## How much taller than written the keys are. Only a Duo held as a laptop asks for
+## anything: the strip for the word being typed sits just under the crease (as in
+## `_portrait_band_top`) and the keys take everything from there to the bottom.
+## Never less than written, so a crease lower than expected leaves the keys as
+## they always were.
+func _kb_stretch(size: Vector2) -> float:
+	if wide_touch or not _fold_horizontal():
+		return 1.0
+	var want: float = _keyboard_bottom(size.y) - fold.end.y - 8.0 \
+		- 112.0 * _kb_type_scale(size)
+	return clampf(Keyboard.stretch_to(_kb_size(size), want, _kb_digits()),
+		1.0, KB_STRETCH_MAX)
 
 
 ## Whether the keyboard is carrying its number row — only while a room code is
@@ -1602,7 +1632,8 @@ func _kb_type_scale(size: Vector2) -> float:
 
 
 func _kb_emote_rect(size: Vector2, bottom: float) -> Rect2:
-	var r := Keyboard.emote_rect(_kb_size(size), bottom, _kb_form(), _wing_half)
+	var r := Keyboard.emote_rect(_kb_size(size), bottom, _kb_form(), _wing_half,
+		_kb_stretch(size))
 	r.position.x += safe_left
 	return r
 
@@ -8970,7 +9001,8 @@ func _press_back() -> void:
 ## for hit-testing, the same rule the menus follow.
 func _keyboard() -> Array:
 	var keys: Array = Keyboard.keys(_kb_size(get_viewport_rect().size),
-		_keyboard_bottom(), _kb_form(), _kb_digits(), _wing_half)
+		_keyboard_bottom(), _kb_form(), _kb_digits(), _wing_half,
+		_kb_stretch(get_viewport_rect().size))
 	if safe_left > 0.0:
 		for k: Dictionary in keys:
 			var r: Rect2 = k["rect"]
@@ -9316,7 +9348,7 @@ func _key_at(p: Vector2) -> String:
 	# your aim". Touch only, and only in a match: a mouse lands where it points.
 	if _touch_input and phase == Phase.PLAY:
 		at -= _aim_offset(p, Vector2(Keyboard.key_width(_kb_size(size), _kb_form(), _wing_half),
-			Keyboard.KEY_H * _kb_type_scale(size)))
+			Keyboard.KEY_H * _kb_type_scale(size) * _kb_stretch(size)))
 	if at.y < _key_band_top(size):
 		return ""
 

@@ -131,13 +131,13 @@ static func ui_scale(size: Vector2) -> float:
 ## divide the screen differently — see `SPLIT_HALF`. Everything else, including
 ## the height, is shared: SPLIT is narrower than FULL, not shorter.
 static func _metrics(size: Vector2, bottom: float,
-		form := Form.FULL, half := WING_HALF) -> Dictionary:
+		form := Form.FULL, half := WING_HALF, stretch := 1.0) -> Dictionary:
 	if form == Form.WINGS:
 		return _wing_metrics(size, bottom, half)
 	var s := ui_scale(size)
 	var gap: float = GAP * s
-	var key_h: float = KEY_H * s
-	var action_h: float = ACTION_H * s
+	var key_h: float = KEY_H * s * stretch
+	var action_h: float = ACTION_H * s * stretch
 	# SIDE stays unscaled. It is a margin against the edge of the glass rather
 	# than a finger-sized quantity, and the pixel it is worth either way is not
 	# one anybody is aiming at.
@@ -213,8 +213,8 @@ static func key_width(size: Vector2, form := Form.FULL, half := WING_HALF) -> fl
 ## DEL where backspace is — and FIRE, freed of sharing, takes the whole action
 ## row. Every one of those is a bigger target than it was before.
 static func keys(size: Vector2, bottom: float, form := Form.FULL,
-		digits := false, half := WING_HALF) -> Array:
-	var m := _metrics(size, bottom, form, half)
+		digits := false, half := WING_HALF, stretch := 1.0) -> Array:
+	var m := _metrics(size, bottom, form, half, stretch)
 	if form == Form.WINGS:
 		var wings := _wing_keys(size, m, half)
 		if digits:
@@ -397,13 +397,27 @@ static func _split_letters(size: Vector2, m: Dictionary) -> Array:
 ## appear. It is still taken, so that a caller cannot be written that asks about
 ## the height of one form and is silently answered about the other.
 static func height(size: Vector2, form := Form.FULL, digits := false,
-		half := WING_HALF) -> float:
+		half := WING_HALF, stretch := 1.0) -> float:
 	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
 	if form == Form.WINGS:
 		# The letter rows, and the row of FIRE bars under them.
 		var m := _wing_metrics(size, 0.0, half)
 		return (rows + 1.0) * (float(m["key_h"]) + float(m["gap"]))
-	return (rows * (KEY_H + GAP) + ACTION_H + GAP) * ui_scale(size)
+	return (rows * (KEY_H * stretch + GAP) + ACTION_H * stretch + GAP) * ui_scale(size)
+
+
+## The `stretch` that makes a bottom-bar keyboard `want` units tall: how much
+## taller than written its keys have to be. Only the keys grow. The gaps stay
+## where they are and so does the type on the caps, so a taller keyboard is a
+## bigger target rather than a louder one.
+##
+## For the iPhone Duo held as a laptop, whose lower half lies on the table and is
+## all keyboard. The caller decides how far the answer may go either way.
+static func stretch_to(size: Vector2, want: float, digits := false) -> float:
+	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
+	var s := ui_scale(size)
+	var fixed: float = (rows + 1.0) * GAP * s
+	return (want - fixed) / ((rows * KEY_H + ACTION_H) * s)
 
 
 ## How much to multiply a type size by so the lettering tracks the keys.
@@ -441,8 +455,8 @@ const EMOTE_RISE := 10.0
 ## itself, and the rule that put this key in the corner on a phone puts it in
 ## the same corner on a tablet without being told about halves at all.
 static func emote_rect(size: Vector2, bottom: float,
-		form := Form.FULL, half := WING_HALF) -> Rect2:
-	var m := _metrics(size, bottom, form, half)
+		form := Form.FULL, half := WING_HALF, stretch := 1.0) -> Rect2:
+	var m := _metrics(size, bottom, form, half, stretch)
 	var s := type_scale(size, form, half)
 	var kw: float = m["kw"]
 	var w: float = kw * 0.86

@@ -169,6 +169,37 @@ func _check_layout(name: String) -> void:
 		_expect("the typed-word band is below a horizontal fold",
 			band_top >= fold.end.y - 0.5)
 
+	# Held as a laptop the lower half is all keyboard: the whole keyboard, not the
+	# split one (G and H side by side, no lake between them), starting straight
+	# under the strip for the word being typed.
+	var by_id := {}
+	for kk: Dictionary in keys:
+		by_id[String(kk["id"])] = kk["rect"]
+	if fold.has_area() and fold.size.x > fold.size.y:
+		var g: Rect2 = by_id["g"]
+		var h: Rect2 = by_id["h"]
+		_expect("held as a laptop the keys run the whole width, unsplit",
+			h.position.x - g.end.x < g.size.x * 0.5,
+			"G ends %.0f, H starts %.0f" % [g.end.x, h.position.x])
+		var keys_top := size.y
+		for kt: Dictionary in keys:
+			keys_top = minf(keys_top, (kt["rect"] as Rect2).position.y)
+		var strip: float = 8.0 + 112.0 * game._kb_type_scale(size)
+		_expect("held as a laptop the keys fill the half below the crease",
+			keys_top <= fold.end.y + strip + 1.0,
+			"keys start %.0f, crease ends %.0f" % [keys_top, fold.end.y])
+
+	# Held as a book the keys are split, a half on each page of the crease.
+	if fold.has_area() and fold.size.y >= fold.size.x:
+		var left_page := true
+		var right_page := true
+		for id: String in ["q", "w", "e", "r", "t", "a", "s", "d", "f", "g", "z", "x", "c", "v"]:
+			left_page = left_page and (by_id[id] as Rect2).end.x <= fold.position.x
+		for id: String in ["y", "u", "i", "o", "p", "h", "j", "k", "l", "b", "n", "m"]:
+			right_page = right_page and (by_id[id] as Rect2).position.x >= fold.end.x
+		_expect("held as a book the keys split, a half on each page",
+			left_page and right_page, "left=%s right=%s" % [left_page, right_page])
+
 	# Tapping the middle of a key types that key. `_key_at` takes a point a
 	# finger's lift below where it means, so the test supplies it.
 	var missed: Array = []
