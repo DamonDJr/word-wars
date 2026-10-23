@@ -50,11 +50,20 @@ jobs:
           #
           # *Release* Xcodes only. The xcode-27 image carries a 27.2 beta beside
           # 27.1, which `sort -V | tail -1` would pick, and a build made with a
-          # beta Xcode is refused on upload. A beta's path says so.
+          # beta Xcode is refused on upload. A beta's real path says so, but its
+          # symlinks do not (Xcode_27.2.app points at Xcode_27.2_beta_2.app), so
+          # each one is judged by where it leads and ranked by the version the
+          # app itself reports.
           if [ -n "$XCODE" ]; then
             app="/Applications/Xcode_${XCODE}.app"
           else
-            app="$(ls -d /Applications/Xcode*.app | grep -vi beta | sort -V | tail -1)"
+            app="$(for a in /Applications/Xcode*.app; do
+                r="$(readlink -f "$a")"
+                case "$r" in *[Bb]eta*) continue ;; esac
+                v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                  "$r/Contents/Info.plist" 2>/dev/null)" || continue
+                echo "$v $r"
+              done | sort -u -V | tail -1 | cut -d' ' -f2-)"
           fi
           test -d "$app" || { echo "::error::no Xcode at $app"; ls -d /Applications/Xcode*; exit 1; }
           echo "Selecting $app (resolves to $(readlink -f "$app"))"

@@ -9,6 +9,9 @@
 #
 #   tools/ship-ios-crossplay.sh
 #   tools/ship-ios-crossplay.sh --dry-run     everything up to the dispatch, then stop
+#   RUNNER=xcode-27 XCODE=27.1 tools/ship-ios-crossplay.sh
+#                                             built with the iOS 27.1 SDK, which the
+#                                             iPhone Duo needs to go edge to edge
 #
 # The commands that used to be typed by hand — dispatch the workflow, watch it,
 # download the IPA, upload it — with the races between them closed. Needs `gh`
@@ -19,6 +22,8 @@
 #   REPO=owner/name         defaults to whatever `origin` points at
 #   ARTIFACT=...            the workflow's upload-artifact name
 #   IPA=WordWars.ipa        where the download lands
+#   RUNNER=, XCODE=         the workflow's `runner` and `xcode` inputs; unset takes
+#                           its defaults (macos-latest, its newest released Xcode)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -58,6 +63,10 @@ fi
 
 echo "==> Building $VERSION from $(git rev-parse --short "$TARGET") ($BRANCH) on $REPO"
 
+INPUTS=()
+[ -n "${RUNNER:-}" ] && INPUTS+=(-f "runner=$RUNNER")
+[ -n "${XCODE:-}" ] && INPUTS+=(-f "xcode=$XCODE")
+
 # The race this script exists to close.
 #
 # `gh workflow run` returns as soon as the dispatch is accepted, several seconds
@@ -71,14 +80,14 @@ BEFORE=$(gh run list --workflow "$WORKFLOW" -R "$REPO" --branch "$BRANCH" --limi
 	--json databaseId --jq '.[0].databaseId // empty')
 
 if [ "$DRY_RUN" = 1 ]; then
-	echo "    would dispatch $WORKFLOW on $BRANCH"
+	echo "    would dispatch $WORKFLOW on $BRANCH ${INPUTS[*]:-}"
 	echo "    newest run right now is ${BEFORE:-none}; would wait for a different one"
 	echo "    would upload $IPA to app $ASC_APP_ID"
 	echo "==> Dry run, nothing dispatched"
 	exit 0
 fi
 
-gh workflow run "$WORKFLOW" -R "$REPO" --ref "$BRANCH"
+gh workflow run "$WORKFLOW" -R "$REPO" --ref "$BRANCH" "${INPUTS[@]}"
 
 echo "==> Waiting for the run to appear"
 RUN=""
@@ -107,16 +116,18 @@ gh run download "$RUN" -R "$REPO" -n "$ARTIFACT" -D .
 # Belt and braces on the same worry as the run id: read the version back out of
 # the thing actually about to be uploaded, rather than out of the file that was
 # meant to have produced it.
-read -r GOT_VERSION GOT_BUILD < <(python3 - "$IPA" <<'PY'
+read -r GOT_VERSION GOT_BUILD GOT_XCODE GOT_SDK < <(python3 - "$IPA" <<'PY'
 import plistlib, sys, zipfile
 
 z = zipfile.ZipFile(sys.argv[1])
 name = next(n for n in z.namelist()
             if n.count("/") == 2 and n.endswith(".app/Info.plist"))
 p = plistlib.loads(z.read(name))
-print(p["CFBundleShortVersionString"], p["CFBundleVersion"])
+print(p["CFBundleShortVersionString"], p["CFBundleVersion"],
+      p.get("DTXcodeBuild", "?"), p.get("DTSDKName", "?"))
 PY
 )
+echo "    built with Xcode $GOT_XCODE against $GOT_SDK"
 if [ "$GOT_VERSION" != "$VERSION" ]; then
 	echo "FAILED: project.godot says $VERSION, the IPA says $GOT_VERSION." >&2
 	echo "        Something is out of step; not uploading." >&2
