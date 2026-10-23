@@ -221,14 +221,21 @@ Two things that could move this, both outside the repository:
   ```
 
   Builds 2 and 3 were made this way (Xcode 27.1, build 27A9269, `iphoneos27.1`).
-  **TestFlight takes them; App Review does not.** That 27.1 is a pre-release
-  (Xcode build `27A9269`, SDK build `24A94403`; a release has a three-digit
-  number like `17F113`) and submission refuses it as a beta toolchain. Build 4 is
-  the plain `gh workflow run ios.yml --ref crossplay` on `macos-latest` (Xcode
-  26.6, `17F113`, SDK 26.5) and is the one to submit.
+  **TestFlight takes them; App Review does not.** That 27.1 was Apple's *beta*
+  (Xcode build `27A9269`, SDK build `24A94403`) and submission refuses it as a
+  beta toolchain. Build 4 is the plain `gh workflow run ios.yml --ref crossplay`
+  on `macos-latest` (Xcode 26.6, `17F113`, SDK 26.5).
 
-  What that costs: the Duo to-the-edge layout needs the 27.1 SDK, so a submitted
-  build runs in the inset frame the system gives it, which the game lays out
-  against. When Apple releases Xcode 27.1 and it is on a runner, rebuild with it.
+  What that costs: the Duo to-the-edge layout needs the 27.1 SDK, so build 4
+  runs in the inset frame the system gives it, which the game lays out against.
+
+  **Xcode 27.1 was released on 15 October as `27A9275`**, the same build as its
+  RC, and the `xcode-27` image carries exactly that build (checked 21 October,
+  image `20261012.0260.1`). It sits under `Xcode_27.1_Release_Candidate.app`
+  because the image was cut three days before Apple's release, and
+  `-f xcode=27.1` reaches it through the `Xcode_27.1.app` symlink.
+
+  Build 4 went live as 1.7.0, which closes the 0.54.0 train to new uploads, so
+  the rebuild is **0.54.1** (`deploy/RELEASE-0.54.1.md`).
 - **Whether the hinge bridge builds.** It is a warning and not a failure if it
   does not: the build goes on without it and lays out unfolded.
