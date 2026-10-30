@@ -59,9 +59,12 @@ const POSES := {
 		"portrait": true, "tablet": false, "regular": false, "wide": false,
 		"safe": Vector4(108.0, 62.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "iPhone 15 — 6.1in"},
+	# The cover display is tablet-*shaped* and compact, and gets the one board of
+	# the phone layout: two boards side by side on five inches came out too small
+	# to read on the first Duo the game met (2026-10-30).
 	"outer-portrait": {
 		"units": Vector2i(990, 1440), "px": Vector2i(1398, 2034),
-		"portrait": true, "tablet": true, "regular": false, "wide": false,
+		"portrait": true, "tablet": false, "regular": false, "wide": false,
 		"safe": Vector4(0.0, 44.0, 0.0, 100.0), "fold": false,
 		"ppi": 460.0, "label": "Duo closed, outer display — 5.4in"},
 	"inner-portrait": {
@@ -123,12 +126,12 @@ const POSES := {
 	# can be run rather than a sentence.
 	"iphone-landscape": {
 		"units": Vector2i(1558, 720), "px": Vector2i(2556, 1179),
-		"portrait": true, "tablet": true, "regular": false, "wide": true,
+		"portrait": true, "tablet": false, "regular": false, "wide": true,
 		"safe": Vector4(0.0, 38.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "iPhone 15, landscape — 6.1in"},
 	"outer-landscape": {
 		"units": Vector2i(1280, 880), "px": Vector2i(2034, 1398),
-		"portrait": true, "tablet": true, "regular": false, "wide": true,
+		"portrait": true, "tablet": false, "regular": false, "wide": true,
 		"safe": Vector4(0.0, 40.0, 0.0, 84.0), "fold": false,
 		"ppi": 460.0, "label": "Duo closed, landscape — 5.4in"},
 	# --- the desktop, which is not a touch device -----------------------------

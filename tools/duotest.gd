@@ -37,6 +37,9 @@ var game: Node
 var stage: SubViewport
 var fails := 0
 var pose_name := ""
+## `--mode survival` plays the pose as a survival run instead of a duel: the
+## modes with nobody to play against lay a wide glass out differently.
+var play_mode := "duel"
 
 
 func _init() -> void:
@@ -58,8 +61,11 @@ func _init() -> void:
 		quit(2)
 		return
 
+	var mi := args.find("--mode")
+	if mi >= 0 and mi + 1 < args.size():
+		play_mode = String(args[mi + 1])
 	await _boot(Poses.POSES[pose_name])
-	print("--- %s ---" % pose_name)
+	print("--- %s%s ---" % [pose_name, "" if play_mode == "duel" else " (%s)" % play_mode])
 	_check_layout(pose_name)
 
 	var ti := args.find("--then")
@@ -94,7 +100,10 @@ func _boot(spec: Dictionary) -> void:
 	# Saved nowhere real: a test that poses a player must not write the dev save.
 	get_root().get_node("Profile").save_path = "user://profile-duotest.cfg"
 	Poses.apply(game, spec)
-	game.start_match("Magpie", 1)
+	if play_mode == "survival":
+		game.start_match("Survival", 0, [], game.Mode.SURVIVAL)
+	else:
+		game.start_match("Magpie", 1)
 	game.phase = game.Phase.PLAY
 	game._deal_daily_opening()
 	game._layout_boards()
@@ -116,30 +125,42 @@ func _check_layout(name: String) -> void:
 
 	var keys: Array = game._keyboard()
 	_expect("a keyboard is up", not keys.is_empty())
+	var glass := Rect2(Vector2.ZERO, size)
 
-	# Nothing the thumb has to hit may be in the island's column or the fold.
+	# The keys run the width of the glass. The column down a side is the camera,
+	# in a top corner, and a status bar a game hides: on the first Duo in the room
+	# a keyboard that stood off it was pushed to one side of nothing.
 	var bad_edge: Array = []
 	var bad_fold: Array = []
+	var keys_x := Vector2(INF, -INF)
 	for k: Dictionary in keys:
 		var r: Rect2 = k["rect"]
-		if not usable.grow(0.5).encloses(r):
+		keys_x = Vector2(minf(keys_x.x, r.position.x), maxf(keys_x.y, r.end.x))
+		if not glass.grow(0.5).encloses(r):
 			bad_edge.append(String(k["id"]))
 		if fold.has_area() and fold.intersects(r):
 			bad_fold.append(String(k["id"]))
 	var emote: Rect2 = game._kb_emote_rect(size, game._keyboard_bottom())
 	var back: Rect2 = game._back_rect()
+	if not glass.grow(0.5).encloses(emote):
+		bad_edge.append("emote")
+	# The back key is in a top corner, which is where the camera is: it stands off.
+	if not usable.grow(0.5).encloses(back):
+		bad_edge.append("back")
 	for pair in [["emote", emote], ["back", back]]:
-		var pr: Rect2 = pair[1]
-		if not usable.grow(0.5).encloses(pr):
-			bad_edge.append(String(pair[0]))
-		if fold.has_area() and fold.intersects(pr):
+		if fold.has_area() and fold.intersects(pair[1]):
 			bad_fold.append(String(pair[0]))
-	_expect("every key, and the emote and back keys, are clear of the insets",
+	_expect("every key is on the glass, and the back key clear of the insets",
 		bad_edge.is_empty(), ", ".join(bad_edge))
 	_expect("every key, and the emote and back keys, are clear of the fold",
 		bad_fold.is_empty(), ", ".join(bad_fold))
+	_expect("the keyboard is centred on the glass, whatever the side insets",
+		absf((keys_x.x + keys_x.y) * 0.5 - size.x * 0.5) < 1.0,
+		"keys %.0f..%.0f of %.0f" % [keys_x.x, keys_x.y, size.x])
 
-	# Boards: inside the usable area, out of the fold, and not under any key.
+	# Boards: on the glass, out of the fold, and not under any key. A rival's
+	# board reaches up to the corners the camera is in, so it stands off the
+	# insets; yours is centred on the glass, over the keys.
 	var board_bad: Array = []
 	var under_keys: Array = []
 	for s: Variant in game.sides:
@@ -150,7 +171,8 @@ func _check_layout(name: String) -> void:
 		# A rival parked off-screen to make way for its card is not a board.
 		if br.position.x < -1000.0:
 			continue
-		if not usable.grow(0.5).encloses(br):
+		var room: Rect2 = glass if side.slot == 0 else usable
+		if not room.grow(0.5).encloses(br):
 			board_bad.append("slot %d" % side.slot)
 		if fold.has_area() and fold.intersects(br):
 			board_bad.append("slot %d in fold" % side.slot)
@@ -158,9 +180,41 @@ func _check_layout(name: String) -> void:
 			if br.intersects(k2["rect"]):
 				under_keys.append("%s/%s" % [side.slot, k2["id"]])
 				break
-	_expect("every board is inside the usable area and out of the fold",
+	_expect("every board is on the glass, rivals clear of the insets, none in the fold",
 		board_bad.is_empty(), ", ".join(board_bad))
 	_expect("no board stands on a key", under_keys.is_empty(), ", ".join(under_keys))
+	var cards_bad: Array = []
+	for card: Dictionary in game._portrait_rival_cards(size):
+		if not usable.grow(0.5).encloses(card["rect"]):
+			cards_bad.append(String((card["side"] as Object).label))
+	_expect("the rival cards are clear of the insets", cards_bad.is_empty(),
+		", ".join(cards_bad))
+
+	# The one board of a compact screen is over the middle of the keys, where the
+	# hands are, and not over the middle of what the insets leave.
+	var mine: Rect2 = game._board_rect(game.player)
+	if not game.tablet and not game.wide_touch:
+		_expect("held tall on a compact screen, the one board is centred on the glass",
+			absf(mine.get_center().x - size.x * 0.5) < 1.0,
+			"centre %.0f of %.0f" % [mine.get_center().x, size.x])
+
+	# Held wide with nobody to play against, the right wing has no rival to hold:
+	# the header stands in it and the board takes the top of the glass.
+	if game.wide_touch and game.single_board():
+		var rw: Rect2 = game._wide_wings()[1]
+		var solo_top: float = game.WIDE_SOLO_BOARD_TOP + game.safe_top
+		_expect("a solo run held wide gives its board the top of the glass",
+			absf(game._portrait_board_top() - solo_top) < 0.5 \
+				and mine.position.y >= solo_top - 0.5,
+			"board top %.0f, room from %.0f" % [mine.position.y, game._portrait_board_top()])
+		_expect("...and its header is in the right wing, off the board",
+			not rw.intersects(mine) and rw.position.x > mine.end.x,
+			"wing %s, board %s" % [rw, mine])
+		# Flat, height is what binds. Bent like a book the board stands on one
+		# page, and the page's width binds instead.
+		if not game._fold_vertical():
+			_expect("...and its board is over 70%% of the glass's height (%.0f%%)"
+					% (mine.size.y / size.y * 100.0), mine.size.y >= size.y * 0.70)
 
 	# The band under the board — the word you are typing — is read, so it is out
 	# of the fold too, and above the keys it belongs to.
@@ -474,9 +528,9 @@ func _classify() -> void:
 	var cases := [
 		["iPhone 15, portrait", Vector2i(1179, 2556), portrait, 3.0, false, false],
 		["iPhone 17 Pro Max, portrait", Vector2i(1320, 2868), portrait, 3.0, false, false],
-		["iPhone 17 Pro Max, landscape", Vector2i(2868, 1320), landscape, 3.0, false, true],
-		["Duo cover, portrait", Vector2i(1398, 2034), portrait, 3.0, false, true],
-		["Duo cover, landscape", Vector2i(2034, 1398), landscape, 3.0, false, true],
+		["iPhone 17 Pro Max, landscape", Vector2i(2868, 1320), landscape, 3.0, false, false],
+		["Duo cover, portrait", Vector2i(1398, 2034), portrait, 3.0, false, false],
+		["Duo cover, landscape", Vector2i(2034, 1398), landscape, 3.0, false, false],
 		["Duo open, portrait (render size)", Vector2i(2007, 2853), portrait, 3.0, true, true],
 		["Duo open, landscape (render size)", Vector2i(2853, 2007), landscape, 3.0, true, true],
 		["Duo open, portrait (panel size)", Vector2i(1878, 2670), portrait, 2.807, true, true],
@@ -487,69 +541,121 @@ func _classify() -> void:
 	for c: Array in cases:
 		var got: Dictionary = G.classify_device(c[1], c[2], float(c[3]), true)
 		_expect("%s: %s%s" % [c[0], "regular" if c[4] else "compact",
-				", tablet-shaped" if c[5] else ", phone-shaped"],
+				", two boards" if c[5] else ", one board"],
 			bool(got["regular"]) == bool(c[4]) and bool(got["tablet"]) == bool(c[5]),
 			"got regular=%s tablet=%s" % [got["regular"], got["tablet"]])
 
-	# The two that the old single threshold could not tell apart.
+	# The two that the old single threshold could not tell apart: the same shape,
+	# and since the first Duo in the room, not the same composition either.
 	var cover: Dictionary = G.classify_device(Vector2i(1398, 2034), portrait, 3.0, true)
 	var ipad: Dictionary = G.classify_device(Vector2i(1640, 2360), portrait, 2.0, true)
-	_expect("a cover display and an iPad share a shape and not a class",
-		bool(cover["tablet"]) == bool(ipad["tablet"]) \
-			and bool(cover["regular"]) != bool(ipad["regular"]))
+	_expect("a cover display gets one board and an iPad two",
+		not bool(cover["tablet"]) and bool(ipad["tablet"]) \
+			and not bool(cover["regular"]) and bool(ipad["regular"]))
 
 	# No fingers, no points: a desktop is as roomy as it looks.
 	var desk: Dictionary = G.classify_device(Vector2i(1280, 720), landscape, 1.0, false)
 	_expect("a desktop window is regular where it is wide", bool(desk["regular"]))
 
 
-## The path from a line the native bridge writes to a crease the layout stays off.
+## The path from the lines the native bridge writes to a crease the layout stays
+## off, and to the size class.
 func _hinge() -> void:
 	print("--- hinge file to fold ---")
-	await _boot(Poses.POSES["inner-landscape"])
-	game.fold = Rect2()
-	game._hinge_partial = false
+	var spec: Dictionary = Poses.POSES["inner-landscape"]
+	await _boot(spec)
 	var path := OS.get_cache_dir().path_join(game.HINGE_FILE)
 	var prefs: Dictionary = get_root().get_node("Profile").prefs
+	# The open Duo held wide, in points.
+	var pts := Vector2(951.0, 669.0)
+	var view := "view %.1f %.1f\n" % [pts.x, pts.y]
 
-	# [text written, partly open?, what it is]. The status number is whatever the
-	# system's enum is, so no case is allowed to depend on it.
+	# An iPhone: the bridge reports the glass and nothing about a hinge, and the
+	# fold setting stays out of Settings.
+	_write_hinge(path, "view 393.0 852.0\nclass 1 2\norient 1\n")
+	_expect("a phone's report is not a hinge", not game._hinge_seen)
+
+	# Its points are trusted only for the window they were measured on. The
+	# cover display and the inner one differ in shape by 2%, which is the whole
+	# margin between a fresh report and one from the display just left.
+	var G: Object = load("res://scripts/game.gd")
+	_expect("the inner display's points, on the inner display, are its scale",
+		absf(G.bridge_scale(Vector2(669.0, 951.0), Vector2i(2007, 2853)) - 3.0) < 0.01)
+	_expect("...at the panel's resolution as well as the render's",
+		absf(G.bridge_scale(Vector2(669.0, 951.0), Vector2i(1878, 2670)) - 2.807) < 0.01)
+	_expect("the cover display's points, on the inner display, are refused",
+		G.bridge_scale(Vector2(466.0, 678.0), Vector2i(2007, 2853)) == 0.0)
+	_expect("the inner display's points, on the cover display, are refused",
+		G.bridge_scale(Vector2(669.0, 951.0), Vector2i(1398, 2034)) == 0.0)
+	_expect("held the other way round, they are refused",
+		G.bridge_scale(Vector2(951.0, 669.0), Vector2i(2007, 2853)) == 0.0)
+
+	# [text written, partly open?, what it is].
 	var cases := [
-		["2 1.96", true, "112 degrees, one status numbering"],
-		["1 1.96", true, "112 degrees, another status numbering"],
-		["2 3.14", false, "flat"],
-		["1 0.00", false, "shut, whatever the status says"],
-		["9 1.50", true, "an unknown status, but plainly bent"],
-		["9 0.05", false, "an unknown status, nearly shut"],
-		["2 2.85", false, "163 degrees, flat enough"],
-		["2 0.30", false, "17 degrees, shut enough"],
+		# What the first bridge wrote, one line: decided on the angle.
+		["2 1.96", true, "the old one-line file, bent"],
+		["2 3.14", false, "the old one-line file, flat"],
+		# A hinge and no regions, built without the 27.1 headers: the angle.
+		["hinge 7 1.95 -", true, "112 degrees, no status name"],
+		["hinge 7 0.30 -", false, "17 degrees, shut enough"],
+		["hinge 7 2.85 -", false, "163 degrees, flat enough"],
+		# The status, where the build knew its names, over the angle.
+		["hinge 7 1.95 partial", true, "the status says partly open"],
+		["hinge 7 1.95 open", false, "the status says fully open"],
+		["hinge 7 2.40 closed", false, "the status says closed"],
+		# The division region, over everything: the system's own answer.
+		[view + "hinge 7 1.95 partial\nfold -", false,
+			"bent, and no crease over this view (the cover display)"],
+		[view + "hinge 7 3.10 open\nfold %.1f 0.0 20.0 %.1f" % [pts.x * 0.5 - 10.0, pts.y],
+			true, "a division region, whatever the hinge says"],
 		["", false, "an empty file"],
 	]
 	for c: Array in cases:
-		var f := FileAccess.open(path, FileAccess.WRITE)
-		f.store_string(String(c[0]))
-		f.close()
-		# `get_modified_time` has one-second resolution, so a second write inside
-		# the same second would not be seen. The poll is not meant to catch two
-		# writes in a second — the bridge writes on change, and a hinge does not
-		# change that fast — so the test resets what it remembers instead.
-		game._hinge_stamp = -1
-		game._hinge_age = 10.0
-		game._poll_hinge(1.0)
+		Poses.apply(game, spec)
+		_write_hinge(path, String(c[0]))
 		var got: bool = game.fold.has_area()
 		_expect("%s -> %s" % [c[2], "a crease" if c[1] else "no crease"],
 			got == bool(c[1]), "fold=%s" % game.fold)
 
+	# The real crease is where the region says, not where the estimate would put
+	# it: here one 20 points tall, off the middle, across a laptop's glass.
+	var laptop: Rect2 = G.points_to_units(Rect2(0.0, 480.0, 669.0, 20.0),
+		Vector2(669.0, 951.0), Vector2(1013.0, 1440.0))
+	_expect("the region's crease is placed where the region is",
+		absf(laptop.position.y - 480.0 * 1440.0 / 951.0) < 0.5 \
+			and absf(laptop.size.y - 20.0 * 1440.0 / 951.0) < 0.5 \
+			and absf(laptop.size.x - 1013.0) < 0.5, "%s" % laptop)
+	_expect("...and the hinge is remembered for Settings", game._hinge_seen)
+
+	# The bug the first Duo found: two writes inside one second. The poll went by
+	# the file's modified time, which has one-second resolution, so a phone opened
+	# quickly stayed on the first thing read.
+	Poses.apply(game, spec)
+	_write_hinge(path, "hinge 7 1.20 partial\n")
+	_expect("bent", game.fold.has_area())
+	Poses.apply(game, spec)
+	_write_hinge(path, "hinge 7 3.10 open\n")
+	_expect("...and opened flat within the same second: no crease",
+		not game.fold.has_area(), "fold=%s" % game.fold)
+
 	# With the setting off the layout never moves, whatever the hinge says.
 	prefs["fold_layout"] = false
-	var f2 := FileAccess.open(path, FileAccess.WRITE)
-	f2.store_string("1 1.96")
-	f2.close()
-	game._hinge_stamp = -1
-	game._hinge_age = 10.0
-	game._poll_hinge(1.0)
+	Poses.apply(game, spec)
+	_write_hinge(path, "hinge 7 1.20 partial\n")
 	_expect("the setting switches it off", not game.fold.has_area())
 	prefs["fold_layout"] = true
+
+	# The pieces of the file nothing above reads.
+	var b: Dictionary = game.parse_bridge(
+		"class 2 2\norient 3\nocc\nocclx\nocc 1 2\nocl 1 2 3 4\nocc 1 2 3 4\nocc 9 9 9 9\n"
+		+ "occl 420.0 8.0 38.0 38.0\nfold 0 10 5 5\nfold 0 30 5 5\n")
+	_expect("the size class and orientation are read",
+		int(b["class"]) == 2 and int(b["orient"]) == 3)
+	_expect("an occlusion is read, and lines it does not know are not",
+		(b["occl"] as Array).size() == 1 \
+			and (b["occl"] as Array)[0] == Rect2(420.0, 8.0, 38.0, 38.0))
+	_expect("two division regions are taken as the band that covers both",
+		b["fold"] == Rect2(0.0, 10.0, 5.0, 25.0), "%s" % b["fold"])
 
 	# The crease is a function of the glass: across a tall one, down a wide one.
 	var tall: Rect2 = game.fold_band(Vector2(1013, 1440))
@@ -560,6 +666,17 @@ func _hinge() -> void:
 		wide.size.y == 900.0 and absf(wide.get_center().x - 640.0) < 0.5)
 	DirAccess.remove_absolute(path)
 	await process_frame
+
+
+## Write the bridge's file and have the game read it now, the way it does a few
+## times a second. Several writes in one second on purpose: see the last case
+## above.
+func _write_hinge(path: String, text: String) -> void:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(text)
+	f.close()
+	game._hinge_age = 10.0
+	game._poll_hinge(1.0)
 
 
 func _expect(what: String, ok: bool, detail := "") -> void:

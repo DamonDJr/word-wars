@@ -269,17 +269,30 @@ The build pipeline above is perhaps a day; this is the rest of it.
 ## 3. The iPhone Duo's hinge
 
 `ios/plugins-src/HingeBridge/HingeBridge.mm` is the only native code in this
-repository, and it is a few dozen lines. It adds a `UIHingeInteraction` to the
-game's view and writes how far the device is open — `<status> <angle>` — to
-`hinge.txt` in the app's caches, which `_poll_hinge` in `scripts/game.gd` reads
-back a few times a second and turns into a crease the layout stays off.
+repository, and it is a couple of hundred lines. It adds a `UIHingeInteraction`
+to the game's view and, as the hinge moves and every 0.15s besides, writes what
+UIKit says about the glass to `hinge.txt` in the app's caches: the hinge, the
+view's size in points and size class, the active fold region (the crease, where
+the system puts it) and the camera's. `_poll_hinge` in `scripts/game.gd` reads it
+back a few times a second and lays out again when it changes. The bridge also
+tells UIKit when the orientations the game allows have changed, which is what
+makes the cover display's portrait lock take effect without turning the phone.
+Settings ends in a line saying what it last reported.
 
 It is not in the committed preset (`plugins/HingeBridge=false`) and its binaries
 are not in the tree. `.github/workflows/ios.yml` builds it with
 `tools/build-hingebridge.sh` on the macOS runner and turns the flag on only if
 that worked; if it did not, the build goes on without it and lays out unfolded.
-It looks the iOS 27.1 class up by name at run time, so it compiles on a runner
-whose Xcode is older and does nothing on a device that has no hinge.
+It looks the iOS 27.1 classes up by name at run time, so it compiles on a runner
+whose Xcode is older, and on a device without a hinge it reports the size of the
+glass and nothing else. It compiles against the iOS 26.4 SDK in
+`~/.swiftpm/swift-sdks/darwin.artifactbundle` on the Linux machine, with the
+flags `build-hingebridge.sh` uses, which is a way to check an edit before CI:
+
+```bash
+SDK=~/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
+clang++ -x objective-c++ -target arm64-apple-ios15.0 -isysroot "$SDK" -fobjc-arc -fmodules -fmodules-cache-path=/tmp/hb-modules -O2 -Wall -fsyntax-only ios/plugins-src/HingeBridge/HingeBridge.mm
+```
 
 A Linux export prints "Invalid plugin config file HingeBridge.gdip" and goes on:
 the file names a binary that only exists on the runner, and the flag is off.

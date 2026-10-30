@@ -8,9 +8,9 @@
 # committed — they are ten kilobytes of output of a file that is, and a binary in
 # the tree is one nobody can review.
 #
-# Only the UIKit that every SDK has is used, and the class that matters is looked
-# up by name at run time, so this compiles on a runner whose Xcode predates the
-# iPhone Duo. See the note at the top of the source.
+# Only the UIKit that every SDK has is used, and the classes that matter are
+# looked up by name at run time, so this compiles on a runner whose Xcode
+# predates the iPhone Duo. See the note at the top of the source.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
