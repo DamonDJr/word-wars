@@ -29,6 +29,8 @@ Check on the Duo, from TestFlight:
 - Closed: one board, the keyboard across the whole width.
 - Open flat, held either way, then half-closed: the layout moves off the crease
   within a moment, and back when opened flat again. Quickly as well as slowly.
+- Opened from the cover held upright: the inner display turns wide by itself,
+  within a second. Opened from the cover held on its side: it stays tall.
 - Closed again from held wide: the cover display comes up in portrait.
 - Survival held wide: the clock in the right-hand corner, the board nearly the
   height of the glass.

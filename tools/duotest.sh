@@ -20,6 +20,7 @@ run() {
 bad=0
 run classify || bad=1
 run hinge || bad=1
+run opening || bad=1
 # Every pose a player can be in, each one first.
 for p in outer-portrait inner-portrait inner-landscape inner-portrait-laptop inner-landscape-book iphone ipad ipad-landscape ipad-window-wide; do
 	run "$p" || bad=1

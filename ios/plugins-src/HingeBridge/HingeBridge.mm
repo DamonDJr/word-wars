@@ -9,6 +9,7 @@
 //     view 669.0 951.0          the game view's size, in points
 //     class 2 2                 horizontal and vertical size class, as UIKit says
 //     orient 3                  the scene's interface orientation
+//     device 1                  how the phone is held (UIDeviceOrientation), lock or no lock
 //     fold 0.0 461.5 669.0 28.0 the active division (the crease), in view points
 //     fold -                    ...or none: this OS reports divisions and there is none
 //     occl 420.0 8.0 38.0 38.0  an active occlusion (the cover display's camera)
@@ -297,6 +298,10 @@ static void Report(void) {
 						(long)scene.effectiveGeometry.interfaceOrientation];
 			}
 		}
+		// The sensor's answer, which the cover display's portrait lock does not
+		// change: it is how the game knows the phone was turned on its side
+		// before it was opened, and so which way up the inner display should be.
+		[out appendFormat:@"device %ld\n", (long)[UIDevice currentDevice].orientation];
 		NSArray *division = Regions(host, @"divisionRegionKind");
 		if (division != nil) {
 			NSUInteger before = out.length;
@@ -318,6 +323,9 @@ static void Start(void) {
 	if (sTimer != nil) {
 		return;
 	}
+	// UIDevice only tracks the sensor while somebody has asked it to. Never
+	// ended: the game wants it for as long as it runs.
+	[[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
 	sTimer = [NSTimer timerWithTimeInterval:kTick
 									repeats:YES
 									  block:^(NSTimer *t) {

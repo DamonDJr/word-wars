@@ -1232,9 +1232,9 @@ var _measured_win := Vector2i.ZERO
 ## the cover display of a Duo, like every iPhone, is a place where a keyboard
 ## across the bottom of a landscape frame leaves a board too small to read. A
 ## *regular* class screen — the open Duo, an iPad — is the opposite: held wide it
-## has the room to put the keys at the sides and keep the board tall, and the
-## inner display does not honour an orientation lock anyway. So compact stays in
-## portrait and regular turns freely.
+## has the room to put the keys at the sides and keep the board tall. So compact
+## stays in portrait and regular turns freely. (The inner display does honour a
+## lock, whatever the first notes on the Duo guessed: see `_orientation_want`.)
 ##
 ## Re-asked on every measure rather than once at boot, because a folding phone
 ## changes class without relaunching: it is compact when closed and regular when
@@ -1242,10 +1242,58 @@ var _measured_win := Vector2i.ZERO
 func _apply_orientation_policy() -> void:
 	if not touch:
 		return
-	var want := DisplayServer.SCREEN_SENSOR if regular \
-		else DisplayServer.SCREEN_PORTRAIT
+	var want := _orientation_want()
 	if DisplayServer.screen_get_orientation() != want:
 		DisplayServer.screen_set_orientation(want)
+
+
+## How long the inner display is held to the way it opened, waiting for the turn,
+## before it is let go whether it turned or not.
+const OPEN_TURN_MS := 2500
+
+## Whether the phone was last held on its side while it was shut. The cover
+## display is locked to portrait, so this is the sensor's reading (the bridge's
+## `device` line), not the screen's.
+var _cover_held_wide := false
+## The size class at the last measure, so that opening — compact to regular, on a
+## phone with a hinge — can be told from every other measure. -1 before the first.
+var _was_regular := -1
+## The way the inner display is being turned to after opening, or -1; and until
+## when it is held there.
+var _open_turn := -1
+var _open_until := 0
+
+
+## The orientation lock, and the turn that opening the Duo asks for.
+##
+## Compact is held to portrait and regular is free, as above. What that missed
+## was the moment between them. Opened, the inner display came up while the lock
+## still said portrait, so iOS laid it out in portrait; the lock then lifted, and
+## lifting a lock does not turn the glass — only turning the phone does. Opened
+## like a book from a cover display held upright, the game stayed tall on a
+## glass held wide (the first Duo, 2026-10-30).
+##
+## Which way the open glass is up follows from how the shut phone was held, since
+## the cover display is one page of the book: upright, the inner display is wide;
+## on its side, the phone opens upwards like a laptop and the inner display is
+## tall. So on opening the lock is set to that pair of orientations — the bridge
+## asks iOS to turn to it — until the window has that shape, and then let go.
+func _orientation_want() -> int:
+	var now := Time.get_ticks_msec()
+	if regular and _was_regular == 0 and _hinge_seen:
+		_open_turn = DisplayServer.SCREEN_SENSOR_PORTRAIT if _cover_held_wide \
+			else DisplayServer.SCREEN_SENSOR_LANDSCAPE
+		_open_until = now + OPEN_TURN_MS
+	_was_regular = 1 if regular else 0
+	if not regular:
+		_open_turn = -1
+		return DisplayServer.SCREEN_PORTRAIT
+	if _open_turn >= 0:
+		var there: bool = _wide_window == (_open_turn == DisplayServer.SCREEN_SENSOR_LANDSCAPE)
+		if not there and now < _open_until:
+			return _open_turn
+		_open_turn = -1
+	return DisplayServer.SCREEN_SENSOR
 
 
 ## How much of the screen the phone's own furniture is sitting on, in the design
@@ -1493,7 +1541,8 @@ static func fold_band(size: Vector2) -> Rect2:
 ## is a flat glass, which is a different answer from an OS that has none.
 static func parse_bridge(text: String) -> Dictionary:
 	var out := {"hinge": false, "status": "", "angle": -1.0, "view": Vector2.ZERO,
-		"class": 0, "orient": 0, "regions": false, "fold": Rect2(), "occl": []}
+		"class": 0, "orient": 0, "device": 0, "regions": false, "fold": Rect2(),
+		"occl": []}
 	for raw: String in text.split("\n", false):
 		var p := raw.strip_edges().split(" ", false)
 		if p.is_empty():
@@ -1514,6 +1563,9 @@ static func parse_bridge(text: String) -> Dictionary:
 			"orient":
 				if p.size() > 1:
 					out["orient"] = p[1].to_int()
+			"device":
+				if p.size() > 1:
+					out["device"] = p[1].to_int()
 			"fold":
 				out["regions"] = true
 				if p.size() > 4:
@@ -1566,6 +1618,10 @@ func _poll_hinge(delta: float) -> void:
 	if _hinge_age < HINGE_POLL:
 		return
 	_hinge_age = 0.0
+	# A turn asked for on opening that iOS never made is let go here, since
+	# nothing else would measure again to notice the time was up.
+	if _open_turn >= 0 and Time.get_ticks_msec() >= _open_until:
+		_apply_orientation_policy()
 	# Where the bridge writes, and the one other place it might have meant.
 	var path := OS.get_cache_dir().path_join(HINGE_FILE)
 	if not FileAccess.file_exists(path):
@@ -1578,6 +1634,15 @@ func _poll_hinge(delta: float) -> void:
 	_hinge_text = text
 	_bridge = parse_bridge(text)
 	_hinge_seen = _hinge_seen or bool(_bridge["hinge"])
+	# How the shut phone is held, while it is shut: upright (1, 2) or on its
+	# side (3, 4). Lying flat (5, 6) and unknown (0) say nothing, so the last
+	# reading that did stands.
+	if not regular:
+		match int(_bridge["device"]):
+			1, 2:
+				_cover_held_wide = false
+			3, 4:
+				_cover_held_wide = true
 	_hinge_partial = bridge_partial(_bridge)
 	_remeasure()
 
@@ -1668,7 +1733,8 @@ func _hinge_report() -> String:
 			String(_bridge["status"])])
 	var view: Vector2 = _bridge["view"]
 	parts.append("view %dx%dpt" % [int(view.x), int(view.y)])
-	parts.append("class %d · orient %d" % [int(_bridge["class"]), int(_bridge["orient"])])
+	parts.append("class %d · orient %d · device %d" % [int(_bridge["class"]),
+		int(_bridge["orient"]), int(_bridge["device"])])
 	if bool(_bridge["regions"]):
 		var f: Rect2 = _bridge["fold"]
 		parts.append("fold %d,%d %dx%d" % [int(f.position.x), int(f.position.y),

@@ -55,6 +55,11 @@ func _init() -> void:
 		_done("the hinge is read right")
 		return
 
+	if args.size() > 0 and String(args[0]) == "opening":
+		await _opening()
+		_done("opening turns the glass the right way")
+		return
+
 	pose_name = String(args[0]) if args.size() > 0 else "inner-landscape"
 	if not Poses.POSES.has(pose_name):
 		push_error("unknown pose: %s" % pose_name)
@@ -664,6 +669,88 @@ func _hinge() -> void:
 		tall.size.x == 1013.0 and absf(tall.get_center().y - 720.0) < 0.5)
 	_expect("a wide glass is creased down its middle",
 		wide.size.y == 900.0 and absf(wide.get_center().x - 640.0) < 0.5)
+	DirAccess.remove_absolute(path)
+	await process_frame
+
+
+## Opening the Duo: which way the inner display is asked to turn.
+##
+## The cover display is one page of the open book, so held upright and opened the
+## inner display is wide, and held on its side and opened (upwards, like a laptop)
+## it is tall. The first Duo stayed tall either way: the cover's portrait lock was
+## still on when the inner display came up, and lifting it does not turn anything.
+func _opening() -> void:
+	print("--- opening the Duo ---")
+	var cover: Dictionary = Poses.POSES["outer-portrait"]
+	var tall: Dictionary = Poses.POSES["inner-portrait"]
+	var wide: Dictionary = Poses.POSES["inner-landscape"]
+	await _boot(cover)
+	game._hinge_seen = true
+	var PORTRAIT := DisplayServer.SCREEN_PORTRAIT
+	var SENSOR := DisplayServer.SCREEN_SENSOR
+	var TO_WIDE := DisplayServer.SCREEN_SENSOR_LANDSCAPE
+	var TO_TALL := DisplayServer.SCREEN_SENSOR_PORTRAIT
+
+	# Shut and upright, then opened like a book: the inner display arrives tall,
+	# laid out under the cover's lock.
+	game._cover_held_wide = false
+	Poses.apply(game, cover)
+	_expect("shut, the cover display is held to portrait",
+		game._orientation_want() == PORTRAIT)
+	Poses.apply(game, tall)
+	_expect("opened from upright, the inner display is turned wide",
+		game._orientation_want() == TO_WIDE)
+	_expect("...and held to wide while it has not turned yet",
+		game._orientation_want() == TO_WIDE)
+	Poses.apply(game, wide)
+	_expect("...and let go to turn freely once it is wide",
+		game._orientation_want() == SENSOR)
+	_expect("...for good", game._orientation_want() == SENSOR)
+
+	# Shut on its side, then opened upwards: tall is already right.
+	Poses.apply(game, cover)
+	game._orientation_want()
+	game._cover_held_wide = true
+	Poses.apply(game, tall)
+	_expect("opened from on its side into a tall glass, it is left tall and free",
+		game._orientation_want() == SENSOR)
+	# ...and if the inner display came up wide anyway, it is turned tall.
+	Poses.apply(game, cover)
+	game._orientation_want()
+	Poses.apply(game, wide)
+	_expect("opened from on its side into a wide glass, it is turned tall",
+		game._orientation_want() == TO_TALL)
+
+	# A turn iOS never makes is not held forever.
+	game._open_until = 0
+	_expect("a turn that never comes is let go", game._orientation_want() == SENSOR)
+
+	# Without a hinge, compact to regular is an iPad leaving Split View, not a
+	# phone opening: nothing is turned.
+	game._hinge_seen = false
+	Poses.apply(game, cover)
+	game._orientation_want()
+	Poses.apply(game, tall)
+	_expect("a regular glass with no hinge is not turned",
+		game._orientation_want() == SENSOR)
+	game._hinge_seen = true
+
+	# How the shut phone is held comes from the sensor, through the bridge.
+	var path := OS.get_cache_dir().path_join(game.HINGE_FILE)
+	game._cover_held_wide = false
+	for c: Array in [["device 3", true, "turned on its side"],
+			["device 5", true, "then laid flat, which says nothing"],
+			["device 1", false, "then stood upright"],
+			["device 4", true, "then on its other side"]]:
+		Poses.apply(game, cover)
+		_write_hinge(path, "hinge 7 0.00 closed\n%s\n" % c[0])
+		_expect("shut and %s: %s" % [c[2], "on its side" if c[1] else "upright"],
+			game._cover_held_wide == bool(c[1]))
+	# Open, the sensor no longer describes the cover display.
+	Poses.apply(game, tall)
+	_write_hinge(path, "hinge 7 3.14 open\ndevice 1\n")
+	_expect("open, the reading is not taken for the cover's",
+		game._cover_held_wide == true)
 	DirAccess.remove_absolute(path)
 	await process_frame
 
