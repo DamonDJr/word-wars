@@ -120,18 +120,19 @@ const POSES := {
 		"portrait": false, "tablet": true, "regular": true, "wide": true,
 		"safe": Vector4(0.0, 44.0, 0.0, 0.0), "fold": false,
 		"ppi": 430.0, "label": "Duo open, landscape — 7.6in"},
-	# --- the two the orientation policy is a statement about -----------------
-	# Never reached on a device — compact screens are held to portrait — and in
-	# the table so the claim "a wide layout is no better there" is a number that
-	# can be run rather than a sentence.
+	# --- compact, held wide -----------------------------------------------------
+	# An iPhone never gets here, being held to portrait, and is in the table so
+	# the claim "a wide layout is no better there" is a number that can be run. A
+	# Duo does: a phone with a hinge is never locked, because iOS honours a lock
+	# on the inner display by scaling the game down.
 	"iphone-landscape": {
 		"units": Vector2i(1558, 720), "px": Vector2i(2556, 1179),
-		"portrait": true, "tablet": false, "regular": false, "wide": true,
+		"portrait": true, "tablet": true, "regular": false, "wide": true,
 		"safe": Vector4(0.0, 38.0, 0.0, 0.0), "fold": false,
 		"ppi": 460.0, "label": "iPhone 15, landscape — 6.1in"},
 	"outer-landscape": {
 		"units": Vector2i(1280, 880), "px": Vector2i(2034, 1398),
-		"portrait": true, "tablet": false, "regular": false, "wide": true,
+		"portrait": true, "tablet": true, "regular": false, "wide": true,
 		"safe": Vector4(0.0, 40.0, 0.0, 84.0), "fold": false,
 		"ppi": 460.0, "label": "Duo closed, landscape — 5.4in"},
 	# --- the desktop, which is not a touch device -----------------------------

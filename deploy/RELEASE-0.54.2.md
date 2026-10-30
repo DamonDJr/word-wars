@@ -26,12 +26,14 @@ a build without it still plays, but does not see the fold.
 
 Check on the Duo, from TestFlight:
 
-- Closed: one board, the keyboard across the whole width.
+- Closed and upright: one board, the keyboard across the whole width. Closed and
+  turned on its side: the cover display turns, two boards, keys in the corners.
+- Opened from the cover held upright: the inner display fills, wide, and is never
+  a shrunken portrait. Opened from the cover held on its side: it fills, tall.
 - Open flat, held either way, then half-closed: the layout moves off the crease
   within a moment, and back when opened flat again. Quickly as well as slowly.
-- Opened from the cover held upright: the inner display turns wide by itself,
-  within a second. Opened from the cover held on its side: it stays tall.
-- Closed again from held wide: the cover display comes up in portrait.
+- Half-closed like a book in a match: your board on the left page, the rival's on
+  the right. In survival: one board in the middle, with the crease down it.
 - Survival held wide: the clock in the right-hand corner, the board nearly the
   height of the glass.
 - Settings, last two lines: the second should start with `hinge` and end in
@@ -48,10 +50,11 @@ inner display.
 
 Stand the Duo up like a laptop and the lower half becomes a full-size
 keyboard, with the board on the half facing you. Fold it like a book and
-the board moves clear of the crease.
+you and your rival get a page each.
 
 On the outer display, one big board and a keyboard across the whole
-screen. Survival on the open Duo held sideways uses the full height.
+screen, and two boards when you turn it sideways. Survival on the open Duo
+held sideways uses the full height.
 ```
 
 ## App Review Notes
@@ -68,11 +71,13 @@ The game follows the hinge (UIHingeInteraction) and the fold's reserved
 region. When the inner display is partly folded and held tall (like a
 laptop), the board is on the upper half and the full keyboard fills the
 lower half. Held wide (like a book), the keys split, one half on each
-side of the fold, and the board stays on one side of it.
+side of the fold; in a match your board is on the left page and your
+rival's on the right, and with one board it stays in the middle.
 
-On the outer display the game is one board with the keyboard across the
-full width. Survival held sideways on the inner display moves the clock
-to the side so the board can use the full height.
+The game turns freely on iPhone Duo, on both displays. On the outer
+display held upright it is one board with the keyboard across the full
+width. Survival held sideways on the inner display moves the clock to
+the side so the board can use the full height.
 
 HOW TO SEE THE CHANGES
 

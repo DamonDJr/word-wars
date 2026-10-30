@@ -168,6 +168,7 @@ func _check_layout(name: String) -> void:
 	# insets; yours is centred on the glass, over the keys.
 	var board_bad: Array = []
 	var under_keys: Array = []
+	var spine: bool = fold.has_area() and fold.size.y >= fold.size.x and game._one_board()
 	for s: Variant in game.sides:
 		var side: Object = s
 		if side.slot > 0 and not side.in_match:
@@ -179,7 +180,8 @@ func _check_layout(name: String) -> void:
 		var room: Rect2 = glass if side.slot == 0 else usable
 		if not room.grow(0.5).encloses(br):
 			board_bad.append("slot %d" % side.slot)
-		if fold.has_area() and fold.intersects(br):
+		# One board held as a book stays in the middle, on purpose: see below.
+		if fold.has_area() and fold.intersects(br) and not spine:
 			board_bad.append("slot %d in fold" % side.slot)
 		for k2: Dictionary in keys:
 			if br.intersects(k2["rect"]):
@@ -202,6 +204,28 @@ func _check_layout(name: String) -> void:
 		_expect("held tall on a compact screen, the one board is centred on the glass",
 			absf(mine.get_center().x - size.x * 0.5) < 1.0,
 			"centre %.0f of %.0f" % [mine.get_center().x, size.x])
+
+	# Held as a book, one board stays in the middle with the crease between its
+	# third and fourth columns, and two boards get a page each.
+	if spine:
+		_expect("held as a book, one board is centred on the crease",
+			absf(mine.get_center().x - fold.get_center().x) < 1.0,
+			"board centre %.0f, crease %.0f" % [mine.get_center().x, fold.get_center().x])
+	elif fold.has_area() and fold.size.y >= fold.size.x:
+		var theirs := Rect2()
+		for s4: Variant in game.sides:
+			if (s4 as Object).slot == 1:
+				theirs = game._board_rect(s4)
+		_expect("held as a book, yours is on the left page and theirs on the right",
+			mine.end.x <= fold.position.x and theirs.position.x >= fold.end.x,
+			"yours %s, theirs %s, crease %s" % [mine, theirs, fold])
+		_expect("...the same size and level with each other",
+			mine.size.is_equal_approx(theirs.size) \
+				and absf(mine.position.y - theirs.position.y) < 0.5,
+			"yours %s, theirs %s" % [mine, theirs])
+		var band_top: float = theirs.position.y - 76.0
+		_expect("...with the rival's name and lives on the glass (from %.0f)" % band_top,
+			band_top >= game.safe_top)
 
 	# Held wide with nobody to play against, the right wing has no rival to hold:
 	# the header stands in it and the board takes the top of the glass.
@@ -533,9 +557,9 @@ func _classify() -> void:
 	var cases := [
 		["iPhone 15, portrait", Vector2i(1179, 2556), portrait, 3.0, false, false],
 		["iPhone 17 Pro Max, portrait", Vector2i(1320, 2868), portrait, 3.0, false, false],
-		["iPhone 17 Pro Max, landscape", Vector2i(2868, 1320), landscape, 3.0, false, false],
+		["iPhone 17 Pro Max, landscape", Vector2i(2868, 1320), landscape, 3.0, false, true],
 		["Duo cover, portrait", Vector2i(1398, 2034), portrait, 3.0, false, false],
-		["Duo cover, landscape", Vector2i(2034, 1398), landscape, 3.0, false, false],
+		["Duo cover, landscape", Vector2i(2034, 1398), landscape, 3.0, false, true],
 		["Duo open, portrait (render size)", Vector2i(2007, 2853), portrait, 3.0, true, true],
 		["Duo open, landscape (render size)", Vector2i(2853, 2007), landscape, 3.0, true, true],
 		["Duo open, portrait (panel size)", Vector2i(1878, 2670), portrait, 2.807, true, true],
@@ -673,84 +697,41 @@ func _hinge() -> void:
 	await process_frame
 
 
-## Opening the Duo: which way the inner display is asked to turn.
-##
-## The cover display is one page of the open book, so held upright and opened the
-## inner display is wide, and held on its side and opened (upwards, like a laptop)
-## it is tall. The first Duo stayed tall either way: the cover's portrait lock was
-## still on when the inner display came up, and lifting it does not turn anything.
+## Which glass may turn. A phone with a hinge never may be locked: iOS honours a
+## lock on the inner display by scaling the game down, and the first Duo came up
+## as a shrunken portrait picture on a glass held wide, measuring compact, so
+## still locked. Free, the system opens it the way the shut phone was held.
 func _opening() -> void:
-	print("--- opening the Duo ---")
+	print("--- which glass may turn ---")
 	var cover: Dictionary = Poses.POSES["outer-portrait"]
-	var tall: Dictionary = Poses.POSES["inner-portrait"]
-	var wide: Dictionary = Poses.POSES["inner-landscape"]
 	await _boot(cover)
-	game._hinge_seen = true
-	var PORTRAIT := DisplayServer.SCREEN_PORTRAIT
-	var SENSOR := DisplayServer.SCREEN_SENSOR
-	var TO_WIDE := DisplayServer.SCREEN_SENSOR_LANDSCAPE
-	var TO_TALL := DisplayServer.SCREEN_SENSOR_PORTRAIT
-
-	# Shut and upright, then opened like a book: the inner display arrives tall,
-	# laid out under the cover's lock.
-	game._cover_held_wide = false
-	Poses.apply(game, cover)
-	_expect("shut, the cover display is held to portrait",
-		game._orientation_want() == PORTRAIT)
-	Poses.apply(game, tall)
-	_expect("opened from upright, the inner display is turned wide",
-		game._orientation_want() == TO_WIDE)
-	_expect("...and held to wide while it has not turned yet",
-		game._orientation_want() == TO_WIDE)
-	Poses.apply(game, wide)
-	_expect("...and let go to turn freely once it is wide",
-		game._orientation_want() == SENSOR)
-	_expect("...for good", game._orientation_want() == SENSOR)
-
-	# Shut on its side, then opened upwards: tall is already right.
-	Poses.apply(game, cover)
-	game._orientation_want()
-	game._cover_held_wide = true
-	Poses.apply(game, tall)
-	_expect("opened from on its side into a tall glass, it is left tall and free",
-		game._orientation_want() == SENSOR)
-	# ...and if the inner display came up wide anyway, it is turned tall.
-	Poses.apply(game, cover)
-	game._orientation_want()
-	Poses.apply(game, wide)
-	_expect("opened from on its side into a wide glass, it is turned tall",
-		game._orientation_want() == TO_TALL)
-
-	# A turn iOS never makes is not held forever.
-	game._open_until = 0
-	_expect("a turn that never comes is let go", game._orientation_want() == SENSOR)
-
-	# Without a hinge, compact to regular is an iPad leaving Split View, not a
-	# phone opening: nothing is turned.
-	game._hinge_seen = false
-	Poses.apply(game, cover)
-	game._orientation_want()
-	Poses.apply(game, tall)
-	_expect("a regular glass with no hinge is not turned",
-		game._orientation_want() == SENSOR)
-	game._hinge_seen = true
-
-	# How the shut phone is held comes from the sensor, through the bridge.
 	var path := OS.get_cache_dir().path_join(game.HINGE_FILE)
-	game._cover_held_wide = false
-	for c: Array in [["device 3", true, "turned on its side"],
-			["device 5", true, "then laid flat, which says nothing"],
-			["device 1", false, "then stood upright"],
-			["device 4", true, "then on its other side"]]:
-		Poses.apply(game, cover)
-		_write_hinge(path, "hinge 7 0.00 closed\n%s\n" % c[0])
-		_expect("shut and %s: %s" % [c[2], "on its side" if c[1] else "upright"],
-			game._cover_held_wide == bool(c[1]))
-	# Open, the sensor no longer describes the cover display.
-	Poses.apply(game, tall)
-	_write_hinge(path, "hinge 7 3.14 open\ndevice 1\n")
-	_expect("open, the reading is not taken for the cover's",
-		game._cover_held_wide == true)
+
+	game._hinge_seen = false
+	Poses.apply(game, Poses.POSES["iphone"])
+	_expect("an iPhone is held to portrait", not game._may_turn())
+	Poses.apply(game, Poses.POSES["ipad"])
+	_expect("an iPad turns", game._may_turn())
+	Poses.apply(game, cover)
+	_expect("a Duo not heard from yet measures as a phone", not game._may_turn())
+
+	# Reported shut, on the cover display, where it measures compact: that is
+	# the moment that has to be free, because it is the one opening starts from.
+	Poses.apply(game, cover)
+	_write_hinge(path, "hinge 7 0.00 closed\nview 466.0 678.0\nclass 1 2\n")
+	Poses.apply(game, cover)
+	_expect("shut, a phone with a hinge is not locked", game._may_turn())
+	for pose: String in ["outer-landscape", "inner-portrait", "inner-landscape",
+			"inner-portrait-laptop", "inner-landscape-book"]:
+		Poses.apply(game, Poses.POSES[pose])
+		_expect("...nor in %s" % pose, game._may_turn())
+
+	# A phone that has no hinge can report everything else and stays locked.
+	game._hinge_seen = false
+	Poses.apply(game, Poses.POSES["iphone"])
+	_write_hinge(path, "view 393.0 852.0\nclass 1 2\ndevice 3\n")
+	Poses.apply(game, Poses.POSES["iphone"])
+	_expect("an iPhone's report does not free it", not game._may_turn())
 	DirAccess.remove_absolute(path)
 	await process_frame
 

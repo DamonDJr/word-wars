@@ -1229,71 +1229,34 @@ var _measured_win := Vector2i.ZERO
 ##
 ## A policy about the glass, not about the model: Apple's guidance for a game is
 ## that locking to one orientation is fine so long as the screen is filled, and
-## the cover display of a Duo, like every iPhone, is a place where a keyboard
-## across the bottom of a landscape frame leaves a board too small to read. A
-## *regular* class screen — the open Duo, an iPad — is the opposite: held wide it
-## has the room to put the keys at the sides and keep the board tall. So compact
-## stays in portrait and regular turns freely. (The inner display does honour a
-## lock, whatever the first notes on the Duo guessed: see `_orientation_want`.)
+## a phone is a place where a keyboard across the bottom of a landscape frame
+## leaves a board too small to read. A *regular* class screen — an iPad, the open
+## Duo — is the opposite: held wide it has the room to put the keys at the sides
+## and keep the board tall. So compact stays in portrait and regular turns freely.
 ##
-## Re-asked on every measure rather than once at boot, because a folding phone
-## changes class without relaunching: it is compact when closed and regular when
-## open, and the lock has to follow it across the hinge.
+## Except on a phone with a hinge, which is never locked, closed or open. "iPhone
+## Duo respects your supported interface orientations, but your app will scale on
+## the inner display": a game locked to portrait for the cover display, opened,
+## came up as a shrunken portrait picture in the middle of the inner one, still
+## measuring compact, so still locked. Left free the system does the right thing
+## by itself, and it is what a player expects: held upright the cover display
+## opens wide, and turned on its side first it opens tall. The cover display
+## turning with it is the price, and it is a fair one: two boards fit there held
+## wide, which they do not held tall.
+##
+## Re-asked on every measure rather than once at boot, because whether a phone has
+## a hinge is only known once the bridge has said so.
 func _apply_orientation_policy() -> void:
 	if not touch:
 		return
-	var want := _orientation_want()
+	var want := DisplayServer.SCREEN_SENSOR if _may_turn() \
+		else DisplayServer.SCREEN_PORTRAIT
 	if DisplayServer.screen_get_orientation() != want:
 		DisplayServer.screen_set_orientation(want)
 
 
-## How long the inner display is held to the way it opened, waiting for the turn,
-## before it is let go whether it turned or not.
-const OPEN_TURN_MS := 2500
-
-## Whether the phone was last held on its side while it was shut. The cover
-## display is locked to portrait, so this is the sensor's reading (the bridge's
-## `device` line), not the screen's.
-var _cover_held_wide := false
-## The size class at the last measure, so that opening — compact to regular, on a
-## phone with a hinge — can be told from every other measure. -1 before the first.
-var _was_regular := -1
-## The way the inner display is being turned to after opening, or -1; and until
-## when it is held there.
-var _open_turn := -1
-var _open_until := 0
-
-
-## The orientation lock, and the turn that opening the Duo asks for.
-##
-## Compact is held to portrait and regular is free, as above. What that missed
-## was the moment between them. Opened, the inner display came up while the lock
-## still said portrait, so iOS laid it out in portrait; the lock then lifted, and
-## lifting a lock does not turn the glass — only turning the phone does. Opened
-## like a book from a cover display held upright, the game stayed tall on a
-## glass held wide (the first Duo, 2026-10-30).
-##
-## Which way the open glass is up follows from how the shut phone was held, since
-## the cover display is one page of the book: upright, the inner display is wide;
-## on its side, the phone opens upwards like a laptop and the inner display is
-## tall. So on opening the lock is set to that pair of orientations — the bridge
-## asks iOS to turn to it — until the window has that shape, and then let go.
-func _orientation_want() -> int:
-	var now := Time.get_ticks_msec()
-	if regular and _was_regular == 0 and _hinge_seen:
-		_open_turn = DisplayServer.SCREEN_SENSOR_PORTRAIT if _cover_held_wide \
-			else DisplayServer.SCREEN_SENSOR_LANDSCAPE
-		_open_until = now + OPEN_TURN_MS
-	_was_regular = 1 if regular else 0
-	if not regular:
-		_open_turn = -1
-		return DisplayServer.SCREEN_PORTRAIT
-	if _open_turn >= 0:
-		var there: bool = _wide_window == (_open_turn == DisplayServer.SCREEN_SENSOR_LANDSCAPE)
-		if not there and now < _open_until:
-			return _open_turn
-		_open_turn = -1
-	return DisplayServer.SCREEN_SENSOR
+func _may_turn() -> bool:
+	return regular or _hinge_seen
 
 
 ## How much of the screen the phone's own furniture is sitting on, in the design
@@ -1451,12 +1414,13 @@ static func classify_device(win: Vector2i, base: Vector2i, scale: float,
 		out["regular"] = float(mini(win.x, win.y)) / scale >= REGULAR_POINTS
 		# Two boards side by side want the shape *and* the room. The Duo's
 		# cover display has the shape of an iPad and five inches of glass, and
-		# on it your board and the rival's came out too small to read; the one
-		# board of the phone layout is the right answer there, which is also
+		# held tall your board and the rival's came out too small to read; the
+		# one board of the phone layout is the right answer there, which is also
 		# Apple's for a compact width ("a split view collapses to a single
-		# pane on the outer display"). The inner display is regular and keeps
-		# the rival's board.
-		out["tablet"] = wide_enough and bool(out["regular"])
+		# pane on the outer display"). Held wide the keys go to the corners and
+		# the rival's board has a wing of its own, which on the cover display
+		# was fine. The inner display is regular and keeps it either way.
+		out["tablet"] = wide_enough and (bool(out["regular"]) or win.x > win.y)
 	else:
 		# A desktop window has no points to speak of. It is as roomy as it looks.
 		out["tablet"] = wide_enough
@@ -1618,10 +1582,6 @@ func _poll_hinge(delta: float) -> void:
 	if _hinge_age < HINGE_POLL:
 		return
 	_hinge_age = 0.0
-	# A turn asked for on opening that iOS never made is let go here, since
-	# nothing else would measure again to notice the time was up.
-	if _open_turn >= 0 and Time.get_ticks_msec() >= _open_until:
-		_apply_orientation_policy()
 	# Where the bridge writes, and the one other place it might have meant.
 	var path := OS.get_cache_dir().path_join(HINGE_FILE)
 	if not FileAccess.file_exists(path):
@@ -1634,15 +1594,6 @@ func _poll_hinge(delta: float) -> void:
 	_hinge_text = text
 	_bridge = parse_bridge(text)
 	_hinge_seen = _hinge_seen or bool(_bridge["hinge"])
-	# How the shut phone is held, while it is shut: upright (1, 2) or on its
-	# side (3, 4). Lying flat (5, 6) and unknown (0) say nothing, so the last
-	# reading that did stands.
-	if not regular:
-		match int(_bridge["device"]):
-			1, 2:
-				_cover_held_wide = false
-			3, 4:
-				_cover_held_wide = true
 	_hinge_partial = bridge_partial(_bridge)
 	_remeasure()
 
@@ -1830,14 +1781,21 @@ func _kb_height(size: Vector2) -> float:
 ## keeps the keys filling the lower half whatever it turns out to measure, without
 ## letting an odd one make them silly.
 const KB_STRETCH_MAX := 1.5
+## How much taller a wing's keys are on a compact screen held wide: 0.26in becomes
+## the 0.30 a phone's keyboard is held to.
+const WING_STRETCH_COMPACT := 1.16
 
 
-## How much taller than written the keys are. Only a Duo held as a laptop asks for
-## anything: the strip for the word being typed sits just under the crease (as in
+## How much taller than written the keys are. Mostly a Duo held as a laptop, where
+## the strip for the word being typed sits just under the crease (as in
 ## `_portrait_band_top`) and the keys take everything from there to the bottom.
 ## Never less than written, so a crease lower than expected leaves the keys as
 ## they always were.
 func _kb_stretch(size: Vector2) -> float:
+	# A design unit is a third smaller on the cover display than on the inner
+	# one, so held wide the same keys come out too short for a thumb.
+	if wide_touch and not regular:
+		return WING_STRETCH_COMPACT
 	if wide_touch or not _fold_horizontal():
 		return 1.0
 	var want: float = _keyboard_bottom(size.y) - fold.end.y - 8.0 \
@@ -1893,40 +1851,54 @@ var _wing_half := Keyboard.WING_HALF
 const BOARD_MIN_LAKE := WWBoard.COLS * WWBoard.CELL + 36.0
 
 
+## Whether one board is all there is to show: nobody to play against, or more
+## rivals than the wing can hold, who go to cards.
+func _one_board() -> bool:
+	return _live_rival_count() == 0 or _rivals_as_cards()
+
+
+## Held as a book with two boards to show, which get a page each: yours on the
+## left, the rival's on the right, each between its half of the keys and the
+## crease. The two pages of a book are what the fold is for, and "one view on
+## each side of the division" is Apple's own first answer to it.
+##
+## One board does not get this: put on one page it was a narrow strip off to the
+## side of a mostly empty glass. It stays in the middle with the crease between
+## its third and fourth columns, which is why a grid wants an even number of them.
+func _two_pages() -> bool:
+	return wide_touch and _fold_vertical() and not _one_board()
+
+
 ## The gap between the wings that is the board's to use, as (left, right).
 ##
-## The whole lake when the glass is whole. With a fold down the middle it is the
-## bigger of the two pages — the board does not straddle the curve, and neither
-## do FIRE or the word being typed. That is Apple's own rule of thumb for
-## anything that has to be read or tapped: move it to the side of the fold that
-## has room, as one piece, and do not split it.
+## The whole lake, or held as a book with two boards, your page of it.
 func _wide_lake() -> Vector2:
 	return _lake_part(_wing_half)
 
 
 func _lake_part(half: float) -> Vector2:
+	if _two_pages():
+		return _lake_pages(half)[0]
+	return Keyboard.lake(_kb_size(get_viewport_rect().size), half)
+
+
+## The lake either side of a fold down the middle of it, as [left, right].
+func _lake_pages(half: float) -> Array:
 	var lk := Keyboard.lake(_kb_size(get_viewport_rect().size), half)
-	if not _fold_vertical():
-		return lk
-	var f0: float = fold.position.x - 14.0
-	var f1: float = fold.end.x + 14.0
-	if f1 <= lk.x or f0 >= lk.y:
-		return lk
-	var left := Vector2(lk.x, minf(lk.y, f0))
-	var right := Vector2(maxf(lk.x, f1), lk.y)
-	return left if (left.y - left.x) >= (right.y - right.x) else right
+	return [Vector2(lk.x, minf(lk.y, fold.position.x - 14.0)),
+		Vector2(maxf(lk.x, fold.end.x + 14.0), lk.y)]
 
 
-## Narrow the wings, if a fold needs them narrower, until a board fits in the page
-## it is going to stand on — or they hit the floor.
+## Narrow the wings, if the fold needs them narrower, until a board fits on each
+## page — or they hit the floor.
 func _fit_wings() -> void:
 	_wing_half = Keyboard.WING_HALF
-	if not wide_touch or not _fold_vertical():
+	if not _two_pages():
 		return
 	var h := Keyboard.WING_HALF
 	while h > Keyboard.WING_HALF_MIN:
-		var part := _lake_part(h)
-		if part.y - part.x >= BOARD_MIN_LAKE:
+		var pages := _lake_pages(h)
+		if minf(pages[0].y - pages[0].x, pages[1].y - pages[1].x) >= BOARD_MIN_LAKE:
 			break
 		h -= 0.01
 	_wing_half = maxf(h, Keyboard.WING_HALF_MIN)
@@ -2394,7 +2366,20 @@ func _layout_wide_boards(size: Vector2) -> void:
 	var top := _portrait_board_top()
 	var room := _portrait_board_bottom() - top
 	var bh := WWBoard.ROWS * WWBoard.CELL
+	var lake_x: float = lk.x + 4.0
 	var lake_w: float = lk.y - lk.x - 8.0
+	var pages: Array = []
+	if _two_pages():
+		# The same board on both pages, so the narrower one sets the width.
+		pages = _lake_pages(_wing_half)
+		lake_w = minf(lake_w, (pages[1] as Vector2).y - (pages[1] as Vector2).x - 8.0)
+	elif _fold_vertical():
+		# One board, on the crease and not merely near it: the keys are not
+		# quite symmetrical, so the middle of the lake is a few units to one side.
+		var mid: float = fold.get_center().x
+		var reach: float = minf(mid - lk.x, lk.y - mid) - 4.0
+		lake_x = mid - reach
+		lake_w = reach * 2.0
 
 	var scale: float = clampf(room / bh, 0.6, 1.9)
 	var cw: float = clampf(lake_w / (WWBoard.COLS * scale), WWBoard.CELL,
@@ -2410,13 +2395,21 @@ func _layout_wide_boards(size: Vector2) -> void:
 		w = lake_w
 	var bh_px: float = bh * scale
 	player.board.scale = Vector2(scale, scale)
-	player.board.position = Vector2(lk.x + 4.0 + (lake_w - w) * 0.5,
+	player.board.position = Vector2(lake_x + (lake_w - w) * 0.5,
 		top + (room - bh_px) * 0.5)
 
 	var wings := _wide_wings()
 	var rw_box: Rect2 = wings[1]
 	for s: SideState in sides:
 		if s.slot == 0 or not s.in_match:
+			continue
+		if not pages.is_empty():
+			# The other page, at your size and your height: a book's two pages.
+			# Its name and lives stand above it in the band your clock is in.
+			var rp: Vector2 = pages[1]
+			s.board.scale = Vector2(scale, scale)
+			s.board.position = Vector2(rp.x + 4.0 + (rp.y - rp.x - 8.0 - w) * 0.5,
+				player.board.position.y)
 			continue
 		if _rivals_as_cards():
 			# Parked out of sight; the cards stand for it.
@@ -2805,6 +2798,12 @@ func _draw_wide_rails() -> void:
 	var mark := _target_side()
 	if mark != null and mark != player:
 		var rw: Rect2 = wings[1]
+		# With the rival's board on its own page the wing has nothing else in it,
+		# and SENT mirrors INCOMING: against the lake, the same width.
+		if _two_pages():
+			_draw_rail(Rect2(rw.position.x, top, minf(WIDE_INCOMING_RAIL_W, rw.size.x),
+					rw.size.y), mark.pending, "SENT", mark.accent, "", false)
+			return
 		var rail_w: float = minf(WIDE_SENT_RAIL_W, rw.size.x * 0.4)
 		_draw_rail(Rect2(rw.end.x - rail_w, rw.position.y + 48.0, rail_w,
 				maxf(80.0, rw.size.y - 48.0)),

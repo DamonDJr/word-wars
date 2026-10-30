@@ -133,7 +133,7 @@ static func ui_scale(size: Vector2) -> float:
 static func _metrics(size: Vector2, bottom: float,
 		form := Form.FULL, half := WING_HALF, stretch := 1.0) -> Dictionary:
 	if form == Form.WINGS:
-		return _wing_metrics(size, bottom, half)
+		return _wing_metrics(size, bottom, half, stretch)
 	var s := ui_scale(size)
 	var gap: float = GAP * s
 	var key_h: float = KEY_H * s * stretch
@@ -401,7 +401,7 @@ static func height(size: Vector2, form := Form.FULL, digits := false,
 	var rows := float(ROWS.size()) + (1.0 if digits else 0.0)
 	if form == Form.WINGS:
 		# The letter rows, and the row of FIRE bars under them.
-		var m := _wing_metrics(size, 0.0, half)
+		var m := _wing_metrics(size, 0.0, half, stretch)
 		return (rows + 1.0) * (float(m["key_h"]) + float(m["gap"]))
 	return (rows * (KEY_H * stretch + GAP) + ACTION_H * stretch + GAP) * ui_scale(size)
 
@@ -476,9 +476,10 @@ static func emote_rect(size: Vector2, bottom: float,
 ## of a wing rather than of the glass, and the key height from the *height* of the
 ## viewport rather than from a fixed 92.
 static func _wing_metrics(size: Vector2, bottom: float,
-		half := WING_HALF) -> Dictionary:
+		half := WING_HALF, stretch := 1.0) -> Dictionary:
 	var gap: float = GAP
-	var key_h: float = clampf(size.y * WING_KEY_H_FRAC, WING_KEY_H_MIN, WING_KEY_H_MAX)
+	var key_h: float = clampf(size.y * WING_KEY_H_FRAC, WING_KEY_H_MIN, WING_KEY_H_MAX) \
+		* stretch
 	var kw: float = (size.x * half - SIDE - gap * 4.0) / 5.0
 	# Three rows of letters and the FIRE row under them: four rows tall, and `top`
 	# is the top of the first letter row.

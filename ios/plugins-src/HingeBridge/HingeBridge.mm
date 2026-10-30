@@ -9,7 +9,7 @@
 //     view 669.0 951.0          the game view's size, in points
 //     class 2 2                 horizontal and vertical size class, as UIKit says
 //     orient 3                  the scene's interface orientation
-//     device 1                  how the phone is held (UIDeviceOrientation), lock or no lock
+//     device 1                  how the phone is held (UIDeviceOrientation), for Settings
 //     fold 0.0 461.5 669.0 28.0 the active division (the crease), in view points
 //     fold -                    ...or none: this OS reports divisions and there is none
 //     occl 420.0 8.0 38.0 38.0  an active occlusion (the cover display's camera)
@@ -241,13 +241,13 @@ static void AppendRegions(NSMutableString *out, NSArray *regions, NSString *tag)
 // Make UIKit ask the game again which ways it may be held, whenever the answer
 // has changed.
 //
-// The game locks the cover display to portrait and frees the inner one, through
-// Godot, which answers `supportedInterfaceOrientations` from that setting. But
-// since iOS 16 the system only asks when told the answer has changed, so a lock
-// set while the glass was landscape was not acted on until the phone was turned
-// by hand: closed from a landscape inner display, the cover screen stayed on its
-// side. This is the telling, and if the glass is held a way that is no longer
-// allowed, the request to turn.
+// The game locks a compact iPhone to portrait, through Godot, which answers
+// `supportedInterfaceOrientations` from that setting. But since iOS 16 the system
+// only asks when told the answer has changed, so a lock set while the glass was
+// on its side was not acted on until the phone was turned by hand. This is the
+// telling, and if the glass is held a way that is no longer allowed, the request
+// to turn. A phone with a hinge is never locked (see `_apply_orientation_policy`
+// in game.gd): iOS honours a lock on the inner display by scaling the game down.
 static void FollowOrientationLock(UIView *host) {
 	if (@available(iOS 16.0, *)) {
 		UIViewController *vc = host.window.rootViewController;
@@ -298,9 +298,8 @@ static void Report(void) {
 						(long)scene.effectiveGeometry.interfaceOrientation];
 			}
 		}
-		// The sensor's answer, which the cover display's portrait lock does not
-		// change: it is how the game knows the phone was turned on its side
-		// before it was opened, and so which way up the inner display should be.
+		// The sensor's answer, beside the scene's above: on a device where the
+		// two disagree, it is the first thing to look at in Settings.
 		[out appendFormat:@"device %ld\n", (long)[UIDevice currentDevice].orientation];
 		NSArray *division = Regions(host, @"divisionRegionKind");
 		if (division != nil) {
@@ -324,7 +323,7 @@ static void Start(void) {
 		return;
 	}
 	// UIDevice only tracks the sensor while somebody has asked it to. Never
-	// ended: the game wants it for as long as it runs.
+	// ended: the report wants it for as long as the game runs.
 	[[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
 	sTimer = [NSTimer timerWithTimeInterval:kTick
 									repeats:YES
