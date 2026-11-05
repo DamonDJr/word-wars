@@ -36,9 +36,20 @@ Check on the Duo, from TestFlight:
   the right. In survival: one board in the middle, with the crease down it.
 - Survival held wide: the clock in the right-hand corner, the board nearly the
   height of the glass.
+- Half-closed, every menu (the title, the summary, the leaderboards, settings):
+  nothing on the crease. Held as a laptop the screen carries on below it; held
+  as a book it runs across the two pages, and the second page scrolls.
 - Settings, last two lines: the second should start with `hinge` and end in
   `crease on` while half-closed. If it says `no regions` or has no `hinge`, the
   fold is not being read; send a screenshot of those two lines.
+
+## Screenshots
+
+`tools/shots.sh --duo` renders all four iPhone Duo slots into
+`build/shots/appstore-duo/`, one folder per size, numbered in listing order:
+inner display 2853x2007 and 2007x2853, outer display 1398x2034 and 2034x1398.
+The inner sets include the book and laptop layouts. Sizes and the missing alpha
+channel are checked as they are written.
 
 ## What's New in This Version
 
@@ -50,7 +61,8 @@ inner display.
 
 Stand the Duo up like a laptop and the lower half becomes a full-size
 keyboard, with the board on the half facing you. Fold it like a book and
-you and your rival get a page each.
+you and your rival get a page each. The menus, the leaderboards and the
+end-of-match summary flow round the fold as well.
 
 On the outer display, one big board and a keyboard across the whole
 screen, and two boards when you turn it sideways. Survival on the open Duo

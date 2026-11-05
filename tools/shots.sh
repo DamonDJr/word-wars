@@ -4,7 +4,7 @@
 #     tools/shots.sh              phone stills -> build/shots, then the cards
 #     tools/shots.sh --ipad       the tablet layout, split and full keyboards
 #     tools/shots.sh --appstore   both submission sets, at Apple's sizes
-#     tools/shots.sh --duo        the iPhone Duo's submission sets, at Apple's sizes
+#     tools/shots.sh --duo        the iPhone Duo's four submission sets, at Apple's sizes
 #     tools/shots.sh --duo-poses  the partly folded poses, for the press kit
 #
 # Output lands in build/shots (raw stills), build/shots/cards (1080x1920
@@ -34,9 +34,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SHOTS=(title solo daily survival boards mastery)
-# The Duo's order is the order they appear in the listing: the match first, since
-# a wide screen is what is being sold and a menu is the least of it.
-DUO_SHOTS=(solo daily survival versus boards mastery title)
 MODE="${1:-plain}"
 
 # shot + flags -> one still, with the godot chatter filtered down to our line.
@@ -80,23 +77,66 @@ plain)
 --duo)
 	# The iPhone Duo is its own device class in App Store Connect, with an outer
 	# display and an inner one, each in both orientations: 1398x2034 and
-	# 2007x2853, and their landscapes. The game is held to portrait on the outer
-	# display (a compact screen, where a wide frame leaves a board too small to
-	# read) and turns freely on the inner one, so what it actually does is three
-	# of those four — see `_apply_orientation_policy` in game.gd. There is no
-	# 2034x1398 set because there is no such pose to show.
+	# 2007x2853, and their landscapes. A phone with a hinge is never locked (see
+	# `_apply_orientation_policy` in game.gd), so all four are poses a player is
+	# actually in, and all four are here.
 	#
-	# Each pose lands in its own directory under build/shots/duo/, so the three
-	# uploads are three folders rather than eighteen files to sort by size.
-	for pose in outer-portrait inner-portrait inner-landscape; do
-		for s in "${DUO_SHOTS[@]}"; do
-			echo "--- $s ($pose) ---"
-			shoot "$s" --pose "$pose"
+	# Each size is its own folder under build/shots/appstore-duo/, numbered in
+	# the order the listing should show them: the match first, since a glass
+	# this size is what is being sold. The two inner sets each carry the folded
+	# poses, at the inner display's own size, because they are the two things
+	# only a Duo does: held tall like a laptop the board stands and the keys lie
+	# on the table, and held wide like a book each player has a page.
+	#
+	# `pose:shot` pairs; a shot can carry its own flags after a comma.
+	DUO_OUT=build/shots/appstore-duo
+	rm -rf "$DUO_OUT"
+	duo_set() {
+		local dir="$DUO_OUT/$1"
+		shift
+		mkdir -p "$dir"
+		local n=1
+		for ps in "$@"; do
+			local pose="${ps%%:*}" spec="${ps#*:}"
+			local shot="${spec%%,*}" flags=""
+			[[ "$spec" == *,* ]] && flags="${spec#*,}"
+			echo "--- $shot $flags ($pose) ---"
+			# shellcheck disable=SC2086
+			shoot "$shot" --pose "$pose" $flags
+			cp "build/shots/duo/$pose/$shot.png" \
+				"$dir/$(printf '%02d' "$n")-$pose-$shot.png"
+			n=$((n + 1))
 		done
-	done
+	}
+	duo_set inner-landscape-2853x2007 \
+		inner-landscape:solo inner-landscape-book:versus inner-landscape:survival \
+		inner-landscape-book:title inner-landscape:daily inner-landscape:boards
+	duo_set inner-portrait-2007x2853 \
+		inner-portrait:solo inner-portrait-laptop:solo inner-portrait:survival \
+		inner-portrait:boards inner-portrait:daily inner-portrait:mastery
+	duo_set outer-portrait-1398x2034 \
+		outer-portrait:solo outer-portrait:daily outer-portrait:survival \
+		outer-portrait:versus outer-portrait:boards outer-portrait:title
+	duo_set outer-landscape-2034x1398 \
+		outer-landscape:solo outer-landscape:survival outer-landscape:versus \
+		outer-landscape:daily
 	echo
-	echo "==> build/shots/duo/<pose>/ — outer-portrait is 1398x2034 (outer display),"
-	echo "    inner-portrait is 2007x2853 and inner-landscape 2853x2007 (inner display)."
+	# Every file the size its folder says, and no alpha channel, which App Store
+	# Connect refuses outright.
+	bad=0
+	for f in "$DUO_OUT"/*/*.png; do
+		want="${f%/*}"
+		want="${want##*-}"
+		# `%A` is the alpha flag: False is what Apple wants.
+		got="$(magick identify -format '%wx%h %A' "$f")"
+		case "$got" in
+		"$want False" | "$want Undefined") ;;
+		*) echo "  WRONG: $f is $got, wants $want without alpha" >&2; bad=1 ;;
+		esac
+	done
+	[ "$bad" = 0 ] || exit 1
+	echo "==> $DUO_OUT/<pose>-<size>/ — one folder per App Store Connect slot,"
+	echo "    numbered in listing order. Sizes and channels are checked above."
 	;;
 --duo-poses)
 	# The partly folded poses: the layout the game uses when the system reports

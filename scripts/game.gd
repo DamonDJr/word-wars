@@ -647,7 +647,7 @@ func _screen_laid() -> float:
 			# never saw it because the whole list fits; a landscape iPad, or an
 			# upright one, is where it does not.
 			var top: float = float(m["top"])
-			if portrait and _scroll_max > 1.0:
+			if portrait and _scroll_max > 1.0 and not _paned():
 				top += _scroll
 			return top + rows * (float(m["h"]) + float(m["gap"])) \
 				+ 3.0 * float(m["band_gap"]) + 80.0
@@ -682,6 +682,19 @@ func _tick_scroll() -> void:
 		_scroll = 0.0
 		_scroll_max = 0.0
 		return
+	# Across a crease only the second window scrolls, and the screen it scrolls
+	# starts at the break.
+	if _paned():
+		_pane_s = _pane_split()
+		var second: Rect2 = _pane_rects()[1]
+		var room: float = second.size.y - _pane_pad() - safe_bottom
+		# Never short of the lowest button, whatever a screen's own sum says.
+		var laid := _screen_laid()
+		for b: Dictionary in _menu_buttons():
+			laid = maxf(laid, (b["rect"] as Rect2).end.y + 24.0)
+		_scroll_max = maxf(0.0, laid - _pane_s - room + 20.0)
+		_scroll = clampf(_scroll, 0.0, _scroll_max)
+		return
 	var view: float = get_viewport_rect().size.y - safe_top - safe_bottom
 	_scroll_max = maxf(0.0, _screen_laid() - view + 40.0)
 	_scroll = clampf(_scroll, 0.0, _scroll_max)
@@ -693,11 +706,326 @@ func _draw_scrollbar(size: Vector2) -> void:
 		return
 	var view: float = size.y - safe_top - safe_bottom
 	var track := Rect2(size.x - 10.0, safe_top + 10.0, 3.0, view - 20.0)
+	# Down the window that scrolls.
+	if _paned():
+		var second: Rect2 = _pane_rects()[1]
+		view = second.size.y - safe_bottom
+		track = Rect2(second.end.x - 10.0, second.position.y + 10.0, 3.0, view - 20.0)
 	_overlay.draw_rect(track, Color("#ffffff", 0.06), true)
 	var frac: float = clampf(view / (view + _scroll_max), 0.15, 1.0)
 	var at: float = (_scroll / _scroll_max) * (track.size.y * (1.0 - frac))
 	_overlay.draw_rect(Rect2(track.position.x, track.position.y + at, 3.0,
 		track.size.y * frac), Color(PLAYER_ACCENT, 0.5), true)
+
+
+# ----------------------------------------------------- menus round a crease
+#
+# A Duo partly open shows a menu through two windows, one either side of the
+# crease: the standing half and the half on the table, held as a laptop, and the
+# two pages, held as a book. The screen is laid out as if for the first of them,
+# a page's worth of glass, and runs on into the second at a clean break —
+# between two doors, two rows, the table and the buttons under it — where it
+# scrolls. The first window stays put. Nothing is drawn in the crease, so
+# nothing in it can be pressed.
+#
+# Three seams and nothing else: `_screen` is the size a screen is laid out for,
+# the windows draw it through `_draw_pane`, and `_from_screen` maps a press back
+# into it. On flat glass there are no windows and every screen is exactly what
+# it was.
+
+## Between a window and the crease, so nothing sits on the lip of the curve.
+const PANE_GAP := 12.0
+
+var _pane_clip: Array[Control] = []
+var _pane_canvas: Array[Node2D] = []
+## The wash and the drifting tiles, once, behind both windows: a wash drawn in
+## each window would leave the crease between them bare.
+var _pane_back: Node2D
+## Set while a window draws, so a screen knows not to paint its own backdrop.
+var _in_pane := false
+## Where the second window takes over, in the screen's own units. Worked out once
+## a frame, in `_tick_scroll`, because finding it lays the whole screen out.
+var _pane_s := 0.0
+
+
+## Whether this screen is being shown through the two windows.
+func _paned() -> bool:
+	if not portrait or not _fold_active() or show_rules:
+		return false
+	match phase:
+		Phase.TITLE, Phase.PRACTICE, Phase.SOLO, Phase.MASTERY, Phase.COSMETICS, \
+				Phase.SETTINGS, Phase.BOARDS, Phase.WEEKLY, Phase.OVER:
+			return true
+		Phase.LOBBY:
+			# A room code is typed on the drawn keyboard, which stands across the
+			# bottom of the glass whatever is behind it.
+			return not _code_entry
+	return false
+
+
+## The two windows, as [first, second], on the glass.
+func _pane_rects() -> Array:
+	var size := get_viewport_rect().size
+	if _fold_horizontal():
+		return [Rect2(0.0, 0.0, size.x, maxf(0.0, fold.position.y - PANE_GAP)),
+			Rect2(0.0, fold.end.y + PANE_GAP, size.x,
+				maxf(0.0, size.y - fold.end.y - PANE_GAP))]
+	return [Rect2(0.0, 0.0, maxf(0.0, fold.position.x - PANE_GAP), size.y),
+		Rect2(fold.end.x + PANE_GAP, 0.0, maxf(0.0, size.x - fold.end.x - PANE_GAP),
+			size.y)]
+
+
+## The size a menu is laid out for: the viewport, or across a crease the first
+## window — held as a book, as wide as the narrower of the two pages.
+func _screen() -> Vector2:
+	if not _paned():
+		return get_viewport_rect().size
+	var w := _pane_rects()
+	var a: Rect2 = w[0]
+	if _fold_horizontal():
+		return a.size
+	return Vector2(minf(a.size.x, (w[1] as Rect2).size.x), a.size.y)
+
+
+## Above the first row of the second page, held as a book. Held as a laptop the
+## second window starts under the crease, which is gap enough.
+func _pane_pad() -> float:
+	return 0.0 if _fold_horizontal() else safe_top + 30.0
+
+
+## Where the screen may be cut, in its own units, top to bottom. The first is
+## the end of its header, and nothing above that is ever sent on.
+##
+## A cut goes under a row, never through one: each candidate sits just below
+## something and is refused if it lands inside something else.
+func _pane_breaks() -> Array:
+	var head := safe_top
+	var rows: Array = []
+	match phase:
+		Phase.TITLE:
+			head = float(_plate_metrics()["top"])
+		Phase.SETTINGS:
+			head = 124.0 + safe_top
+			for row: Dictionary in _settings_rows():
+				rows.append(row["rect"])
+		Phase.PRACTICE:
+			head = 214.0 + safe_top
+			rows.append_array(_practice_door_rects())
+			rows.append_array(_practice_pace_rects())
+		Phase.SOLO:
+			head = _solo_roster_top()
+			for c: Dictionary in _solo_cards():
+				rows.append(c["rect"])
+		Phase.MASTERY:
+			head = 166.0 + safe_top
+			var strip := _mastery_stat_rects(_mastery_stats().size())
+			rows.append_array(strip)
+			# The power tallies and their label, as one piece.
+			var below := _grid_bottom(strip, head)
+			rows.append(Rect2(0.0, below + 4.0, 1.0,
+				maxf(1.0, _mastery_stats_foot() - below - 30.0)))
+		Phase.COSMETICS:
+			head = safe_top + COS_HEAD
+			rows.append_array(_cos_chip_rects())
+			rows.append(Rect2(0.0, _preview_top(), 1.0, _preview_height()))
+			for c: Dictionary in _mastery_cards():
+				rows.append(c["rect"])
+		Phase.LOBBY:
+			head = _lobby_doors_top()
+			rows.append_array(_lobby_door_rects())
+		Phase.BOARDS:
+			head = _boards_head() + _boards_list_top()
+			var y := head
+			for i in _boards_fit():
+				var rh := _boards_rank_h(int((Boards.view_rows[i] as Dictionary)["rank"]))
+				rows.append(Rect2(0.0, y, 1.0, rh))
+				y += rh + _boards_row_gap()
+			if not Boards.view_me.is_empty():
+				# Your row and the line under it about the climb, together.
+				rows.append(Rect2(0.0, y + 14.0, 1.0,
+					_boards_row_h() + 30.0 * _boards_fill()))
+		Phase.WEEKLY:
+			head = _weekly_head()
+			for i in Missions.PER_WEEK:
+				rows.append(_weekly_row_rect(i))
+		Phase.OVER:
+			# Under the score, where the lines about it start: the challenge, the
+			# margin, the spoils and the best word go with the table they lead
+			# into, as one piece.
+			head = 284.0 * _over_lead() + _over_gap() - 12.0
+			rows.append(Rect2(0.0, head, 1.0, _over_table_foot() - head))
+			if mode == Mode.DAILY:
+				rows.append(Rect2(0.0, _over_foot() - _daily_board_h(), 1.0,
+					_daily_board_h()))
+	for b: Dictionary in _menu_buttons():
+		# The daily board's tabs are inside the board, which is one piece.
+		if not String(b["action"]).begins_with("dtab:"):
+			rows.append(b["rect"])
+	var out: Array = [head]
+	for r: Rect2 in rows:
+		var at: float = r.end.y + 4.0
+		if at <= head + 1.0:
+			continue
+		# Refused only by something that runs through it, not by the next thing
+		# down starting where this one stops.
+		var inside := false
+		for other: Rect2 in rows:
+			if other.position.y < at - 6.0 and other.end.y > at + 2.0:
+				inside = true
+				break
+		if not inside and not out.has(at):
+			out.append(at)
+	out.sort()
+	return out
+
+
+## Which break the second window starts at.
+##
+## Held as a laptop, as much as the standing half will hold: it is the half you
+## look at. Held as a book, whichever break leaves the two pages most nearly the
+## same height, so neither is a column of nothing.
+func _pane_split() -> float:
+	var breaks := _pane_breaks()
+	var first: Rect2 = _pane_rects()[0]
+	var cap: float = first.end.y - (0.0 if _fold_horizontal() else safe_bottom)
+	var best: float = breaks[0]
+	if _fold_horizontal():
+		for b: float in breaks:
+			if b <= cap:
+				best = maxf(best, b)
+		return best
+	var laid := _screen_laid()
+	var worst := INF
+	for b: float in breaks:
+		if b > cap:
+			continue
+		var tall: float = maxf(b, laid - b + _pane_pad())
+		if tall < worst:
+			worst = tall
+			best = b
+	return best
+
+
+## Where the screen's own origin is on the glass, seen through window `i`.
+func _pane_origin(i: int) -> Vector2:
+	var w: Rect2 = _pane_rects()[i]
+	var x: float = w.position.x + (w.size.x - _screen().x) * 0.5
+	if i == 0:
+		return Vector2(x, w.position.y)
+	return Vector2(x, w.position.y + _pane_pad() - _pane_s - _scroll)
+
+
+## The part of window `i` the screen shows through: the first stops at the
+## break, and the second starts at it, so nothing is shown twice.
+func _pane_view(i: int) -> Rect2:
+	var w: Rect2 = _pane_rects()[i]
+	var o := _pane_origin(i)
+	if i == 0:
+		return Rect2(w.position, Vector2(w.size.x,
+			clampf(_pane_s + o.y - w.position.y, 0.0, w.size.y)))
+	var top: float = clampf(_pane_s + o.y, w.position.y, w.end.y)
+	return Rect2(w.position.x, top, w.size.x, w.end.y - top)
+
+
+## A press on the glass, in the screen's own units. In the crease, or in the
+## part of a window the screen does not reach, it is nowhere at all.
+func _from_screen(p: Vector2) -> Vector2:
+	if not _paned():
+		return p
+	for i in 2:
+		if _pane_view(i).has_point(p):
+			return p - _pane_origin(i)
+	return Vector2(-1.0e9, -1.0e9)
+
+
+## The backdrop and the two windows, made once and stood just under the overlay:
+## over the board art, and under the cards and the back button.
+func _make_panes() -> void:
+	_pane_back = Node2D.new()
+	_pane_back.visible = false
+	add_child(_pane_back)
+	move_child(_pane_back, _overlay.get_index())
+	_pane_back.draw.connect(_draw_pane_back)
+	for i in 2:
+		var clip := Control.new()
+		clip.clip_contents = true
+		clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		clip.visible = false
+		add_child(clip)
+		move_child(clip, _overlay.get_index())
+		var canvas := Node2D.new()
+		clip.add_child(canvas)
+		canvas.draw.connect(_draw_pane.bind(i))
+		_pane_clip.append(clip)
+		_pane_canvas.append(canvas)
+
+
+## Once a frame: show or hide the windows, and put them where the break is.
+func _tick_panes() -> void:
+	if _pane_back == null:
+		return
+	var on := _paned()
+	_pane_back.visible = on
+	for i in _pane_clip.size():
+		_pane_clip[i].visible = on
+	if not on:
+		return
+	for i in 2:
+		var v := _pane_view(i)
+		_pane_clip[i].position = v.position
+		_pane_clip[i].size = v.size
+		_pane_canvas[i].position = _pane_origin(i) - v.position
+		_pane_canvas[i].queue_redraw()
+	_pane_back.queue_redraw()
+
+
+func _draw_pane(i: int) -> void:
+	if not _paned():
+		return
+	var keep := _overlay
+	_overlay = _pane_canvas[i]
+	_in_pane = true
+	_draw_menu_screen(_screen())
+	_in_pane = false
+	_overlay = keep
+
+
+func _draw_pane_back() -> void:
+	if not _paned():
+		return
+	var keep := _overlay
+	_overlay = _pane_back
+	_menu_backdrop(get_viewport_rect().size)
+	_overlay = keep
+
+
+## How heavily a menu's wash covers the board behind it.
+##
+## The title lets a painted board show through, since it is the one screen
+## looked at rather than read; the summary lets nothing through. The rest are
+## read, and keep a heavy wash.
+func _menu_wash() -> float:
+	match phase:
+		Phase.TITLE, Phase.SPLASH:
+			return 0.66 if _art != null else 0.90
+		Phase.OVER:
+			return 1.0
+		Phase.PRACTICE, Phase.SOLO, Phase.LOBBY:
+			return 0.93
+	return 0.94
+
+
+## The wash a menu is drawn on, and the tiles drifting behind it. Behind both
+## windows at once, across a crease, and not inside either.
+func _menu_backdrop(size: Vector2) -> void:
+	if _in_pane:
+		return
+	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
+		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
+		Color(bg_top, _menu_wash()), true)
+	# There is nothing behind the summary worth seeing, tiles included.
+	if phase != Phase.OVER:
+		_draw_decor()
 
 
 ## What Game Center last said it was doing. Shown on the title screen, because
@@ -1106,6 +1434,7 @@ func _ready() -> void:
 	# this canvas item specifically.
 	_overlay.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	_overlay.draw.connect(_draw_overlay)
+	_make_panes()
 	_build_screen_texture()
 
 	_apply_orientation()
@@ -7049,6 +7378,7 @@ func _process(delta: float) -> void:
 		_aim_everyone()
 
 	_tick_music(delta)
+	_tick_panes()
 	queue_redraw()
 	_overlay.queue_redraw()
 
@@ -9088,14 +9418,16 @@ func _menu_fill(natural: float, cap: float = 1.3) -> float:
 ## Biased slightly high, because a menu that sits dead centre reads as floating
 ## while one a little above centre reads as placed.
 func _menu_offset(laid: float) -> float:
-	if not portrait:
+	# Across a crease the windows do the scrolling, and a screen laid out to flow
+	# from one into the other starts at its top.
+	if not portrait or _paned():
 		return 0.0
 	# Once a screen is taller than the window there is nothing to centre — it is
 	# a list, and the offset is where the reader has dragged it to.
 	if _scroll_max > 1.0:
 		return -_scroll
 	var top: float = 214.0 + safe_top
-	var avail: float = get_viewport_rect().size.y - safe_bottom - top - 40.0
+	var avail: float = _screen().y - safe_bottom - top - 40.0
 	return maxf(0.0, (avail - laid) * 0.30)
 
 
@@ -9138,7 +9470,7 @@ func _menu_spread(_natural: float, _cap: float = 3.2) -> float:
 ## is four, and came up a whole row short.
 func _grid_cols(count: int, want_cols: int, gap: float, min_w: float) -> int:
 	var usable: float = maxf(120.0,
-		get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+		_screen().x - GRID_MARGIN * 2.0)
 	var cols: int = maxi(1, mini(want_cols, count))
 	while cols > 1 and (usable - gap * float(cols - 1)) / float(cols) < min_w:
 		cols -= 1
@@ -9156,7 +9488,7 @@ func _grid_rows(count: int, want_cols: int, gap: float, min_w: float) -> int:
 
 func _grid_rects(count: int, top: float, want_cols: int, want_w: float, ch: float,
 		gap: float = 10.0, min_w: float = 0.0, vgap: float = 10.0) -> Array:
-	var size := get_viewport_rect().size
+	var size := _screen()
 	var usable: float = maxf(120.0, size.x - GRID_MARGIN * 2.0)
 	var cols: int = _grid_cols(count, want_cols, gap, min_w)
 	var room: float = (usable - gap * float(cols - 1)) / float(cols)
@@ -9193,7 +9525,7 @@ func _portrait_menu_top(doors: int) -> float:
 	# travel together.
 	var block := stack + 120.0
 	var head := 210.0 + safe_top
-	var avail: float = (get_viewport_rect().size.y - safe_bottom - 24.0) - head
+	var avail: float = (_screen().y - safe_bottom - 24.0) - head
 	return head + maxf(0.0, (avail - block) * 0.5)
 
 
@@ -10374,6 +10706,36 @@ func _draw_screen_texture(size: Vector2) -> void:
 		true, Color(1.0, 1.0, 1.0, GRAIN))
 
 
+## The screen itself, whichever one is up, at `size`: the viewport, or a page.
+func _draw_menu_screen(size: Vector2) -> void:
+	match phase:
+		Phase.TITLE:
+			_draw_title(size)
+		Phase.SOLO:
+			_draw_solo(size)
+		Phase.LOBBY:
+			_draw_lobby(size)
+		Phase.PRACTICE:
+			_draw_practice(size)
+		Phase.MASTERY:
+			_draw_mastery(size)
+		Phase.COSMETICS:
+			_draw_cosmetics(size)
+		Phase.BOARDS:
+			_draw_boards(size)
+		Phase.WEEKLY:
+			_draw_weekly(size)
+		Phase.SETTINGS:
+			_draw_settings(size)
+		Phase.COUNTDOWN:
+			_draw_countdown(size)
+		Phase.OVER:
+			_draw_gameover(size)
+			# Over the scoreboard, which it sits below anyway, and under the
+			# rematch card, which is a question and owns the screen while it is up.
+			_draw_summary_emotes(size)
+
+
 func _draw_overlay() -> void:
 	var size := get_viewport_rect().size
 	_draw_screen_texture(size)
@@ -10412,38 +10774,16 @@ func _draw_overlay() -> void:
 			# it, so the two never trade places against an empty screen.
 			_draw_title(size)
 			_draw_splash(size)
-		elif phase == Phase.TITLE:
-			_draw_title(size)
-		elif phase == Phase.SOLO:
-			_draw_solo(size)
-		elif phase == Phase.LOBBY:
-			_draw_lobby(size)
-			# The same keyboard a match is typed on, so a room code is typed the
-			# way everything else in this game is.
-			if _code_entry and portrait:
-				_draw_keyboard()
-		elif phase == Phase.PRACTICE:
-			_draw_practice(size)
-		elif phase == Phase.MASTERY:
-			_draw_mastery(size)
-		elif phase == Phase.COSMETICS:
-			_draw_cosmetics(size)
-		elif phase == Phase.BOARDS:
-			_draw_boards(size)
-		elif phase == Phase.WEEKLY:
-			_draw_weekly(size)
-		elif phase == Phase.SETTINGS:
-			_draw_settings(size)
-		elif phase == Phase.COUNTDOWN:
-			_draw_countdown(size)
-		elif phase == Phase.OVER:
-			_draw_gameover(size)
-			# Between the two on purpose: over the scoreboard, which it sits
-			# below anyway, and under the rematch card, which is a question and
-			# owns the screen while it is up.
-			_draw_summary_emotes(size)
-			# Over the summary rather than inside it, and last, so nothing the
-			# scoreboard draws lands on top of the question.
+		elif not _paned():
+			# Across a crease the two windows draw it instead. See `_draw_pane`.
+			_draw_menu_screen(size)
+		# The same keyboard a match is typed on, so a room code is typed the
+		# way everything else in this game is.
+		if phase == Phase.LOBBY and _code_entry and portrait:
+			_draw_keyboard()
+		# Over the summary rather than inside it, and last, so nothing the
+		# scoreboard draws lands on top of the question.
+		if phase == Phase.OVER:
 			_draw_rematch_popup(size)
 
 		# Last, so it sits over whatever the screen drew — several of these paint
@@ -10641,10 +10981,7 @@ func _draw_title(size: Vector2) -> void:
 	# Only the title. The dense screens — mastery, cosmetics, settings — keep
 	# their heavier wash, because those are read rather than looked at and a
 	# waterfall behind a table of numbers is a worse table.
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.66 if _art != null else 0.90), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	# The whole header hangs off the safe area. A Dynamic Island is about 104
 	# units deep in this design space, and the wordmark sits at 96 — so without
@@ -10937,10 +11274,7 @@ func _draw_how_cards(cx: float) -> void:
 ## confirm it is a settings screen that will be left wrong.
 func _draw_settings(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	_otext(_font_bold, Vector2(cx, safe_top + 78.0 + _menu_offset(_settings_laid())),
 		"SETTINGS", 32, Color("#e6ecff"))
@@ -11202,12 +11536,12 @@ func _store_note(owned: bool) -> String:
 
 
 func _settings_rows() -> Array:
-	var cx := get_viewport_rect().size.x * 0.5
+	var cx := _screen().x * 0.5
 	var defs := _settings_defs()
 	var out: Array = []
 	# 720 was the row width and 720 is also the whole of a portrait screen, so
 	# the rows ran edge to edge with no margin at all. Capped by the screen now.
-	var rw: float = minf(720.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+	var rw: float = minf(720.0, _screen().x - GRID_MARGIN * 2.0)
 	for i in defs.size():
 		var d: Array = defs[i]
 		out.append({
@@ -11246,7 +11580,7 @@ func _settings_fill() -> float:
 	# Measured from where the rows actually start, not from `_menu_offset`'s
 	# notion of a top — this screen puts its title at 78 and its first row at
 	# 124, and the two have never agreed.
-	var avail: float = get_viewport_rect().size.y - safe_bottom \
+	var avail: float = _screen().y - safe_bottom \
 		- (124.0 + safe_top) - SETTINGS_FOOT
 	# The floor is what it used to be, so nothing can come out smaller than it
 	# was. The cap stops a two-row list from becoming two slabs the size of a
@@ -11408,10 +11742,7 @@ func _practice_pace_top() -> float:
 ## Learn it or drill it. Two doors, and a pace for the second one.
 func _draw_practice(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.93), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	# The header travels with the block. Centring the content and leaving the
 	# title pinned to the top left it orphaned, with a band of nothing between
@@ -11864,10 +12195,7 @@ func _draw_lesson_pips(cx: float, y: float, a: float) -> void:
 ## see `_solo_cards` and `_solo_seat_rects`.
 func _draw_solo(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.93), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := safe_top + _menu_offset(_solo_laid())
 	_otext(_font_bold, Vector2(cx, hy + 62.0), "SINGLE PLAYER", 32, Color("#e6ecff"))
@@ -11985,7 +12313,10 @@ func _solo_laid() -> float:
 	var f := _solo_fill()
 	var sp := _solo_spread()
 	if portrait:
-		var rows := ceilf(float(_solo_roster().size()) / 2.0)
+		# Asked of the grid, which drops to one column on narrow glass, rather
+		# than assumed to be two: a page of a Duo held as a book is narrower than
+		# a phone, and two was a screen a column short of itself.
+		var rows := float(_grid_rows(_solo_roster().size(), 2, SOLO_CARD_GAP, 260.0))
 		return 176.0 + rows * SOLO_CARD_H + (rows - 1.0) * SOLO_CARD_GAP \
 			+ 42.0 * sp + 26.0 + PORTRAIT_DOOR_H
 	return 76.0 * f + 40.0 * sp + 2.0 * 66.0 * f + 10.0 * sp \
@@ -12134,10 +12465,7 @@ func _mastery_stats() -> Array:
 
 func _draw_mastery(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := safe_top + _menu_offset(_mastery_laid())
 	var prog := Profile.level_progress()
@@ -12417,7 +12745,7 @@ func _weekly_laid() -> float:
 
 
 func _weekly_row_rect(i: int) -> Rect2:
-	var size := get_viewport_rect().size
+	var size := _screen()
 	var w: float = minf(600.0, size.x - GRID_MARGIN * 2.0)
 	return Rect2(size.x * 0.5 - w * 0.5,
 		_weekly_head() + float(i) * (WEEK_ROW_H + WEEK_ROW_GAP), w, WEEK_ROW_H)
@@ -12425,10 +12753,7 @@ func _weekly_row_rect(i: int) -> Rect2:
 
 func _draw_weekly(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var key := Missions.week_key()
 	var hy := safe_top + _menu_offset(_weekly_laid())
@@ -12518,10 +12843,7 @@ func _draw_cosmetics(size: Vector2) -> void:
 		_draw_cosmetics_portrait(size)
 		return
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := safe_top + _menu_offset(_cosmetics_laid())
 	_otext(_font_bold, Vector2(cx, hy + 58.0), "COSMETICS", 34, Color("#e6ecff"))
@@ -12605,10 +12927,7 @@ func _draw_cosmetics(size: Vector2) -> void:
 ## The wardrobe on a phone — see "the wardrobe on a phone" for why it differs.
 func _draw_cosmetics_portrait(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := safe_top + _menu_offset(_cosmetics_laid())
 	_otext(_font_bold, Vector2(cx, hy + 58.0), "COSMETICS", 34, Color("#e6ecff"))
@@ -12774,7 +13093,7 @@ func _mastery_cards() -> Array:
 		# right for a row of doors, wrong for a list, where a lone last card
 		# floating in the middle reads as a different kind of thing.
 		rects = []
-		var vw := get_viewport_rect().size.x
+		var vw := _screen().x
 		var cw: float = (vw - GRID_MARGIN * 2.0 - COS_CARD_GAP) * 0.5
 		var top := _mastery_grid_top()
 		for i in list.size():
@@ -12868,7 +13187,15 @@ func _cosmetics_spread() -> float:
 
 func _preview_height() -> float:
 	if portrait:
-		return _cos_preview_h(Profile.SLOTS[mastery_slot])
+		var h := _cos_preview_h(Profile.SLOTS[mastery_slot])
+		# Held as a laptop, no taller than the standing half has left under the
+		# chips, so the picture stands with the chips that choose it and the
+		# cards are what lies on the table. Never under 60% of itself.
+		if _paned() and _fold_horizontal():
+			var room: float = _screen().y - (safe_top + COS_HEAD + _cos_chips_h() + 22.0) \
+				- 12.0
+			h = clampf(room, h * 0.6, h)
+		return h
 	return 150.0 * _cosmetics_fill()
 
 
@@ -13091,14 +13418,14 @@ func _lobby_door_h() -> float:
 	# fits. Measured from the top of the doors without the centring offset,
 	# because the offset is itself worked out from this height.
 	var n := float(_lobby_doors().size())
-	var room: float = get_viewport_rect().size.y - safe_bottom \
+	var room: float = _screen().y - safe_bottom \
 		- (_lobby_head_h() + safe_top) - (n - 1.0) * _lobby_door_gap() \
 		- 66.0 - 38.0 - 12.0 - _lobby_goal_h()
 	return minf(h, room / n)
 
 
 func _lobby_door_w() -> float:
-	var usable: float = get_viewport_rect().size.x - GRID_MARGIN * 2.0
+	var usable: float = _screen().x - GRID_MARGIN * 2.0
 	# Portrait gives the doors the whole width the way practice's do; landscape
 	# caps them, because a plate twelve hundred units across is a horizon.
 	return usable if portrait else minf(560.0, usable)
@@ -13396,10 +13723,7 @@ func _lobby_note() -> String:
 ## the doors — see the block comment above `LOBBY_FALLBACK` for why it exists.
 func _draw_lobby(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.93), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := safe_top + _menu_offset(_lobby_laid())
 	_otext(_font_bold, Vector2(cx, hy + 62.0), "VERSUS", 32, Color("#e6ecff"))
@@ -13647,8 +13971,7 @@ func _draw_gameover(size: Vector2) -> void:
 	# moved down the phone they were sitting on empty background at the top of
 	# the screen with nothing over them. There is nothing behind this worth
 	# seeing, so none of it is let through.
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0), bg_top, true)
+	_menu_backdrop(size)
 
 	var win := winner == "YOU"
 	var tint := Color("#ffd166") if win else Color("#ff6b6b")
@@ -13929,7 +14252,7 @@ func _over_lead() -> float:
 	# nothing to say they were there. So it comes down with the height, to 1.0 —
 	# the desktop's own spacing, which is known to fit a 720-tall window — and
 	# whatever still does not fit is reached by scrolling.
-	var h: float = get_viewport_rect().size.y
+	var h: float = _screen().y
 	return clampf(lerpf(1.0, 1.9, (h - 960.0) / 480.0), 1.0, 1.9)
 
 
@@ -13951,7 +14274,7 @@ func _over_gap() -> float:
 ## whichever menu was open last and the functions this is subtracted in are read
 ## from the daily board and from tests on screens where it means nothing.
 func _over_shift() -> float:
-	return _scroll if phase == Phase.OVER else 0.0
+	return _scroll if phase == Phase.OVER and not _paned() else 0.0
 
 
 ## Where the summary ends, in the space it is laid out in rather than the space
@@ -13972,8 +14295,8 @@ func _over_laid() -> float:
 	# there, and that is not a reason to scroll. It is counted only when it has
 	# been pushed under the buttons, past where the floor is.
 	if _summary_emotes_live():
-		var floor_edge: float = get_viewport_rect().size.y - safe_bottom - 14.0
-		for r: Rect2 in _summary_emote_rects(get_viewport_rect().size):
+		var floor_edge: float = _screen().y - safe_bottom - 14.0
+		for r: Rect2 in _summary_emote_rects(_screen()):
 			if r.end.y + shift > floor_edge + 1.0:
 				bottom = maxf(bottom, r.end.y + shift)
 	return bottom + 28.0
@@ -14184,7 +14507,7 @@ func _over_button_rects(count: int) -> Array:
 	# and is true of a tablet held wide. Stacked, three doors are 310 tall and a
 	# wide window has no height to spare; side by side they are 96, and a wide
 	# window has the width for them.
-	var vp := get_viewport_rect().size
+	var vp := _screen()
 	if not portrait or vp.x > vp.y:
 		if count < 2:
 			return _grid_rects(1, top, 1, 300.0, 96.0, 20.0, 280.0, 14.0)
@@ -14193,8 +14516,8 @@ func _over_button_rects(count: int) -> Array:
 		# third read past the end of the array. `_grid_rects` drops a column of
 		# its own accord if three will not fit the width.
 		return _grid_rects(count, top, count, 264.0, 96.0, 20.0, 280.0, 14.0)
-	var cx: float = get_viewport_rect().size.x * 0.5
-	var w: float = minf(654.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+	var cx: float = _screen().x * 0.5
+	var w: float = minf(654.0, _screen().x - GRID_MARGIN * 2.0)
 	var out: Array = []
 	var y := top
 	for i in count:
@@ -15043,7 +15366,7 @@ func _daily_head_h() -> float:
 ## the two functions below so neither has to ask the other and recurse.
 func _daily_fit_for(with_foot: bool) -> int:
 	var fill := _over_fill()
-	var avail: float = get_viewport_rect().size.y - safe_bottom \
+	var avail: float = _screen().y - safe_bottom \
 		- DAILY_BOARD_RESERVE - (_over_table_foot() + _over_shift()) \
 		- _daily_head_h() - 16.0 * fill
 	if with_foot:
@@ -15545,7 +15868,7 @@ func _boards_fit() -> int:
 	var have := Boards.view_rows.size()
 	if _scrollable():
 		return have
-	var avail: float = get_viewport_rect().size.y - safe_top - safe_bottom \
+	var avail: float = _screen().y - safe_top - safe_bottom \
 		- _boards_list_top() - _boards_buttons_h() - 40.0
 	if not Boards.view_me.is_empty():
 		avail -= _boards_row_h() + 14.0
@@ -15678,10 +16001,7 @@ func _boards_climb() -> String:
 
 func _draw_boards(size: Vector2) -> void:
 	var cx := size.x * 0.5
-	_overlay.draw_rect(Rect2(-SHAKE_MARGIN, -SHAKE_MARGIN,
-		size.x + SHAKE_MARGIN * 2.0, size.y + SHAKE_MARGIN * 2.0),
-		Color(bg_top, 0.94), true)
-	_draw_decor()
+	_menu_backdrop(size)
 
 	var hy := _boards_head()
 	var tint := _board_tint()
@@ -15842,7 +16162,7 @@ func _draw_mastery_strip(cx: float) -> float:
 	# Under the buttons, which are one row on a desktop and two on a phone. The
 	# bar narrows to leave room for the labels either side of it.
 	var strip_y: float = maxf(floor_y, buttons_foot + 32.0)
-	var bw: float = minf(352.0, get_viewport_rect().size.x - 240.0)
+	var bw: float = minf(352.0, _screen().x - 240.0)
 	var bar := Rect2(cx - bw * 0.5, strip_y, bw, 9.0)
 	_panel(bar, Color("#141b33"), Color("#ffd166", 0.22), 5.0, 1.0)
 	_overlay.draw_rect(Rect2(bar.position + Vector2(2, 2),
@@ -15877,7 +16197,7 @@ func _draw_mastery_strip(cx: float) -> float:
 		if fresh.size() > 2:
 			line += "  (+%d more)" % (fresh.size() - 2)
 		_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0), "UNLOCKED: " + line, 14,
-			minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
+			minf(980.0, _screen().x - GRID_MARGIN * 2.0), Color("#7bdff2"), 10)
 		return strip_y + 34.0
 	# A versus match that unlocked nothing still moved the count towards the
 	# board versus pays for, and the moment after one is when that is worth
@@ -15888,7 +16208,7 @@ func _draw_mastery_strip(cx: float) -> float:
 			_text_fit_overlay(_font_bold, Vector2(cx, strip_y + 34.0),
 				"%s BOARD: %d / %d VERSUS MATCHES" % [goal["name"], int(goal["have"]),
 					int(goal["want"])], 14,
-				minf(980.0, get_viewport_rect().size.x - GRID_MARGIN * 2.0),
+				minf(980.0, _screen().x - GRID_MARGIN * 2.0),
 				goal["accent"], 10)
 			return strip_y + 34.0
 	return strip_y + 10.0
@@ -16224,7 +16544,7 @@ func _state_of(who: SideState, own: int) -> Dictionary:
 ## never disagree about where they are.
 func _menu_buttons() -> Array:
 	var out: Array = []
-	var cx := get_viewport_rect().size.x * 0.5
+	var cx := _screen().x * 0.5
 
 	if paused and phase == Phase.PLAY:
 		var w := 300.0
@@ -16260,7 +16580,7 @@ func _menu_buttons() -> Array:
 		# who you picked, which is both the confirmation and what stops a
 		# full-width plate looking half empty.
 		var sw: float = minf(654.0 if portrait else 300.0,
-			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+			_screen().x - GRID_MARGIN * 2.0)
 		var ssub := ""
 		if portrait:
 			var who := String(solo_seats[0])
@@ -16313,7 +16633,7 @@ func _menu_buttons() -> Array:
 		# Two rows of two, both centred on the same 304-wide block so the pair of
 		# controls reads as one stack rather than two unrelated toolbars.
 		var bfill := _boards_fill()
-		var tabw: float = minf(148.0 * bfill, (get_viewport_rect().size.x
+		var tabw: float = minf(148.0 * bfill, (_screen().x
 			- GRID_MARGIN * 2.0 - 8.0) * 0.5)
 		var tx: float = cx - tabw - 4.0
 		var boards_tabs: Array = [
@@ -16348,7 +16668,7 @@ func _menu_buttons() -> Array:
 		# screen. These are the two things you can do from here and they are the
 		# lowest things on it, which is where a thumb already is.
 		var bw: float = minf(654.0 if portrait else 360.0,
-			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+			_screen().x - GRID_MARGIN * 2.0)
 		# Only when there is somewhere to send them. Before a challenge is
 		# configured in App Store Connect this opens a dashboard with nothing in
 		# it, which is a worse answer than not offering the door.
@@ -16431,7 +16751,7 @@ func _menu_buttons() -> Array:
 	elif phase == Phase.MASTERY:
 		# Wide enough for a block and a word beside it without crowding either.
 		var mw: float = minf(420.0 if portrait else 300.0,
-			get_viewport_rect().size.x - GRID_MARGIN * 2.0)
+			_screen().x - GRID_MARGIN * 2.0)
 		var mfoot := _mastery_stats_foot()
 		out.append({
 			"rect": Rect2(cx - mw * 0.5, mfoot, mw, 46.0), "key": "C",
@@ -16544,7 +16864,7 @@ func _menu_buttons() -> Array:
 		# the drawing uses; see `_daily_tab_rects` for why they must be one
 		# number rather than two.
 		if mode == Mode.DAILY:
-			var tabs := _daily_tab_rects(get_viewport_rect().size,
+			var tabs := _daily_tab_rects(_screen(),
 				_over_foot() - _daily_board_h())
 			for i in tabs.size():
 				out.append({
@@ -16781,7 +17101,7 @@ func _title_modes() -> Array:
 ## Where the stack starts, and how tall each plate is. Portrait gets the taller
 ## plate because it is being hit with a thumb.
 func _plate_metrics() -> Dictionary:
-	var size := get_viewport_rect().size
+	var size := _screen()
 	var wide: float = minf(560.0 if portrait else 620.0, size.x - GRID_MARGIN * 2.0)
 	# Landscape is 720 tall and has to hold six plates, three band rules and the
 	# rules line; portrait has half as much again to spend and is being hit with
@@ -16805,7 +17125,9 @@ func _plate_metrics() -> Dictionary:
 	# wordmark and the first plate on a tall screen, which read as a mistake
 	# rather than as space.
 	var top: float = head + maxf(0.0, (avail - block) * 0.34)
-	if portrait and _scroll_max > 1.0:
+	if _paned():
+		top = head
+	elif portrait and _scroll_max > 1.0:
 		top = head - _scroll
 	return {"x": size.x * 0.5 - wide * 0.5, "w": wide, "h": h, "gap": gap,
 		"band_gap": band_gap, "top": top}
@@ -17495,6 +17817,9 @@ func _action_at(p: Vector2) -> String:
 			if (b["rect"] as Rect2).has_point(p):
 				return String(b["action"])
 		return ""
+	# Everything below is the screen's own, laid out in its own units — which
+	# across a crease are not the glass's.
+	p = _from_screen(p)
 	for b: Dictionary in _menu_buttons():
 		if (b["rect"] as Rect2).has_point(p):
 			return String(b["action"])
@@ -17503,7 +17828,7 @@ func _action_at(p: Vector2) -> String:
 	# button on this screen has — a finger that lands on CHEER and slides off is
 	# a finger that changed its mind.
 	if _summary_emotes_live():
-		var tiles := _summary_emote_rects(get_viewport_rect().size)
+		var tiles := _summary_emote_rects(_screen())
 		for i in tiles.size():
 			if (tiles[i] as Rect2).has_point(p):
 				return "emote:%d" % int(EMOTE_MENU[i])

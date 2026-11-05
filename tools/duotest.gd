@@ -55,6 +55,11 @@ func _init() -> void:
 		_done("the hinge is read right")
 		return
 
+	if args.size() > 0 and String(args[0]) == "menus":
+		await _menus(String(args[1]) if args.size() > 1 else "inner-portrait-laptop")
+		_done("the menus stand clear of the crease")
+		return
+
 	if args.size() > 0 and String(args[0]) == "opening":
 		await _opening()
 		_done("opening turns the glass the right way")
@@ -376,7 +381,7 @@ func _check_title_scroll(name: String, size: Vector2) -> void:
 	var last := Rect2()
 	for plate: Dictionary in game._title_plates():
 		if String(plate["action"]) == "settings":
-			last = plate["rect"]
+			last = _glass_rect(plate["rect"])
 	var bottom: float = size.y - game.safe_bottom
 	_expect("the title's scroll limit does not shrink as it is scrolled",
 		absf(again - reach) < 0.5, "%.0f then %.0f" % [reach, again])
@@ -451,7 +456,7 @@ func _check_summary(name: String, size: Vector2) -> void:
 		var off: Array = []
 		var lowest := 0.0
 		for b: Dictionary in game._menu_buttons():
-			var br: Rect2 = b["rect"]
+			var br: Rect2 = _glass_rect(b["rect"])
 			if String(b["action"]).begins_with("dtab:"):
 				continue
 			lowest = maxf(lowest, br.end.y)
@@ -461,8 +466,9 @@ func _check_summary(name: String, size: Vector2) -> void:
 					br.end.y, bottom])
 		_expect("scrolled to the end, every button of the %s is on the glass" % tag,
 			off.is_empty(), ", ".join(off))
+		# Held as a book they head the second page, which is its own top.
 		_expect("...and the last of them is within the screen's lower half (%.0f)" % lowest,
-			lowest > size.y * 0.35)
+			lowest > size.y * 0.35 or (game._paned() and game._fold_vertical()))
 
 		# At rest the headline is on the glass: the top of the page is the top.
 		game._scroll = 0.0
@@ -474,7 +480,7 @@ func _check_summary(name: String, size: Vector2) -> void:
 		var fit_lowest := 0.0
 		for b2: Dictionary in game._menu_buttons():
 			if not String(b2["action"]).begins_with("dtab:"):
-				fit_lowest = maxf(fit_lowest, (b2["rect"] as Rect2).end.y)
+				fit_lowest = maxf(fit_lowest, _glass_rect(b2["rect"]).end.y)
 		if reach <= 1.0:
 			_expect("a %s that does not scroll fits on the glass" % tag,
 				fit_lowest <= bottom + 1.0, "%.0f of %.0f" % [fit_lowest, bottom])
@@ -697,6 +703,95 @@ func _hinge() -> void:
 	await process_frame
 
 
+## Every menu on a partly folded glass: shown through the two windows either side
+## of the crease, cut between rows and never through one, every button pressable
+## where it is drawn, nothing pressable in the crease, and the end of every list
+## reachable by scrolling.
+func _menus(pose: String) -> void:
+	print("--- the menus, %s ---" % pose)
+	var spec: Dictionary = Poses.POSES[pose]
+	await _boot(spec)
+	var B: Node = get_root().get_node("Boards")
+	var rows: Array = []
+	for i in 12:
+		rows.append({"rank": i + 1, "name": "player %d" % i, "score": 40000 - i * 900,
+			"me": false})
+	B.view_rows = rows
+	B.view_me = {"rank": 118, "name": "you", "score": 24630, "me": true}
+	B.view_total = 9120
+	B.view_state = B.ViewState.READY
+	var screens := {"TITLE": game.Phase.TITLE, "PRACTICE": game.Phase.PRACTICE,
+		"SOLO": game.Phase.SOLO, "MASTERY": game.Phase.MASTERY,
+		"COSMETICS": game.Phase.COSMETICS, "SETTINGS": game.Phase.SETTINGS,
+		"LOBBY": game.Phase.LOBBY, "BOARDS": game.Phase.BOARDS,
+		"WEEKLY": game.Phase.WEEKLY}
+	for name: String in screens:
+		Poses.apply(game, spec)
+		game.phase = screens[name]
+		game._scroll = 0.0
+		await _check_menu(name)
+	# The summary, reached the way a player reaches it.
+	Poses.apply(game, spec)
+	game.phase = game.Phase.PLAY
+	game._end_match(game.ai_side)
+	game.over_age = 5.0
+	game._scroll = 0.0
+	await _check_menu("OVER")
+
+
+func _check_menu(name: String) -> void:
+	for i in 3:
+		await process_frame
+	game._tick_scroll()
+	_expect("%s: shown through two windows" % name, game._paned())
+	var s: float = game._pane_s
+	var fold: Rect2 = game.fold
+	var targets: Array = []
+	for b: Dictionary in game._menu_buttons():
+		targets.append([b["rect"], String(b["action"])])
+	if game.phase == game.Phase.SETTINGS:
+		for row: Dictionary in game._settings_rows():
+			targets.append([row["rect"], String(row["action"])])
+	if game.phase == game.Phase.COSMETICS:
+		for c: Dictionary in game._mastery_cards():
+			targets.append([c["rect"], String(c["action"])])
+	if game.phase == game.Phase.SOLO:
+		for c: Dictionary in game._solo_cards():
+			targets.append([c["rect"], String(c["action"])])
+	var cut: Array = []
+	var missed: Array = []
+	var lowest := Rect2()
+	for t: Array in targets:
+		var r: Rect2 = t[0]
+		if r.end.y > lowest.end.y:
+			lowest = r
+		if r.position.y < s - 0.5 and r.end.y > s + 0.5:
+			cut.append(t[1])
+		var at: Vector2 = r.get_center() + game._pane_origin(0 if r.get_center().y < s else 1)
+		var view: Rect2 = game._pane_view(0 if r.get_center().y < s else 1)
+		if view.has_point(at):
+			var got: String = game._action_at(at)
+			if got != String(t[1]) and not String(t[1]).begins_with("dtab:"):
+				missed.append("%s->%s" % [t[1], got])
+			if fold.intersects(Rect2(at - r.size * 0.5, r.size)):
+				cut.append("%s in the crease" % t[1])
+	_expect("%s: no row is cut by the break at %.0f" % [name, s], cut.is_empty(),
+		", ".join(cut))
+	_expect("%s: every button presses where it is drawn" % name, missed.is_empty(),
+		", ".join(missed))
+	_expect("%s: the crease presses nothing" % name,
+		game._action_at(fold.get_center()) == "")
+	_expect("%s: the second window starts where the first stops" % name,
+		game._pane_view(1).position.y >= (game._pane_rects()[1] as Rect2).position.y - 0.5)
+	# Scrolled all the way, the lowest thing on the screen is in the second window.
+	game._scroll = game._scroll_max
+	var last_at: Vector2 = lowest.get_center() + game._pane_origin(1)
+	_expect("%s: scrolled to the end, the last button is on the glass" % name,
+		lowest.get_center().y < s or game._pane_view(1).has_point(last_at),
+		"last at %s, second view %s, scroll %.0f" % [last_at, game._pane_view(1), game._scroll_max])
+	game._scroll = 0.0
+
+
 ## Which glass may turn. A phone with a hinge never may be locked: iOS honours a
 ## lock on the inner display by scaling the game down, and the first Duo came up
 ## as a shrunken portrait picture on a glass held wide, measuring compact, so
@@ -745,6 +840,15 @@ func _write_hinge(path: String, text: String) -> void:
 	f.close()
 	game._hinge_age = 10.0
 	game._poll_hinge(1.0)
+
+
+## Where a rectangle the screen laid out is on the glass: the same place on flat
+## glass, and across a crease wherever the window it falls in puts it.
+func _glass_rect(r: Rect2) -> Rect2:
+	if not game._paned():
+		return r
+	var i := 0 if r.get_center().y < game._pane_s else 1
+	return Rect2(r.position + game._pane_origin(i), r.size)
 
 
 func _expect(what: String, ok: bool, detail := "") -> void:

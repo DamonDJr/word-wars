@@ -152,6 +152,8 @@ func _init() -> void:
 		"lesson": await _shot_lesson()
 		"lobby": await _shot_lobby()
 		"practice": await _shot_practice()
+		"setup": await _shot_setup()
+		"weekly": await _shot_weekly()
 		_:
 			push_error("unknown shot: %s" % shot)
 			quit(1)
@@ -439,6 +441,19 @@ func _shot_lobby() -> void:
 func _shot_practice() -> void:
 	_pose_profile()
 	game.phase = game.Phase.PRACTICE
+	await _hold(0.6)
+
+
+## Choosing who to play against the CPU: the roster of opponents and the door.
+func _shot_setup() -> void:
+	_pose_profile()
+	game.phase = game.Phase.SOLO
+	await _hold(0.6)
+
+
+func _shot_weekly() -> void:
+	_pose_profile()
+	game.phase = game.Phase.WEEKLY
 	await _hold(0.6)
 
 
